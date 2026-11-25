@@ -160,6 +160,32 @@ function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): 
   return null;
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * The structure every later check relies on, so malformed JSON is refused with
+ * a reason instead of throwing. Values are checked later.
+ */
+function shapeReasons(input: unknown): string[] {
+  if (!isObject(input)) return ["The estimate input must be an object."];
+  const reasons: string[] = [];
+  if (!Array.isArray(input.accounts)) reasons.push("accounts must be a list.");
+  else
+    input.accounts.forEach((a: unknown, i: number) => {
+      if (!isObject(a)) reasons.push(`Account ${i + 1} must be an object.`);
+      else if (!Array.isArray(a.gaps)) reasons.push(`Account ${i + 1}: gaps must be a list (empty if there are none).`);
+      else if (!a.gaps.every(isObject)) reasons.push(`Account ${i + 1}: every gap must be an object with from and to.`);
+    });
+  if (!Array.isArray(input.entries)) reasons.push("entries must be a list.");
+  else
+    input.entries.forEach((e: unknown, i: number) => {
+      if (!isObject(e)) reasons.push(`Entry ${i + 1} must be an object.`);
+      else if (!isObject(e.fx)) reasons.push(`Entry ${String(e.id)}: fx must be an object with statutory and economic quotes.`);
+    });
+  if (!isObject(input.profile)) reasons.push("profile must be an object.");
+  return reasons;
+}
+
 /**
  * `rulesOverride` exists so tests can exercise a rules file the registry does
  * not hold. Production callers leave it out.
@@ -167,6 +193,8 @@ function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): 
 export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateResult {
   // Inputs often arrive as JSON from an untyped boundary: "2026" as a string
   // would still find the rules but break the period arithmetic, so check types.
+  const shape = shapeReasons(input);
+  if (shape.length > 0) return refuse(shape);
   if (typeof input.taxYear !== "number" || !Number.isInteger(input.taxYear)) {
     return refuse([`taxYear must be a whole number, got ${JSON.stringify(input.taxYear)}.`]);
   }
@@ -328,7 +356,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       reasons.push(`Entry ${e.id}: the official rate is dated ${q.date} but the payment was on ${txDate}. Only a rate from the same day is accepted.`);
       continue;
     }
-    if (e.fx.economic) {
+    // Absent means null or missing. Any other value (0, "", false) is a
+    // malformed quote and is checked, never silently dropped.
+    if (e.fx.economic !== null && e.fx.economic !== undefined) {
       const eReason = checkEconomic(e, e.fx.economic, rules, asOfMs);
       if (eReason) {
         reasons.push(eReason);

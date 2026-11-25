@@ -35,7 +35,13 @@ export async function POST(request: Request) {
   if (!perIp.take(clientKey(request, process.env))) return fail("Too many requests. Wait a minute.", 429);
   if (!perInstance.take("all")) return fail("The fee sponsor is busy. Try again shortly.", 429);
 
-  const text = await readBounded(request);
+  let text: string | null;
+  try {
+    text = await readBounded(request);
+  } catch {
+    // The client's body stream broke (connection reset, aborted upload).
+    return fail("The request body could not be read", 400);
+  }
   if (text === null) return fail("Payload too large", 413);
   let body: unknown;
   try {

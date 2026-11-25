@@ -61,10 +61,11 @@ Naira values are decimal strings with 2 dp. Rounding is half up, to the kobo. Ea
 
 The result is `{ status: "refused", reasons: [...], disclaimer }` with no numbers when any of these hold:
 
+- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no `gaps` list, an entry has no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
 - An in-year income entry has no statutory naira rate, or an invalid amount or rate.
 - A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
 - An in-year income entry's asset is not in `assetBase` (only USDC today).
-- `fx.economic` is present but malformed, has a zero or invalid rate, an empty provider, a non-https `sourceUrl`, a wrong pair, a bad `retrievedAt` or a bad date. A well-formed market quote from another day is not a refusal (see Output). It is never silently dropped.
+- `fx.economic` is present (anything other than `null` or missing, including `0`, `""` or `false`) but malformed, has a zero or invalid rate, an empty provider, a non-https `sourceUrl`, a wrong pair, a bad `retrievedAt` or a bad date. A well-formed market quote from another day is not a refusal (see Output). It is never silently dropped.
 - A quote's `retrievedAt` is before the start of its own `date` (Lagos calendar day, the rules' `timezoneOffset`). This applies to statutory and economic quotes.
 - A quote's `ngnPerUnit` has more than 6 decimal places (`MAX_RATE_DP`), statutory or economic.
 - `asOf` is at or after the end of the tax year but an account's `lastSyncedAt` is before the year end: income from the end of the year may be missing.
