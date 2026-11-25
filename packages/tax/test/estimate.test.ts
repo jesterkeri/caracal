@@ -222,7 +222,7 @@ describe("fx quote validation", () => {
   });
   it("compares the quote date with the Lagos calendar date", () => {
     // 23:30 UTC on 10 May is 00:30 on 11 May in Lagos.
-    const e = (date: string) => withQ(q({ date }), { occurredAt: "2026-05-10T23:30:00Z" });
+    const e = (date: string) => withQ(q({ date, retrievedAt: `${date}T18:00:00Z` }), { occurredAt: "2026-05-10T23:30:00Z" });
     expect(estimate(input([e("2026-05-11")])).status).toBe("ok");
     expect(estimate(input([e("2026-05-10")])).status).toBe("refused");
   });
