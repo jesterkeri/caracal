@@ -9,8 +9,11 @@ Status: Stellar TESTNET only. Built with soroban-sdk 30.0.0.
 | Function | Who can call | What it does |
 |---|---|---|
 | `__constructor(owner, token, tax_bps, goal_bps)` | runs once at deploy | Sets the owner, the USDC token and the split. Rejects `tax_bps + goal_bps > 10000`. Being a constructor, it cannot be front-run. |
-| `deposit(from, amount, invoice_ref)` | the payer (`from`) | Pulls `amount` of USDC from `from` into the contract and splits it. Tax and Goal are rounded down, the remainder goes to Spend. Rejects the contract itself as payer (`InvalidPayer`), `amount <= 0`, an empty `invoice_ref`, or one longer than 64 bytes. Each `invoice_ref` can be paid only once (`InvoiceAlreadyPaid`). Amounts use checked math (`Overflow` instead of a silent wrap). Emits a `split` event. |
-| `is_paid(invoice_ref)` | anyone (read only) | True if that invoice id was already paid. Stored in persistent storage with an extended lifetime. |
+| `create_invoice(invoice_ref, amount)` | owner only | Opens an invoice for an exact `amount` (above 0). `invoice_ref` must be 1 to 64 bytes. Fails with `InvoiceExists` if that ref was ever created, even if it was paid or cancelled. Emits `invoice_opened`. |
+| `cancel_invoice(invoice_ref)` | owner only | Cancels an invoice that is still Open. Paid or already cancelled invoices cannot be cancelled. Emits `invoice_cancelled`. |
+| `invoice(invoice_ref)` | anyone (read only) | `(amount, status)` or nothing if unknown. Status is 0 open, 1 paid, 2 cancelled. |
+| `deposit(from, amount, invoice_ref)` | the payer (`from`), any payer | Pays an open invoice. `amount` must equal the invoice amount exactly (`WrongAmount` otherwise). Pulls the USDC from `from` and splits it. Tax and Goal are rounded down, the remainder goes to Spend. Rejects the contract itself as payer (`InvalidPayer`), `amount <= 0`, a bad ref, an unknown invoice (`UnknownInvoice`), a paid one (`InvoiceAlreadyPaid`) and a cancelled one (`InvoiceCancelled`). Amounts use checked math (`Overflow` instead of a silent wrap). Emits a `split` event. |
+| `is_paid(invoice_ref)` | anyone (read only) | True only if the invoice status is Paid. Stored in persistent storage with an extended lifetime. |
 | `balance(pot)` | anyone (read only) | Balance of one pot (`Tax`, `Goal` or `Spend`). |
 | `balances()` | anyone (read only) | `(tax, goal, spend)` in one call. |
 | `withdraw(pot, to, amount)` | owner only | Sends `amount` of USDC from a pot to `to`. Must be above 0 and at most the pot balance. Emits `withdraw`. |
@@ -19,11 +22,17 @@ Status: Stellar TESTNET only. Built with soroban-sdk 30.0.0.
 | `set_split(tax_bps, goal_bps)` | owner only | Changes the percentages for future deposits only. Same bounds check. Emits `split_changed`. |
 | `config()` | anyone (read only) | `(owner, token, tax_bps, goal_bps)`. |
 
-Errors: `BpsTooHigh` (1), `InvalidAmount` (2), `InvalidInvoiceRef` (3), `InsufficientBalance` (4), `SamePot` (5), `InvoiceAlreadyPaid` (6), `Overflow` (7), `InvalidPayer` (8).
+Errors: `BpsTooHigh` (1), `InvalidAmount` (2), `InvalidInvoiceRef` (3), `InsufficientBalance` (4), `SamePot` (5), `InvoiceAlreadyPaid` (6), `Overflow` (7), `InvalidPayer` (8), `InvoiceExists` (9), `UnknownInvoice` (10), `WrongAmount` (11), `InvoiceCancelled` (12).
 
 Events carry a version in their topics, for example `("split", "v1")`. The `split` event data holds the opaque `invoice_ref`, payer, token, owner and the amounts. No client names or tax details are ever put on chain: `invoice_ref` is just an opaque id chosen by the app. `withdraw` lowers the pot balance before it calls the token (checks, effects, then interaction), and a failed transfer reverts the whole call.
 
 Every call extends the instance storage lifetime, so the contract is not archived while it is in use.
+
+## Invoices
+
+The owner opens an invoice first with `create_invoice(ref, amount)`. A deposit is only accepted if it names an open invoice and its amount is exactly the invoice amount. An invoice is settled by one deposit of exactly that amount, and then it is Paid for good. There are no partial payments and no overpayments. Anyone may pay it, so a client's colleague can settle it, as long as the amount is exact.
+
+Why: in the first version, `deposit` took any positive amount from anyone and marked the ref as paid. Anyone who learned an invoice id could deposit 1 stroop first. The real client's payment would then fail as a duplicate, and an indexer would show the invoice as paid for the wrong amount. With exact-amount invoices created by the owner, a 1 stroop deposit fails with `WrongAmount`, the invoice stays Open, and the real payment still goes through. A ref can never be created twice, so a paid or cancelled id cannot be reused.
 
 ## Who can move money
 
@@ -34,7 +43,9 @@ Only the owner. There is no admin, no upgrade function, no pause switch and no b
 | Action | Who can do it |
 |---|---|
 | Sign (authorise the contract's owner-only calls) | owner |
-| Deposit | anyone, with their own funds |
+| Create invoice | owner |
+| Cancel invoice | owner |
+| Deposit (pay an invoice) | anyone, with their own funds, for the exact invoice amount |
 | Withdraw | owner |
 | Reallocate between pots | owner |
 | Change split | owner |
@@ -81,15 +92,17 @@ stellar contract id asset --asset USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4
 
 ## Testnet deployment
 
-Current instance (2026-11-25, includes the `InvalidPayer` guard):
+Current instance (2026-11-25, exact-amount invoices: `create_invoice`, `cancel_invoice`, `invoice`):
 
-- Contract id: `CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2`
-  https://stellar.expert/explorer/testnet/contract/CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2
-- WASM hash (sha256): `24d6dafcf0d0204ce0437071191562003bc4fea039fc92ee5746c10e30ccaf13`
+- Contract id: `CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB`
+  https://stellar.expert/explorer/testnet/contract/CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB
+- WASM hash (sha256): `70fb8ddce2908fc095439eb57f099fe559d8ffee85fe76750d48ec93059a990d`
 - Owner: `GDO5SPZ7UYT3M6S4WQ4SM5UQ7XGKIKTXWMPG2SONWFD2LULZXBEULKGX` (a test deployer account), split 1000 / 1500 bps
 - USDC SAC: `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
-- Deploy tx: https://stellar.expert/explorer/testnet/tx/fbbca774a2697d096eecec2f4913b916b3e82c92e7dc6b14aca0e04151488cef
-- Deposit of 0.4 USDC, invoice `INV-DAY1-1`: https://stellar.expert/explorer/testnet/tx/e6b5ba593ea00e1c976f4a682236fb74db3467d982b845a05436aa68f0c0926d
-  Pots after it (7-decimal units): Tax 400000, Goal 600000, Spend 3000000, which is 10%, 15% and 75%. `is_paid(INV-DAY1-1)` returns true.
+- Deploy tx: https://stellar.expert/explorer/testnet/tx/7c61879a4ab63e21a7310ba2aa6d525f23b888be9943068821d083573961cd2e
+- `create_invoice` for `INV-DAY2-1`, 500000 (0.05 USDC): https://stellar.expert/explorer/testnet/tx/4377647908975a8f2633497e473085b33a02c175bb8b2354e0732f624d2ad133
+- A deposit of 1 stroop for that ref failed with `WrongAmount` (error 11). This was a simulation failure, so there is no transaction.
+- Deposit of exactly 500000: https://stellar.expert/explorer/testnet/tx/5777288b29e663170adbd4c8af86155b435f4a9618e7b8bd0d96f8a0321b5f57
+  Afterwards `invoice(INV-DAY2-1)` returns `(500000, 1)` (paid) and `balances()` returns Tax 50000, Goal 75000, Spend 375000.
 
-Superseded instances, kept for the record: `CAFE6AQXMBMOEN6GYQQS6LEF24OA6E4QKRXM2YQ5JOQ4EMX6B64T6NBM` (no payer guard; deploy tx `b3c3e07d8b3c2cde69b855e243300912f206df965afd8c852529afed479f9e23`, duplicate-invoice rejection shown on chain) and `CAQS7SINILCN4C2QZ42CQDSWDJQZT4KKYBQNG7DRGR6PLDZXHVL6DOSO` (first version). Their test USDC stays withdrawable by the owner.
+Superseded instances, kept for the record: `CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2` (had the payer guard but accepted any amount for any ref, so an invoice could be burned with a 1 stroop deposit; WASM hash `24d6dafcf0d0204ce0437071191562003bc4fea039fc92ee5746c10e30ccaf13`, deploy tx `fbbca774a2697d096eecec2f4913b916b3e82c92e7dc6b14aca0e04151488cef`), `CAFE6AQXMBMOEN6GYQQS6LEF24OA6E4QKRXM2YQ5JOQ4EMX6B64T6NBM` (no payer guard; deploy tx `b3c3e07d8b3c2cde69b855e243300912f206df965afd8c852529afed479f9e23`) and `CAQS7SINILCN4C2QZ42CQDSWDJQZT4KKYBQNG7DRGR6PLDZXHVL6DOSO` (first version). Their test USDC stays withdrawable by the owner.

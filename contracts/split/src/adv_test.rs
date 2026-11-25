@@ -23,6 +23,7 @@ fn contract_as_from_is_rejected_even_when_it_holds_funds() {
     let (env, token, id, c) = mk();
     let payer = Address::generate(&env);
     StellarAssetClient::new(&env, &token).mint(&payer, &1_000_000);
+    c.create_invoice(&Bytes::from_slice(&env, b"REAL"), &1_000_000);
     c.deposit(&payer, &1_000_000, &Bytes::from_slice(&env, b"REAL"));
     let r = c.try_deposit(&id, &1_000_000i128, &Bytes::from_slice(&env, b"SELF"));
     assert_eq!(r, Err(Ok(Error::InvalidPayer)));
@@ -37,6 +38,7 @@ fn paid_marker_survives_ttl_expiry() {
     let payer = Address::generate(&env);
     StellarAssetClient::new(&env, &token).mint(&payer, &10_000);
     let r = Bytes::from_slice(&env, b"INV");
+    c.create_invoice(&r, &100);
     c.deposit(&payer, &100, &r);
     env.ledger().with_mut(|l| l.sequence_number += 3_100_000);
     assert_eq!(c.try_deposit(&payer, &100, &r), Err(Ok(Error::InvoiceAlreadyPaid)));
