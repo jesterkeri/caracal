@@ -21,6 +21,7 @@ pub enum Error {
     SamePot = 5,
     InvoiceAlreadyPaid = 6,
     Overflow = 7,
+    InvalidPayer = 8,
 }
 
 #[contracttype]
@@ -129,6 +130,9 @@ impl SplitContract {
     }
 
     pub fn deposit(env: Env, from: Address, amount: i128, invoice_ref: Bytes) -> Result<(), Error> {
+        if from == env.current_contract_address() {
+            return Err(Error::InvalidPayer);
+        }
         from.require_auth();
         bump(&env);
         if amount <= 0 {
@@ -262,3 +266,6 @@ impl SplitContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod adv_test;

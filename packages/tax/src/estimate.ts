@@ -57,13 +57,22 @@ export function estimate(input: EstimateInput): EstimateResult {
 
   const periodStart = ms(`${input.taxYear}-01-01T00:00:00${rules.timezoneOffset}`);
   const periodEnd = ms(`${input.taxYear + 1}-01-01T00:00:00${rules.timezoneOffset}`);
-  const staleMs = (input.staleAfterHours ?? DEFAULT_STALE_HOURS) * 3_600_000;
+  const staleHours = input.staleAfterHours ?? DEFAULT_STALE_HOURS;
+  if (!Number.isFinite(staleHours) || staleHours <= 0) {
+    return refuse([`staleAfterHours must be a positive number of hours, got ${String(input.staleAfterHours)}.`]);
+  }
+  const staleMs = staleHours * 3_600_000;
 
-  // Accounts: freshness and gaps.
+  // Accounts: there must be at least one, and each must be fresh and gap free.
+  if (input.accounts.length === 0) {
+    reasons.push("No linked accounts, so Caracal cannot tell whether your history is complete.");
+  }
   for (const a of input.accounts) {
     const synced = ms(a.lastSyncedAt);
     if (Number.isNaN(synced)) {
       reasons.push(`Account "${a.label}" has an invalid last sync time.`);
+    } else if (synced > asOfMs) {
+      reasons.push(`Account "${a.label}" says it was synced at ${a.lastSyncedAt}, which is after ${input.asOf}. That cannot be right.`);
     } else if (asOfMs - synced > staleMs) {
       reasons.push(`Account "${a.label}" was last synced at ${a.lastSyncedAt}, which is too old. Sync it again.`);
     }
@@ -81,7 +90,13 @@ export function estimate(input: EstimateInput): EstimateResult {
   // Income entries.
   type Parsed = { e: (typeof input.entries)[number]; amt: Dec; rate: Dec; occurred: number };
   const parsed: Parsed[] = [];
+  const seenIds = new Set<string>();
   for (const e of input.entries) {
+    if (seenIds.has(e.id)) {
+      reasons.push(`Entry ${e.id} appears more than once in the ledger.`);
+      continue;
+    }
+    seenIds.add(e.id);
     if (e.kind !== "income" || e.direction !== "in") continue;
     const occurred = ms(e.occurredAt);
     if (Number.isNaN(occurred)) {
@@ -89,6 +104,10 @@ export function estimate(input: EstimateInput): EstimateResult {
       continue;
     }
     if (occurred < periodStart || occurred >= periodEnd) continue;
+    if (occurred > asOfMs) {
+      reasons.push(`Entry ${e.id} is dated ${e.occurredAt}, after ${input.asOf}.`);
+      continue;
+    }
     if (!e.fx.statutory) {
       reasons.push(`Entry ${e.id} (${e.txHash}) has no official naira rate for its date.`);
       continue;

@@ -15,4 +15,4 @@ contracts/**/test_snapshots/
 # local agent work, never committed
 .claude/worktrees/
 .claude/design/
-graphify-out/cache/
+graphify-out/
