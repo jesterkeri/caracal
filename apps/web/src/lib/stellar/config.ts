@@ -5,7 +5,8 @@
 export const NETWORK = {
   name: "testnet",
   passphrase: "Test SDF Network ; September 2015",
-  rpcUrl: process.env.NEXT_PUBLIC_STELLAR_RPC_URL ?? "https://soroban-testnet.stellar.org",
+  // `||`, not `??`: an empty value in .env.local means "use the default".
+  rpcUrl: process.env.NEXT_PUBLIC_STELLAR_RPC_URL || "https://soroban-testnet.stellar.org",
   horizonUrl: "https://horizon-testnet.stellar.org",
   explorer: "https://stellar.expert/explorer/testnet",
 } as const;
@@ -14,6 +15,12 @@ export const SMART_ACCOUNT = {
   // OpenZeppelin stellar-accounts v0.8.0 account build.
   accountWasmHash: "c514d35ea67eaea9bfc1fb3327854c0c06111bc1ddebd4fe217c504c1004b9e1",
   webauthnVerifier: "CC7EKIHQP3TN4CARQDND6CEOY2UXLWWC2X5GHTD5NLAT7BG5GPZIOM3F",
+} as const;
+
+export const SPLIT = {
+  // sha256 of contracts/split wasm with invoice binding (fix/invoice-binding,
+  // deployed 2026-11-25 as CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB).
+  wasmHash: "70fb8ddce2908fc095439eb57f099fe559d8ffee85fe76750d48ec93059a990d",
 } as const;
 
 export const TOKENS = {

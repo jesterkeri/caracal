@@ -34,8 +34,8 @@ Caracal never holds user funds or keys. It is an estimate tool, not a tax advise
 | Sign-up | Passkey smart wallet: a Soroban smart account via `smart-account-kit` and OpenZeppelin smart accounts | **live** (spike page `/wallet`), e.g. [wallet](https://stellar.expert/explorer/testnet/contract/CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX) |
 | No XLM needed | Fee sponsorship: our `/api/relay` server route forwards to SDF's testnet relayer proxy, which fee-bumps through OpenZeppelin Channels | **live**: [deploy tx](https://stellar.expert/explorer/testnet/tx/77975e3e1a03c93603a03515566dc984eb22668336b7a60a6916163bcd9cf727), fee paid by the sponsor |
 | Client pays | Direct USDC `deposit` into the split contract; for XLM, a classic `path_payment_strict_receive` on the Stellar DEX first (XLM in, exact USDC out) | planned |
-| Payment arrives | Soroban split contract, one per user, emitting a `split` event per payment | **live** on testnet: [contract](https://stellar.expert/explorer/testnet/contract/CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2), [deposit](https://stellar.expert/explorer/testnet/tx/e6b5ba593ea00e1c976f4a682236fb74db3467d982b845a05436aa68f0c0926d) |
-| Invoice match | Invoice reference passed into the contract and emitted in its event; each invoice can be paid once | **live** in the contract; app side planned |
+| Payment arrives | Soroban split contract, one per user, emitting a `split` event per payment | **live** on testnet: [contract](https://stellar.expert/explorer/testnet/contract/CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB), [invoice](https://stellar.expert/explorer/testnet/tx/4377647908975a8f2633497e473085b33a02c175bb8b2354e0732f624d2ad133), [payment](https://stellar.expert/explorer/testnet/tx/5777288b29e663170adbd4c8af86155b435f4a9618e7b8bd0d96f8a0321b5f57) |
+| Invoice match | The owner opens each invoice on chain with its exact amount. A payment must quote the invoice and pay exactly that amount, once, so nobody can block an invoice by paying 1 stroop first | **live** in the contract; app side planned |
 | Ledger | Horizon payments and Soroban events indexed into Postgres; the tax engine reads this | planned |
 | Cash-out | SEP-24 interactive withdraw with SEP-45 (or SEP-10) auth on the SDF test anchor | planned |
 | Naira value | Oracle-shaped rate interface. Reflector has no NGN feed, so the CBN official rate is used and labelled | planned |
@@ -61,9 +61,10 @@ Details and sources for every choice are in [docs/research/verify-2026-11-25.md]
 | Sign for the wallet | The user's passkey only |
 | Withdraw or move money between pots | The user (owner) only |
 | Change the split | The user only |
-| Pay an invoice into the contract | Anyone, with their own funds and their own signature |
+| Open or cancel an invoice | The user (owner) only |
+| Pay an invoice into the contract | Anyone, with their own funds and their own signature, for exactly the invoiced amount |
 | Upgrade or pause the contract | Nobody: there is no admin and no upgrade function |
-| Pay network fees | The fee sponsor (OpenZeppelin Channels). It can pay fees and nothing else |
+| Pay network fees | The fee sponsor (OpenZeppelin Channels). It can pay fees and nothing else. Caracal's `/api/relay` only passes on wallet deploys, split contract calls and USDC transfers, each signed by the user's own address, with rate limits |
 | Read the ledger | Caracal's indexer, rebuilt from the public chain at any time |
 | Hold funds during a cash-out | The anchor, for the length of its own withdrawal process |
 
@@ -79,7 +80,11 @@ corepack pnpm@10.32.1 test
 cd contracts/split && cargo test
 ```
 
-App setup and environment variables will be documented when `apps/web` lands.
+```
+corepack pnpm@10.32.1 -C apps/web dev     # http://localhost:3000/wallet
+```
+
+Environment variables are optional on testnet; see `apps/web/.env.example`. Leave them commented out to use the defaults.
 
 ## Tax figures and their sources
 

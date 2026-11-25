@@ -1,63 +1,72 @@
-// Fee sponsorship relay. The browser's smart-account-kit posts
-// { func, auth } or { xdr } here, and this server forwards it to a relayer
-// that pays the network fee. The relayer can only pay fees: every payload is
-// already authorised by the user's passkey, and the relayer holds no user
-// funds or keys.
+// Fee sponsorship relay. The browser's smart-account-kit posts { func, auth }
+// here, and this server forwards it to a relayer that pays the network fee.
 //
-// Testnet default: SDF's public smart-account relayer proxy, which forwards
-// to OpenZeppelin Channels. Set RELAYER_UPSTREAM to point at our own relayer
-// later. Calling it from the server means no browser CORS and no key in the
+// The relayer holds no user funds or keys, but it does pay real fees and
+// submits as its own account. So before forwarding, this route enforces a
+// sponsorship policy (src/lib/relay/policy.ts): bounded body, address-signed
+// auth only, and only allowlisted deployments and contract calls. Rate limits
+// are in memory, per server instance (testnet only; see policy.ts).
+//
+// Testnet default upstream: SDF's public smart-account relayer proxy, which
+// forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
+// relayer. Calling it from the server means no browser CORS and no key in the
 // bundle.
 
-const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
-const MAX_BODY_BYTES = 64 * 1024;
+import { NETWORK, SMART_ACCOUNT, SPLIT, TOKENS } from "@/lib/stellar/config";
+import { checkPayload, readBounded, WindowLimiter, type Policy } from "@/lib/relay/policy";
+import { rpcWasmLookup } from "@/lib/relay/wasm-lookup";
 
-function isPayload(v: unknown): boolean {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  if (typeof o.xdr === "string") return Object.keys(o).length === 1;
-  return (
-    typeof o.func === "string" &&
-    Array.isArray(o.auth) &&
-    o.auth.every((a) => typeof a === "string") &&
-    Object.keys(o).length === 2
-  );
+const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
+
+const POLICY: Policy = {
+  wasmAllowlist: new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash]),
+  sacAllowlist: new Map([[TOKENS.usdc, new Set(["transfer"])]]),
+};
+
+const lookupWasm = rpcWasmLookup(NETWORK.rpcUrl);
+const perIp = new WindowLimiter(10, 60_000);
+const global = new WindowLimiter(120, 60_000);
+
+// On Vercel, x-forwarded-for is set by the platform. Elsewhere it can be
+// spoofed, which is why the global limit also applies.
+function clientIp(request: Request): string {
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0]!.trim();
+  return request.headers.get("x-real-ip")?.trim() || "unknown";
 }
 
+const fail = (error: string, status: number) =>
+  Response.json({ success: false, error }, { status });
+
 export async function POST(request: Request) {
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) {
-    return Response.json({ success: false, error: "Payload too large" }, { status: 413 });
-  }
+  if (!perIp.take(clientIp(request))) return fail("Too many requests. Wait a minute.", 429);
+  if (!global.take("all")) return fail("The fee sponsor is busy. Try again shortly.", 429);
+
+  const text = await readBounded(request);
+  if (text === null) return fail("Payload too large", 413);
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    return Response.json({ success: false, error: "Body is not JSON" }, { status: 400 });
-  }
-  if (!isPayload(body)) {
-    return Response.json(
-      { success: false, error: "Expected { func, auth } or { xdr }" },
-      { status: 400 },
-    );
+    return fail("Body is not JSON", 400);
   }
 
-  const upstream = process.env.RELAYER_UPSTREAM ?? DEFAULT_UPSTREAM;
+  const verdict = await checkPayload(body, POLICY, lookupWasm);
+  if (!verdict.ok) return fail(verdict.error, verdict.status);
+
+  const upstream = process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM;
   let res: Response;
   try {
     res = await fetch(upstream, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(verdict.body),
       signal: AbortSignal.timeout(60_000),
     });
   } catch (e) {
     const cause = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e);
     console.error("relay upstream unreachable:", cause);
-    return Response.json(
-      { success: false, error: "The fee relayer could not be reached. Try again." },
-      { status: 502 },
-    );
+    return fail("The fee relayer could not be reached. Try again.", 502);
   }
   const out = await res.text();
   return new Response(out, {

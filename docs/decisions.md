@@ -12,3 +12,6 @@
 | 2026-11-25 | Withholding tax is not modelled | No source gives the rate for professional fees paid in crypto |
 | 2026-11-25 | Cash-out auth: SEP-45 (contract accounts), on testanchor.stellar.org | The user's wallet is a contract account; the test anchor lists SEP-45 |
 | 2026-11-25 | Core flow (features 1 to 4) end to end on testnet by Sat 28 Nov | Joshua kept the card's date. Submission is Tue 1 Dec; the Lagos showcase is Sat 5 Dec |
+| 2026-11-25 | Invoices are opened on chain by the owner with an exact amount; one exact payment settles them | Codex r1: any payer could mark an invoice paid with 1 stroop and block the real payment |
+| 2026-11-25 | `/api/relay` enforces a sponsorship policy: `{func, auth}` only, address-signed auth only, deploys of allowlisted wasm, calls to allowlisted wasm or USDC `transfer`, per-IP and global rate limits | Codex r1: the relay was an open sponsorship endpoint. Source-account auth would make the relayer itself the signer. Limits are in memory, per instance: fine for testnet, mainnet needs a shared store |
+| 2026-11-25 | Tax engine requires proven coverage per account, a same-day sourced CBN quote, an explicit income scope, and offset-bearing timestamps | Codex r1: freshness is not completeness; a stale or unsourced quote gave a number; unclassified income was silently excluded |
