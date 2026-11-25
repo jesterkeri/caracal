@@ -9,7 +9,7 @@ The output is always an estimate: `disclaimer: "This is an estimate, not tax adv
 ## Design
 
 - Pure functions. No network, no database, no clock reads. `asOf` is an input.
-- No runtime dependencies. Money is `bigint` in integer minor units, with exact decimal parsing. USDC has 7 decimals. No floats.
+- No runtime dependencies. Money is `bigint` in integer minor units, with exact decimal parsing. Ledger amounts and rates must be plain decimals with no surrounding whitespace; naira the user types (`otherIncomeNgn`, `annualRentNgn`) is trimmed first. USDC has 7 decimals. No floats.
 - Tax rules are data in `rules/<country>/<year>.json`, loaded by `getRules(country, year)`. Logic never hardcodes a rate or band. A new year is a new JSON file plus one line in `src/rules.ts`.
 - A later primary-source pass only edits the JSON: change `citation`, `url`, `confidence` and `verifiedOn`, and any number that turns out wrong.
 
@@ -61,7 +61,7 @@ Naira values are decimal strings with 2 dp. Rounding is half up, to the kobo. Ea
 
 The result is `{ status: "refused", reasons: [...], disclaimer }` with no numbers when any of these hold:
 
-- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no non-empty `id` or shares its `id` with another account, an account has no `gaps` list, an entry has no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
+- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no non-empty `id` or shares its `id` with another account, an account has no `gaps` list, an entry has no non-empty string `id` or no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
 - An in-year income entry has no statutory naira rate, or an invalid amount or rate.
 - A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
 - An in-year income entry's asset is not in `assetBase` (only USDC today).

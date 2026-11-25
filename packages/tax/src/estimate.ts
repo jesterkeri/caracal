@@ -160,6 +160,15 @@ function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): 
   return null;
 }
 
+/**
+ * Naira the user typed into a form may carry stray spaces, so those are
+ * trimmed. Ledger amounts and rates come from data and are parsed strictly.
+ */
+function parseTypedNaira(v: unknown) {
+  if (typeof v !== "string") throw new RangeError("not a string");
+  return parseDec(v.trim());
+}
+
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
@@ -189,6 +198,9 @@ function shapeReasons(input: unknown): string[] {
   else
     input.entries.forEach((e: unknown, i: number) => {
       if (!isObject(e)) reasons.push(`Entry ${i + 1} must be an object.`);
+      // Duplicates are found by id, so it must be a non-empty string: 1 and "1"
+      // would otherwise count the same payment twice.
+      else if (typeof e.id !== "string" || e.id.trim() === "") reasons.push(`Entry ${i + 1} has no id (a non-empty string).`);
       else if (!isObject(e.fx)) reasons.push(`Entry ${String(e.id)}: fx must be an object with statutory and economic quotes.`);
     });
   if (!isObject(input.profile)) reasons.push("profile must be an object.");
@@ -399,7 +411,7 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
     const extra = Object.keys(scope).filter((k) => !["allIncomeInLinkedAccounts", "otherIncomeNgn", "otherIncomeNote"].includes(k));
     if (extra.length > 0) reasons.push(`Income scope has unknown field(s): ${extra.join(", ")}.`);
     try {
-      const d = parseDec(scope.otherIncomeNgn as string);
+      const d = parseTypedNaira(scope.otherIncomeNgn);
       if (d.scale > MAX_NAIRA_INPUT_DP) throw new RangeError("sub-kobo");
       otherKobo = toKobo(d);
     } catch {
@@ -410,7 +422,7 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   let rentKobo: bigint | null = null;
   if (input.profile.annualRentNgn !== undefined) {
     try {
-      const d = parseDec(input.profile.annualRentNgn);
+      const d = parseTypedNaira(input.profile.annualRentNgn);
       if (d.scale > MAX_NAIRA_INPUT_DP) throw new RangeError("sub-kobo");
       rentKobo = toKobo(d);
     } catch {

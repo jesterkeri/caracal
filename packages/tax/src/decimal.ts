@@ -5,10 +5,12 @@ export type Dec = { n: bigint; scale: number }; // value = n / 10^scale
 const DEC_RE = /^\d+(\.\d+)?$/;
 
 export function parseDec(s: string): Dec {
-  if (typeof s !== "string" || !DEC_RE.test(s.trim())) {
+  // Strict: no surrounding whitespace. Results echo the input string, so the
+  // string shown must be exactly the one parsed.
+  if (typeof s !== "string" || !DEC_RE.test(s)) {
     throw new RangeError(`not a plain non-negative decimal: ${JSON.stringify(s)}`);
   }
-  const t = s.trim();
+  const t = s;
   const [i, f = ""] = t.split(".");
   return { n: BigInt(i + f), scale: f.length };
 }
