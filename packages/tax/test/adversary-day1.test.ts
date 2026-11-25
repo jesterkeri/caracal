@@ -3,16 +3,16 @@ import { estimate } from "../src";
 import type { Account, EstimateInput, LedgerEntry } from "../src";
 
 const ASOF = "2026-12-01T12:00:00Z";
-const acct: Account = { id: "a1", label: "Main", lastSyncedAt: "2026-12-01T06:00:00Z", gaps: [] };
+const acct: Account = { id: "a1", label: "Main", lastSyncedAt: "2026-12-01T06:00:00Z", coverageFrom: "2025-01-01T00:00:00Z", gaps: [] };
 function inc(id: string, over: Partial<LedgerEntry> = {}): LedgerEntry {
   return {
-    id, txHash: `tx-${id}`, occurredAt: "2026-05-10T10:00:00Z", direction: "in", kind: "income",
+    id, accountId: "a1", txHash: `tx-${id}`, occurredAt: "2026-05-10T10:00:00Z", direction: "in", kind: "income",
     asset: "USDC", amount: "100",
     fx: { statutory: { ngnPerUnit: "1500", source: "CBN", date: "2026-05-10" }, economic: null }, ...over,
   };
 }
 const inp = (entries: LedgerEntry[], over: Partial<EstimateInput> = {}): EstimateInput =>
-  ({ country: "NG", taxYear: 2026, asOf: ASOF, entries, accounts: [acct], profile: {}, ...over });
+  ({ country: "NG", taxYear: 2026, asOf: ASOF, entries, accounts: [acct], profile: { incomeScope: { allIncomeInLinkedAccounts: true } }, ...over });
 
 describe("adversary day 1: tax", () => {
   it("NaN staleAfterHours must not silently disable the freshness check", () => {
@@ -39,7 +39,6 @@ describe("adversary day 1: tax", () => {
   });
   it("offset-less timestamp must not be interpreted in machine-local time", () => {
     const a = estimate(inp([inc("1", { occurredAt: "2025-12-31T23:30:00" })]));
-    // 23:30 on Dec 31 is outside 2026 in any zone at or west of Lagos, so gross must be 0
-    if (a.status === "ok") expect(a.grossIncomeNgn).toBe("0.00");
+    expect(a.status).toBe("refused");
   });
 });
