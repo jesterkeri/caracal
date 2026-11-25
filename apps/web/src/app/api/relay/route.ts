@@ -43,11 +43,22 @@ export async function POST(request: Request) {
   }
 
   const upstream = process.env.RELAYER_UPSTREAM ?? DEFAULT_UPSTREAM;
-  const res = await fetch(upstream, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(upstream, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (e) {
+    const cause = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e);
+    console.error("relay upstream unreachable:", cause);
+    return Response.json(
+      { success: false, error: "The fee relayer could not be reached. Try again." },
+      { status: 502 },
+    );
+  }
   const out = await res.text();
   return new Response(out, {
     status: res.status,

@@ -31,11 +31,11 @@ Caracal never holds user funds or keys. It is an estimate tool, not a tax advise
 
 | Step | Stellar feature | Status |
 |---|---|---|
-| Sign-up | Passkey smart wallet: a Soroban smart account via `smart-account-kit` and OpenZeppelin smart accounts | building |
-| No XLM needed | Fee sponsorship through the OpenZeppelin Channels relayer (fee bump), called only from our server | building |
+| Sign-up | Passkey smart wallet: a Soroban smart account via `smart-account-kit` and OpenZeppelin smart accounts | **live** (spike page `/wallet`), e.g. [wallet](https://stellar.expert/explorer/testnet/contract/CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX) |
+| No XLM needed | Fee sponsorship: our `/api/relay` server route forwards to SDF's testnet relayer proxy, which fee-bumps through OpenZeppelin Channels | **live**: [deploy tx](https://stellar.expert/explorer/testnet/tx/77975e3e1a03c93603a03515566dc984eb22668336b7a60a6916163bcd9cf727), fee paid by the sponsor |
 | Client pays | Direct USDC `deposit` into the split contract; for XLM, a classic `path_payment_strict_receive` on the Stellar DEX first (XLM in, exact USDC out) | planned |
-| Payment arrives | Soroban split contract, one per user, emitting a `split` event per payment | building |
-| Invoice match | Invoice reference passed into the contract and emitted in its event | building |
+| Payment arrives | Soroban split contract, one per user, emitting a `split` event per payment | **live** on testnet: [contract](https://stellar.expert/explorer/testnet/contract/CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2), [deposit](https://stellar.expert/explorer/testnet/tx/e6b5ba593ea00e1c976f4a682236fb74db3467d982b845a05436aa68f0c0926d) |
+| Invoice match | Invoice reference passed into the contract and emitted in its event; each invoice can be paid once | **live** in the contract; app side planned |
 | Ledger | Horizon payments and Soroban events indexed into Postgres; the tax engine reads this | planned |
 | Cash-out | SEP-24 interactive withdraw with SEP-45 (or SEP-10) auth on the SDF test anchor | planned |
 | Naira value | Oracle-shaped rate interface. Reflector has no NGN feed, so the CBN official rate is used and labelled | planned |
