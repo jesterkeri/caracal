@@ -74,6 +74,17 @@
     "summary": "Virtual assets are valued at the official naira rate for each transaction date.",
     "basis": "analogy",
     "rateDateRule": "same_day",
+    "statutoryProviders": [
+      {
+        "id": "CBN",
+        "name": "Central Bank of Nigeria",
+        "urlPrefix": "https://www.cbn.gov.ng/"
+      }
+    ],
+    "assetBase": {
+      "USDC": "USD"
+    },
+    "assetBaseNote": "USDC income is valued at the CBN official USD/NGN rate on the assumption that 1 USDC = 1 USD (Circle redeems USDC 1:1 for USD). This is an assumption Caracal makes, not a rule in the law.",
     "note": "The circular states the conversion rule explicitly for gains (CBN/NAFEM rate on the disposal date, per PwC) and for employment income (USD fair value on the payment date, per KPMG), but not for professional fees. Caracal applies the official rate on the receipt date by analogy."
   },
   "stampDuty": {

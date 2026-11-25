@@ -1,8 +1,11 @@
 export type FxQuote = {
-  ngnPerUnit: string;
-  source: string;
-  sourceUrl?: string;
+  provider: string;
+  base: string;
+  quote: "NGN";
   date: string; // YYYY-MM-DD
+  ngnPerUnit: string;
+  sourceUrl: string;
+  retrievedAt: string; // instant with offset
 };
 
 export type LedgerEntry = {
@@ -64,7 +67,15 @@ export type Rules = {
   };
   rentRelief: RuleSource & { rate: string; capNgn: string };
   virtualAssetIncome: RuleSource & { summary: string };
-  valuation: RuleSource & { summary: string; basis: string; note: string; rateDateRule: string };
+  valuation: RuleSource & {
+    summary: string;
+    basis: string;
+    note: string;
+    rateDateRule: string;
+    statutoryProviders: { id: string; name: string; urlPrefix: string }[];
+    assetBase: Record<string, string>;
+    assetBaseNote: string;
+  };
   stampDuty: RuleSource & { rate: string; summary: string; additionalUrls: string[] };
   notModelled: { id: string; title: string; reason: string }[];
 };
@@ -88,10 +99,14 @@ export type IncomeLine = {
   amount: string;
   asset: string;
   ngnPerUnit: string;
-  rateSource: string;
+  rateProvider: string;
+  ratePair: string;
+  rateDate: string;
+  rateSourceUrl: string;
   ruleId: string;
   ngnValue: string;
   economicNgnValue?: string;
+  economicQuote?: { provider: string; pair: string; date: string; sourceUrl: string };
   fxGapPct?: string;
 };
 
@@ -111,7 +126,7 @@ export type BandResult = {
 };
 
 export type Informational = {
-  kind: "stamp_duty" | "not_modelled" | "declared_income";
+  kind: "stamp_duty" | "not_modelled" | "declared_income" | "fx_gap_omitted";
   id: string;
   message: string;
 };

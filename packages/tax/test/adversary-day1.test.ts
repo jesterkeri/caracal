@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cbn, mkt } from "./helpers";
 import { estimate } from "../src";
 import type { Account, EstimateInput, LedgerEntry } from "../src";
 
@@ -8,7 +9,7 @@ function inc(id: string, over: Partial<LedgerEntry> = {}): LedgerEntry {
   return {
     id, accountId: "a1", txHash: `tx-${id}`, occurredAt: "2026-05-10T10:00:00Z", direction: "in", kind: "income",
     asset: "USDC", amount: "100",
-    fx: { statutory: { ngnPerUnit: "1500", source: "CBN", date: "2026-05-10" }, economic: null }, ...over,
+    fx: { statutory: cbn("1500", "2026-05-10"), economic: null }, ...over,
   };
 }
 const inp = (entries: LedgerEntry[], over: Partial<EstimateInput> = {}): EstimateInput =>
