@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { checkPayload } from "../src/lib/relay/policy";
 import { SPLIT, TOKENS } from "../src/lib/stellar/config";
+import { lookupWasm } from "./relay-fixtures";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
 // Soroswap testnet router: a real contract, not on the allowlist.
 const OUTSIDER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
-const lookup = async () => null;
+// Fixture fix (2026-11-25): WALLET must be a passkey wallet for the baseline to be a real Caracal action.
+const lookup = lookupWasm;
 
 const preimage = () =>
   xdr.ContractIdPreimage.contractIdPreimageFromAddress(

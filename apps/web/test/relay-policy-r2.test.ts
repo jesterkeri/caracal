@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { checkPayload, clientKey } from "../src/lib/relay/policy";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
+import { argsFor, ctorFor, lookupInstance } from "./relay-fixtures";
 
 // Real testnet ids.
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
@@ -18,18 +19,18 @@ const chain: Record<string, string> = {
   [OUTSIDER]: OUTSIDER_HASH,
 };
 const lookup = async (id: string) => chain[id] ?? null;
-const check = (body: unknown) => checkPayload(body, CARACAL_POLICY, lookup);
+const check = (body: unknown) => checkPayload(body, CARACAL_POLICY, lookup, lookupInstance);
 
-const callArgs = (contract: string, fn: string, args: xdr.ScVal[] = []) =>
+const callArgs = (contract: string, fn: string, args: xdr.ScVal[] = argsFor(fn)) =>
   new xdr.InvokeContractArgs({
     contractAddress: Address.fromString(contract).toScAddress(),
     functionName: fn,
     args,
   });
-const invoke = (contract: string, fn: string, args: xdr.ScVal[] = []) =>
+const invoke = (contract: string, fn: string, args: xdr.ScVal[] = argsFor(fn)) =>
   xdr.HostFunction.hostFunctionTypeInvokeContract(callArgs(contract, fn, args)).toXDR("base64");
 
-const executeArgs = (target: string, fn: string, inner: xdr.ScVal[] = []) => [
+const executeArgs = (target: string, fn: string, inner: xdr.ScVal[] = argsFor(fn)) => [
   nativeToScVal(Address.fromString(target)),
   xdr.ScVal.scvSymbol(fn),
   xdr.ScVal.scvVec(inner),
@@ -51,13 +52,13 @@ function inv(n: Node): xdr.SorobanAuthorizedInvocation {
           new xdr.CreateContractArgs({ contractIdPreimage: preimage, executable: exe }),
         )
       : xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractV2HostFn(
-          new xdr.CreateContractArgsV2({ contractIdPreimage: preimage, executable: exe, constructorArgs: [] }),
+          new xdr.CreateContractArgsV2({ contractIdPreimage: preimage, executable: exe, constructorArgs: ctorFor(n.deploy) }),
         );
     return new xdr.SorobanAuthorizedInvocation({ function: fn, subInvocations: [] });
   }
   return new xdr.SorobanAuthorizedInvocation({
     function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(
-      callArgs(n.contract, n.fn, n.args ?? []),
+      callArgs(n.contract, n.fn, n.args ?? argsFor(n.fn)),
     ),
     subInvocations: (n.subs ?? []).map(inv),
   });

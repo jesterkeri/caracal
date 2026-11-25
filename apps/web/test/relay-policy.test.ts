@@ -4,6 +4,7 @@ import { checkPayload, readBounded, WindowLimiter, clientKey } from "../src/lib/
 import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { rpcWasmLookup } from "../src/lib/relay/wasm-lookup";
 import { NETWORK, SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
+import { argsFor, ctorFor, lookupInstance } from "./relay-fixtures";
 
 // Real testnet ids (README / contracts/split/README.md).
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
@@ -25,14 +26,13 @@ function invokeArgs(contract: string, fn: string) {
   return new xdr.InvokeContractArgs({
     contractAddress: Address.fromString(contract).toScAddress(),
     functionName: fn,
-    args: [],
+    args: argsFor(fn),
   });
 }
 const invoke = (contract: string, fn: string) =>
   xdr.HostFunction.hostFunctionTypeInvokeContract(invokeArgs(contract, fn)).toXDR("base64");
 
-const create = (wasmHex: string) =>
-  xdr.HostFunction.hostFunctionTypeCreateContractV2(
+const createArgs = (wasmHex: string) =>
     new xdr.CreateContractArgsV2({
       contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
         new xdr.ContractIdPreimageFromAddress({
@@ -41,9 +41,26 @@ const create = (wasmHex: string) =>
         }),
       ),
       executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(wasmHex, "hex")),
-      constructorArgs: [],
+      constructorArgs: ctorFor(wasmHex),
+    });
+const create = (wasmHex: string) =>
+  xdr.HostFunction.hostFunctionTypeCreateContractV2(createArgs(wasmHex)).toXDR("base64");
+/** The wallet authorising exactly this deployment. */
+const createAuth = (wasmHex: string) =>
+  new xdr.SorobanAuthorizationEntry({
+    credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+      new xdr.SorobanAddressCredentials({
+        address: Address.fromString(WALLET).toScAddress(),
+        nonce: xdr.Int64.fromString("8"),
+        signatureExpirationLedger: 1000,
+        signature: xdr.ScVal.scvVoid(),
+      }),
+    ),
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({
+      function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeCreateContractV2HostFn(createArgs(wasmHex)),
+      subInvocations: [],
     }),
-  ).toXDR("base64");
+  }).toXDR("base64");
 
 function addressAuth(contract = SPLIT_ID, fn = "deposit") {
   return new xdr.SorobanAuthorizationEntry({
@@ -75,7 +92,7 @@ function sourceAuth() {
   }).toXDR("base64");
 }
 
-const check = (body: unknown) => checkPayload(body, POLICY, lookup);
+const check = (body: unknown) => checkPayload(body, POLICY, lookup, lookupInstance);
 
 describe("relay sponsorship policy", () => {
   it("accepts a deposit into a Caracal split contract", async () => {
@@ -85,7 +102,7 @@ describe("relay sponsorship policy", () => {
 
   it("accepts a passkey account deploy and a split deploy", async () => {
     for (const h of [SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash]) {
-      const v = await check({ func: create(h), auth: [addressAuth()] });
+      const v = await check({ func: create(h), auth: [createAuth(h)] });
       expect(v.ok).toBe(true);
     }
   });
@@ -109,7 +126,7 @@ describe("relay sponsorship policy", () => {
   });
 
   it("refuses deploying wasm that is not on the allowlist", async () => {
-    const v = await check({ func: create(OLD_SPLIT_HASH), auth: [addressAuth()] });
+    const v = await check({ func: create(OLD_SPLIT_HASH), auth: [createAuth(OLD_SPLIT_HASH)] });
     expect(v).toMatchObject({ ok: false, status: 403 });
   });
 

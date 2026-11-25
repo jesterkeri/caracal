@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { checkPayload, readBounded, WindowLimiter, clientKey } from "../src/lib/relay/policy";
 import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
+import { argsFor } from "./relay-fixtures";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
 const POLICY = CARACAL_POLICY;
 const lookup = async (id: string) => (id === WALLET ? SMART_ACCOUNT.accountWasmHash : null);
-const args = (c: string, fn: string) => new xdr.InvokeContractArgs({ contractAddress: Address.fromString(c).toScAddress(), functionName: fn, args: [] });
+const args = (c: string, fn: string) => new xdr.InvokeContractArgs({ contractAddress: Address.fromString(c).toScAddress(), functionName: fn, args: argsFor(fn) });
 const invoke = (c: string, fn: string) => xdr.HostFunction.hostFunctionTypeInvokeContract(args(c, fn)).toXDR();
 const mkAuth = (sub = false) => {
   const inner = new xdr.SorobanAuthorizedInvocation({ function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(args(TOKENS.xlm, "transfer")), subInvocations: [] });

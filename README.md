@@ -64,7 +64,7 @@ Details and sources for every choice are in [docs/research/verify-2026-11-25.md]
 | Open or cancel an invoice | The user (owner) only |
 | Pay an invoice into the contract | Anyone, with their own funds and their own signature, for exactly the invoiced amount |
 | Upgrade or pause the contract | Nobody: there is no admin and no upgrade function |
-| Pay network fees | The fee sponsor (OpenZeppelin Channels). It can pay fees and nothing else. Caracal's `/api/relay` only passes on wallet deploys, split contract calls and USDC transfers, each signed by the user's own address, with rate limits |
+| Pay network fees | The fee sponsor (OpenZeppelin Channels). It can pay fees and nothing else. Caracal's `/api/relay` only passes on passkey wallet deploys, split contract calls and USDC transfers, where every payer, owner and signer is a Caracal passkey wallet and every contract that runs is Caracal's (split over USDC, official WebAuthn verifier). Per-instance rate limits |
 | Read the ledger | Caracal's indexer, rebuilt from the public chain at any time |
 | Hold funds during a cash-out | The anchor, for the length of its own withdrawal process |
 

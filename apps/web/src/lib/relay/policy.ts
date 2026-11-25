@@ -23,19 +23,60 @@ export const MAX_BODY_BYTES = 64 * 1024;
 const MAX_AUTH_ENTRIES = 8;
 const MAX_INVOCATION_NODES = 32;
 
+/** What a rule can ask about the chain. */
+export type Ctx = {
+  /** True when `address` is a contract running a wasm in `policy.executors` (a passkey wallet). */
+  isWallet(address: string): Promise<boolean>;
+};
+/** Returns a refusal reason, or null when the arguments are acceptable. */
+export type ArgsRule = (args: xdr.ScVal[], ctx: Ctx) => Promise<string | null>;
+/** Checks a deployed contract's instance storage. Returns a refusal reason or null. */
+export type StorageRule = (storage: xdr.ScMapEntry[], ctx: Ctx) => Promise<string | null>;
+
 export type Policy = {
   /** wasm hash (lower-case hex) -> functions Caracal sponsors on contracts running it. */
   wasmFunctions: ReadonlyMap<string, ReadonlySet<string>>;
-  /** wasm hashes Caracal sponsors deploying. */
-  deployable: ReadonlySet<string>;
-  /** wasm hashes whose `execute(target, fn, args)` forwards a call that is then checked. */
+  /** wasm hashes Caracal sponsors deploying, each with a check of its constructor arguments. */
+  deployable: ReadonlyMap<string, ArgsRule>;
+  /** wasm hashes a classic (G) account may authorise deploying: the wallet kit's shared deployer. */
+  deployerAuth: ReadonlySet<string>;
+  /** wasm hashes whose `execute(target, fn, args)` forwards a call that is then checked. These are the wallets. */
   executors: ReadonlySet<string>;
   /** Stellar asset contracts -> functions sponsored on each. */
   sacFunctions: ReadonlyMap<string, ReadonlySet<string>>;
+  /** `${contractId or wasm hash}:${fn}` -> check of that call's arguments. */
+  callRules: ReadonlyMap<string, ArgsRule>;
+  /** wasm hash -> check of a deployed contract's instance storage before any call to it. */
+  storageRules: ReadonlyMap<string, StorageRule>;
 };
 
 /** Returns the wasm hash (lower-case hex) of a deployed contract, or null if it has none. */
 export type WasmLookup = (contractId: string) => Promise<string | null>;
+/** Returns a deployed contract's instance storage, or null if it has none. */
+export type InstanceLookup = (contractId: string) => Promise<xdr.ScMapEntry[] | null>;
+
+/** The address inside an ScVal, or null when it is not an address. */
+export function scAddress(v: xdr.ScVal | undefined): string | null {
+  if (!v || v.switch().name !== "scvAddress") return null;
+  try {
+    return Address.fromScAddress(v.address()).toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Instance storage value under a contracttype enum key such as `Token` (stored as Vec[Symbol("Token")]). */
+export function storageGet(storage: xdr.ScMapEntry[], variant: string): xdr.ScVal | undefined {
+  for (const e of storage) {
+    const k = e.key();
+    if (k.switch().name !== "scvVec") continue;
+    const parts = k.vec() ?? [];
+    if (parts.length === 1 && parts[0]!.switch().name === "scvSymbol" && parts[0]!.sym().toString() === variant) {
+      return e.val();
+    }
+  }
+  return undefined;
+}
 
 export type Verdict =
   | { ok: true; body: { func: string; auth: string[] } }
@@ -60,26 +101,32 @@ function strkey(a: xdr.ScAddress): string {
   }
 }
 
-function checkDeploy(exe: xdr.ContractExecutable, policy: Policy) {
+async function checkDeploy(c: xdr.CreateContractArgsV2, policy: Policy, ctx: Ctx) {
+  const exe = c.executable();
   if (exe.switch().name !== "contractExecutableWasm") {
     throw new Denied("Only wasm contracts on the allowlist can be deployed");
   }
-  if (!policy.deployable.has(exe.wasmHash().toString("hex"))) {
-    throw new Denied("This contract code is not on the sponsorship allowlist");
-  }
+  const rule = policy.deployable.get(exe.wasmHash().toString("hex"));
+  if (!rule) throw new Denied("This contract code is not on the sponsorship allowlist");
+  const bad = await rule(c.constructorArgs(), ctx);
+  if (bad) throw new Denied(bad);
 }
 
-async function checkCall(
-  target: string,
-  fn: string,
-  args: xdr.ScVal[],
-  policy: Policy,
-  lookupWasm: WasmLookup,
-  viaExecute: boolean,
-): Promise<void> {
+type Deps = { policy: Policy; lookupWasm: WasmLookup; lookupInstance: InstanceLookup; ctx: Ctx };
+
+async function applyCallRule(key: string, args: xdr.ScVal[], d: Deps) {
+  const rule = d.policy.callRules.get(key);
+  if (!rule) return;
+  const bad = await rule(args, d.ctx);
+  if (bad) throw new Denied(bad);
+}
+
+async function checkCall(target: string, fn: string, args: xdr.ScVal[], d: Deps, viaExecute: boolean): Promise<void> {
+  const { policy, lookupWasm } = d;
   const sacFns = policy.sacFunctions.get(target);
   if (sacFns) {
     if (!sacFns.has(fn)) throw new Denied(`${fn} is not sponsored on this token`);
+    await applyCallRule(`${target}:${fn}`, args, d);
     return;
   }
   if (!target.startsWith("C")) throw new Denied("Calls must target a contract");
@@ -93,6 +140,19 @@ async function checkCall(
   if (!fns) throw new Denied("This contract is not on the sponsorship allowlist");
   if (!fns.has(fn)) throw new Denied(`${fn} is not sponsored on this contract`);
 
+  const storageRule = policy.storageRules.get(hash!);
+  if (storageRule) {
+    let storage: xdr.ScMapEntry[] | null;
+    try {
+      storage = await d.lookupInstance(target);
+    } catch {
+      throw new Denied("Could not check the target contract. Try again.", 503);
+    }
+    const bad = await storageRule(storage ?? [], d.ctx);
+    if (bad) throw new Denied(bad);
+  }
+  await applyCallRule(`${hash}:${fn}`, args, d);
+
   if (fn === "execute" && policy.executors.has(hash!)) {
     if (viaExecute) throw new Denied("Nested execute is not sponsored");
     const [t, f, a] = args;
@@ -101,14 +161,13 @@ async function checkCall(
     }
     const innerArgs = a?.switch().name === "scvVec" ? (a.vec() ?? []) : null;
     if (innerArgs === null) throw new Denied("execute args must be a vector", 400);
-    await checkCall(strkey(t.address()), f.sym().toString(), innerArgs, policy, lookupWasm, true);
+    await checkCall(strkey(t.address()), f.sym().toString(), innerArgs, d, true);
   }
 }
 
 async function checkInvocationTree(
   root: xdr.SorobanAuthorizedInvocation,
-  policy: Policy,
-  lookupWasm: WasmLookup,
+  d: Deps,
   budget: { nodes: number },
 ): Promise<void> {
   const stack = [root];
@@ -119,18 +178,11 @@ async function checkInvocationTree(
     switch (f.switch().name) {
       case "sorobanAuthorizedFunctionTypeContractFn": {
         const c = f.contractFn();
-        await checkCall(
-          strkey(c.contractAddress()),
-          c.functionName().toString(),
-          c.args(),
-          policy,
-          lookupWasm,
-          false,
-        );
+        await checkCall(strkey(c.contractAddress()), c.functionName().toString(), c.args(), d, false);
         break;
       }
       case "sorobanAuthorizedFunctionTypeCreateContractV2HostFn":
-        checkDeploy(f.createContractV2HostFn().executable(), policy);
+        await checkDeploy(f.createContractV2HostFn(), d.policy, d.ctx);
         break;
       default:
         throw new Denied("This authorization type is not sponsored");
@@ -143,7 +195,23 @@ export async function checkPayload(
   body: unknown,
   policy: Policy,
   lookupWasm: WasmLookup,
+  lookupInstance: InstanceLookup = async () => {
+    throw new Error("no instance lookup");
+  },
 ): Promise<Verdict> {
+  const ctx: Ctx = {
+    async isWallet(address) {
+      if (!address.startsWith("C")) return false;
+      let h: string | null;
+      try {
+        h = await lookupWasm(address);
+      } catch {
+        throw new Denied("Could not check a wallet. Try again.", 503);
+      }
+      return h !== null && policy.executors.has(h);
+    },
+  };
+  const d: Deps = { policy, lookupWasm, lookupInstance, ctx };
   try {
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       throw new Denied("Expected { func, auth }", 400);
@@ -171,6 +239,24 @@ export async function checkPayload(
       entries.push(entry);
     }
 
+    // Who signs: a passkey wallet, or (only to deploy a wallet) the kit's shared deployer.
+    for (const entry of entries) {
+      const cr = entry.credentials();
+      const signer = strkey((cr.switch().name === "sorobanCredentialsAddressV2" ? cr.addressV2() : cr.address()).address());
+      if (signer.startsWith("C")) {
+        if (!(await ctx.isWallet(signer))) throw new Denied("Only Caracal passkey wallets can sign sponsored calls");
+        continue;
+      }
+      const root = entry.rootInvocation();
+      const rf = root.function();
+      const deploysWallet =
+        rf.switch().name === "sorobanAuthorizedFunctionTypeCreateContractV2HostFn" &&
+        rf.createContractV2HostFn().executable().switch().name === "contractExecutableWasm" &&
+        policy.deployerAuth.has(rf.createContractV2HostFn().executable().wasmHash().toString("hex")) &&
+        root.subInvocations().length === 0;
+      if (!deploysWallet) throw new Denied("A classic account may only sign a wallet deployment");
+    }
+
     let fn: xdr.HostFunction;
     try {
       fn = xdr.HostFunction.fromXDR(o.func, "base64");
@@ -178,19 +264,25 @@ export async function checkPayload(
       throw new Denied("func is not valid XDR", 400);
     }
     switch (fn.switch().name) {
-      case "hostFunctionTypeCreateContractV2":
-        checkDeploy(fn.createContractV2().executable(), policy);
+      case "hostFunctionTypeCreateContractV2": {
+        const c = fn.createContractV2();
+        await checkDeploy(c, policy, ctx);
+        // The deployer must explicitly authorise exactly this deployment, so the
+        // relayer's own account is never the implicit deployer.
+        const want = c.toXDR("base64");
+        const authorised = entries.some((e) => {
+          const rf = e.rootInvocation().function();
+          return (
+            rf.switch().name === "sorobanAuthorizedFunctionTypeCreateContractV2HostFn" &&
+            rf.createContractV2HostFn().toXDR("base64") === want
+          );
+        });
+        if (!authorised) throw new Denied("The deployment is not authorised by any auth entry");
         break;
+      }
       case "hostFunctionTypeInvokeContract": {
         const c = fn.invokeContract();
-        await checkCall(
-          strkey(c.contractAddress()),
-          c.functionName().toString(),
-          c.args(),
-          policy,
-          lookupWasm,
-          false,
-        );
+        await checkCall(strkey(c.contractAddress()), c.functionName().toString(), c.args(), d, false);
         break;
       }
       default:
@@ -198,7 +290,7 @@ export async function checkPayload(
     }
 
     const budget = { nodes: 0 };
-    for (const e of entries) await checkInvocationTree(e.rootInvocation(), policy, lookupWasm, budget);
+    for (const e of entries) await checkInvocationTree(e.rootInvocation(), d, budget);
 
     return { ok: true, body: { func: o.func, auth: auth as string[] } };
   } catch (e) {

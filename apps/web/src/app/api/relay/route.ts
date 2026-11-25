@@ -20,11 +20,11 @@
 import { NETWORK } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
-import { rpcWasmLookup } from "@/lib/relay/wasm-lookup";
+import { rpcContractLookup } from "@/lib/relay/wasm-lookup";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
 
-const lookupWasm = rpcWasmLookup(NETWORK.rpcUrl);
+const chain = rpcContractLookup(NETWORK.rpcUrl);
 const perIp = new WindowLimiter(10, 60_000);
 const perInstance = new WindowLimiter(120, 60_000);
 
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     return fail("Body is not JSON", 400);
   }
 
-  const verdict = await checkPayload(body, CARACAL_POLICY, lookupWasm);
+  const verdict = await checkPayload(body, CARACAL_POLICY, chain.wasm, chain.instance);
   if (!verdict.ok) return fail(verdict.error, verdict.status);
 
   const upstream = process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM;
