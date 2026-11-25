@@ -36,12 +36,16 @@ fn r(env: &Env, s: &str) -> Bytes {
 }
 
 fn dep(s: &Setup, from: &Address, amt: i128) {
+    dep_ref(s, from, amt, "INV-1");
+}
+
+fn dep_ref(s: &Setup, from: &Address, amt: i128, rf: &str) {
     s.env.mock_auths(&[MockAuth {
         address: from,
         invoke: &MockAuthInvoke {
             contract: &s.id,
             fn_name: "deposit",
-            args: (from, amt, r(&s.env, "INV-1")).into_val(&s.env),
+            args: (from, amt, r(&s.env, rf)).into_val(&s.env),
             sub_invokes: &[MockAuthInvoke {
                 contract: &s.token,
                 fn_name: "transfer",
@@ -50,7 +54,7 @@ fn dep(s: &Setup, from: &Address, amt: i128) {
             }],
         },
     }]);
-    s.client.deposit(from, &amt, &r(&s.env, "INV-1"));
+    s.client.deposit(from, &amt, &r(&s.env, rf));
 }
 
 macro_rules! owner_auth {
@@ -109,7 +113,7 @@ fn set_split_affects_future_deposits_only() {
     dep(&s, &payer, 1_000);
     owner_auth!(s, "set_split", (0u32, 0u32));
     s.client.set_split(&0, &0);
-    dep(&s, &payer, 1_000);
+    dep_ref(&s, &payer, 1_000, "INV-2");
     assert_eq!(s.client.balances(), (100, 150, 1_750));
 }
 
@@ -196,11 +200,14 @@ fn deposit_emits_one_split_event() {
     let expected = Split {
         invoice_ref: r(&s.env, "INV-1"),
         from: payer.clone(),
+        token: s.token.clone(),
+        owner: s.owner.clone(),
         amount: 9_999_999,
         tax: 999_999,
         goal: 1_499_999,
         spend: 7_500_001,
     };
+    let _ = &expected;
     let evs = s.env.events().all().filter_by_contract(&s.id);
     assert_eq!(evs.events().len(), 1);
     assert_eq!(evs, std::vec![expected.to_xdr(&s.env, &s.id)]);
@@ -232,4 +239,100 @@ fn constructor_rejects_10001() {
 #[should_panic(expected = "Error(Contract, #1)")]
 fn constructor_rejects_overflowing_bps() {
     setup(u32::MAX, u32::MAX);
+}
+
+#[test]
+fn duplicate_invoice_rejected_and_is_paid() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 1_000);
+    assert!(!s.client.is_paid(&r(&s.env, "INV-1")));
+    dep(&s, &payer, 100);
+    assert!(s.client.is_paid(&r(&s.env, "INV-1")));
+    assert!(!s.client.is_paid(&r(&s.env, "INV-2")));
+    s.env.mock_all_auths();
+    assert_eq!(
+        s.client.try_deposit(&payer, &100, &r(&s.env, "INV-1")),
+        Err(Ok(Error::InvoiceAlreadyPaid))
+    );
+    s.client.deposit(&payer, &100, &r(&s.env, "INV-2"));
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&s.id), 200);
+}
+
+#[test]
+fn huge_amounts_checked() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    let big: i128 = i128::MAX / 10_000;
+    fund(&s, &payer, big);
+    s.env.mock_all_auths();
+    s.client.deposit(&payer, &big, &r(&s.env, "BIG"));
+    let (t, g, sp) = s.client.balances();
+    assert_eq!(t + g + sp, big);
+
+    // amount * bps overflows i128: clean error, no panic, no state change
+    let over: i128 = i128::MAX / 1_000 + 1;
+    assert_eq!(
+        s.client.try_deposit(&payer, &over, &r(&s.env, "OVER")),
+        Err(Ok(Error::Overflow))
+    );
+    assert!(!s.client.is_paid(&r(&s.env, "OVER")));
+    assert_eq!(s.client.balances(), (t, g, sp));
+}
+
+#[test]
+fn reconcile_credits_unsolicited_transfer_to_spend() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 1_000);
+    dep(&s, &payer, 1_000);
+    owner_auth!(s, "reconcile", ());
+    assert_eq!(s.client.reconcile(), 0);
+
+    let stranger = Address::generate(&s.env);
+    fund(&s, &stranger, 77);
+    s.env.mock_all_auths();
+    TokenClient::new(&s.env, &s.token).transfer(&stranger, &s.id, &77);
+    assert_eq!(s.client.balances(), (100, 150, 750));
+
+    // non-owner cannot reconcile
+    s.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke { contract: &s.id, fn_name: "reconcile", args: ().into_val(&s.env), sub_invokes: &[] },
+    }]);
+    assert!(s.client.try_reconcile().is_err());
+
+    owner_auth!(s, "reconcile", ());
+    assert_eq!(s.client.reconcile(), 77);
+    let evs = s.env.events().all().filter_by_contract(&s.id);
+    assert_eq!(s.client.balances(), (100, 150, 827));
+    assert_eq!(evs, std::vec![Reconciled { amount: 77 }.to_xdr(&s.env, &s.id)]);
+    owner_auth!(s, "reconcile", ());
+    assert_eq!(s.client.reconcile(), 0);
+}
+
+#[test]
+fn failed_transfer_reverts_withdraw() {
+    use soroban_sdk::testutils::IssuerFlags;
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+    sac.issuer().set_flag(IssuerFlags::RequiredFlag);
+    let token = sac.address();
+    let id = env.register(SplitContract, (&owner, &token, 1000u32, 1500u32));
+    let client = SplitContractClient::new(&env, &id);
+    let admin = StellarAssetClient::new(&env, &token);
+    let payer = Address::generate(&env);
+    admin.set_authorized(&payer, &true);
+    admin.set_authorized(&id, &true);
+    admin.mint(&payer, &1_000);
+    client.deposit(&payer, &1_000, &Bytes::from_slice(&env, b"INV-1"));
+    let dest = Address::generate(&env);
+    admin.set_authorized(&dest, &true);
+    admin.set_authorized(&id, &false); // contract frozen: token transfer will fail
+    assert!(client.try_withdraw(&Pot::Spend, &dest, &100).is_err());
+    assert_eq!(client.balances(), (100, 150, 750));
+    assert_eq!(TokenClient::new(&env, &token).balance(&dest), 0);
 }
