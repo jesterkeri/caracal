@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cbn, mkt } from "./helpers";
 import { estimate } from "../src";
 import type { Account, EstimateInput, LedgerEntry } from "../src";
 
@@ -6,7 +7,7 @@ const ASOF = "2026-12-01T12:00:00Z";
 const acct: Account = { id: "a1", label: "Main", lastSyncedAt: "2026-12-01T06:00:00Z", coverageFrom: "2025-01-01T00:00:00Z", gaps: [] };
 function inc(over: Partial<LedgerEntry> = {}, fxdate = "2026-05-10"): LedgerEntry {
   return { id: "1", accountId: "a1", txHash: "t", occurredAt: "2026-05-10T10:00:00Z", direction: "in", kind: "income", asset: "USDC", amount: "10",
-    fx: { statutory: { ngnPerUnit: "1500", source: "CBN", date: fxdate }, economic: null }, ...over };
+    fx: { statutory: cbn("1500", fxdate), economic: null }, ...over };
 }
 function inp(entries: LedgerEntry[], over: Partial<EstimateInput> = {}, a: Account = acct): EstimateInput {
   return { country: "NG", taxYear: 2026, asOf: ASOF, entries, accounts: [a], profile: { incomeScope: { allIncomeInLinkedAccounts: true } }, ...over } as EstimateInput;
@@ -59,10 +60,10 @@ describe("adv r1 tax", () => {
   });
   it("quote validation", () => {
     for (const d of ["2026-5-10", "2026-05-10T00:00:00Z", "", "2026-02-30", " 2026-05-10"]) expect(refused(inp([inc({}, d)]))).toBe(true);
-    const e = inc(); e.fx.statutory!.source = "  "; expect(refused(inp([e]))).toBe(true);
-    const f = inc(); f.fx.economic = { ngnPerUnit: "abc", source: "x", date: "2026-05-10" }; expect(refused(inp([f]))).toBe(true);
-    const g = inc(); g.fx.economic = { ngnPerUnit: "1600", source: "", date: "2026-05-10" }; expect(refused(inp([g]))).toBe(true);
-    const h = inc(); h.fx.economic = { ngnPerUnit: "1600", source: "x", date: "nope" }; expect(refused(inp([h]))).toBe(true);
+    const e = inc(); e.fx.statutory!.provider = "  "; expect(refused(inp([e]))).toBe(true);
+    const f = inc(); f.fx.economic = mkt("abc", "2026-05-10"); expect(refused(inp([f]))).toBe(true);
+    const g = inc(); g.fx.economic = mkt("1600", "2026-05-10", { provider: "" }); expect(refused(inp([g]))).toBe(true);
+    const h = inc(); h.fx.economic = mkt("1600", "nope"); expect(refused(inp([h]))).toBe(true);
   });
   it("income scope", () => {
     const P = (p: unknown) => inp([inc()], { profile: p as never });

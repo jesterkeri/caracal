@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { cbn, mkt } from "./helpers";
 import { estimate, getRules, stampDutyNotice } from "../src";
 import type { Account, EstimateInput, LedgerEntry } from "../src";
 
@@ -17,7 +18,7 @@ function income(id: string, amount: string, rate: string | null, over: Partial<L
     asset: "USDC",
     amount,
     fx: {
-      statutory: rate === null ? null : { ngnPerUnit: rate, source: "CBN", date: "2026-05-10" },
+      statutory: rate === null ? null : cbn(rate, "2026-05-10"),
       economic: null,
     },
     ...over,
@@ -128,7 +129,7 @@ describe("what counts as income", () => {
   });
   it("uses the Lagos calendar year at the edges", () => {
     // 2025-12-31 23:30 UTC is already 2026-01-01 in Lagos.
-    const r = ok(input([income("1", "100", "1", { occurredAt: "2025-12-31T23:30:00Z", fx: { statutory: { ngnPerUnit: "1", source: "CBN", date: "2026-01-01" }, economic: null } })]));
+    const r = ok(input([income("1", "100", "1", { occurredAt: "2025-12-31T23:30:00Z", fx: { statutory: cbn("1", "2026-01-01"), economic: null } })]));
     expect(r.incomeLines).toHaveLength(1);
   });
   it("ignores outgoing income-kind entries", () => {
@@ -156,14 +157,14 @@ describe("exact money", () => {
 describe("fx gap", () => {
   it("reports economic value and gap percent", () => {
     const e = income("1", "500", "1532.45");
-    e.fx.economic = { ngnPerUnit: "1600", source: "market", date: "2026-05-10" };
+    e.fx.economic = mkt("1600", "2026-05-10");
     const l = ok(input([e])).incomeLines[0]!;
     expect(l.economicNgnValue).toBe("800000.00");
     expect(l.fxGapPct).toBe("4.41");
   });
   it("is negative when the market is below the official rate", () => {
     const e = income("1", "100", "1500");
-    e.fx.economic = { ngnPerUnit: "1425", source: "market", date: "2026-05-10" };
+    e.fx.economic = mkt("1425", "2026-05-10");
     expect(ok(input([e])).incomeLines[0]!.fxGapPct).toBe("-5.00");
   });
   it("is omitted without an economic quote", () => {
@@ -201,7 +202,7 @@ describe("output labelling", () => {
 });
 
 describe("fx quote validation", () => {
-  const q = (over: object = {}) => ({ ngnPerUnit: "1500", source: "CBN", date: "2026-05-10", ...over });
+  const q = (over: object = {}) => cbn("1500", "2026-05-10", over);
   const withQ = (quote: object, entryOver: Partial<LedgerEntry> = {}) =>
     income("1", "100", "1500", { fx: { statutory: quote as never, economic: null }, ...entryOver });
   const reasonsOf = (i: EstimateInput) => {
@@ -211,9 +212,9 @@ describe("fx quote validation", () => {
   it("May receipt with a January quote refuses", () => {
     expect(reasonsOf(input([withQ(q({ date: "2026-01-10" }))]))).toContain("same day");
   });
-  it("empty or whitespace source refuses", () => {
-    expect(reasonsOf(input([withQ(q({ source: "" }))]))).toContain("no source");
-    expect(reasonsOf(input([withQ(q({ source: "   " }))]))).toContain("no source");
+  it("empty or whitespace provider refuses", () => {
+    expect(reasonsOf(input([withQ(q({ provider: "" }))]))).toContain("no provider");
+    expect(reasonsOf(input([withQ(q({ provider: "   " }))]))).toContain("no provider");
   });
   it("invalid quote date refuses", () => {
     expect(estimate(input([withQ(q({ date: "10/05/2026" }))])).status).toBe("refused");
@@ -237,9 +238,9 @@ describe("fx quote validation", () => {
       e.fx.economic = econ as never;
       return estimate(input([e])).status;
     };
-    expect(mk({ ngnPerUnit: "abc", source: "market", date: "2026-05-10" })).toBe("refused");
-    expect(mk({ ngnPerUnit: "1600", source: "", date: "2026-05-10" })).toBe("refused");
-    expect(mk({ ngnPerUnit: "1600", source: "market", date: "bad" })).toBe("refused");
+    expect(mk(mkt("abc", "2026-05-10"))).toBe("refused");
+    expect(mk(mkt("1600", "2026-05-10", { provider: "" }))).toBe("refused");
+    expect(mk(mkt("1600", "bad"))).toBe("refused");
   });
 });
 
@@ -250,7 +251,7 @@ describe("coverage", () => {
   });
   it("account opened mid-year with coverageFrom == openedAt passes", () => {
     const a = { ...okAccount, openedAt: "2026-06-01T00:00:00Z", coverageFrom: "2026-06-01T00:00:00Z" };
-    expect(estimate(input([income("1", "10", "1", { occurredAt: "2026-07-10T10:00:00Z", fx: { statutory: { ngnPerUnit: "1", source: "CBN", date: "2026-07-10" }, economic: null } })], { accounts: [a] })).status).toBe("ok");
+    expect(estimate(input([income("1", "10", "1", { occurredAt: "2026-07-10T10:00:00Z", fx: { statutory: cbn("1", "2026-07-10"), economic: null } })], { accounts: [a] })).status).toBe("ok");
   });
   it("coverageFrom after openedAt refuses", () => {
     const a = { ...okAccount, openedAt: "2026-06-01T00:00:00Z", coverageFrom: "2026-06-05T00:00:00Z" };
@@ -326,7 +327,7 @@ describe("offset-free timestamps", () => {
   });
   it("the Dec 31 / Jan 1 boundary does not depend on TZ", () => {
     const at = (occurredAt: string, date: string) =>
-      estimate(input([income("1", "100", "1", { occurredAt, fx: { statutory: { ngnPerUnit: "1", source: "CBN", date }, economic: null } })]));
+      estimate(input([income("1", "100", "1", { occurredAt, fx: { statutory: cbn("1", date), economic: null } })]));
     // Same instants written two ways must agree.
     const before = at("2025-12-31T23:30:00+01:00", "2025-12-31");
     const beforeUtc = at("2025-12-31T22:30:00Z", "2025-12-31");

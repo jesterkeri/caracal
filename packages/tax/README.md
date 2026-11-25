@@ -25,13 +25,23 @@ Types are in `src/types.ts`.
 
 `{ country: "NG", taxYear, asOf, entries, accounts, profile: { annualRentNgn?, incomeScope }, staleAfterHours? }`
 
-- Entry: `id`, `accountId` (must be one of `accounts`), `txHash`, `occurredAt`, `direction`, `kind`, `asset`, `amount`, `fx: { statutory, economic }`.
+- Entry: `id`, `accountId` (must be one of `accounts`), `txHash`, `occurredAt`, `direction`, `kind`, `asset`, `amount`, `fx: { statutory, economic }`, each quote an `FxQuote` (see below).
 - Account: `id`, `label`, `lastSyncedAt`, `coverageFrom` (the instant from which its history is complete), optional `openedAt` (when the account came into existence), `gaps`.
 - `incomeScope` is required: `{ allIncomeInLinkedAccounts: true }`, or `{ allIncomeInLinkedAccounts: false, otherIncomeNgn, otherIncomeNote? }`.
-- Every instant (`asOf`, `occurredAt`, `lastSyncedAt`, `coverageFrom`, `openedAt`, gap `from` and `to`) must end in `Z` or a numeric offset like `+01:00`. Without an offset, JavaScript reads the time in the host's timezone, so a New Year's Eve payment could land in a different tax year depending on where the code runs. Quote dates are plain `YYYY-MM-DD`.
+- Every instant (`asOf`, `occurredAt`, `lastSyncedAt`, `coverageFrom`, `openedAt`, gap `from` and `to`) must end in `Z` or a numeric offset like `+01:00`. Without an offset, JavaScript reads the time in the host's timezone, so a New Year's Eve payment could land in a different tax year depending on where the code runs. Every instant is validated field by field (real month and day, leap years, hour 0-23, minute and second 0-59, offset `Z` or up to +/-14:00) and the epoch is computed from those parts, never with `Date.parse`, so `2026-02-30T12:00:00Z` is refused instead of becoming 2 March. Quote dates are plain `YYYY-MM-DD`, checked the same way.
 - `estimate(input, rulesOverride?)`: the second argument is for tests only.
 
 Only entries with `kind: "income"`, `direction: "in"` and `occurredAt` inside the tax year count. `own_transfer`, `split_internal`, `cashout` and `refund` are never income. An in-year incoming `other` entry is not ignored: it makes the estimate refuse until the user classifies it. The tax year runs from 1 January 00:00 to 31 December 24:00 in the rules' timezone (Nigeria, +01:00).
+
+### FX quote
+
+`FxQuote = { provider, base, quote: "NGN", date: "YYYY-MM-DD", ngnPerUnit, sourceUrl, retrievedAt }`. `retrievedAt` is an instant with an offset. There is no free-form `source` label.
+
+The statutory quote is checked against `valuation` in the rules: `provider` must be one of `statutoryProviders` (today only `CBN`, Central Bank of Nigeria), `sourceUrl` must start with that provider's `urlPrefix`, `quote` must be `NGN`, the entry's asset must be in `assetBase` and `base` must equal `assetBase[asset]`, `retrievedAt` must be a valid instant not after `asOf`, and `date` must pass the same day rule. The engine cannot prove provenance cryptographically. The quote must come from Caracal's rate adapter, and the engine only checks the provider, pair, date and URL, never a free-form label.
+
+USDC assumption: `assetBase` maps `USDC` to `USD`. USDC income is valued at the CBN official USD/NGN rate on the assumption that 1 USDC = 1 USD (Circle redeems USDC 1:1 for USD). That is an assumption Caracal makes, not a rule in the law (see `assetBaseNote`). Any other asset, such as XLM, refuses: only USDC can be valued today.
+
+The economic (market) quote has the same structure, except `provider` may be any non-empty id and `sourceUrl` any https URL. Its `base` must also match `assetBase[asset]`.
 
 ### Output (status "ok")
 
@@ -39,7 +49,7 @@ Only entries with `kind: "income"`, `direction: "in"` and `occurredAt` inside th
 
 Every number traces to a rule: bands, reliefs and income lines carry a `ruleId`, and `sources` lists the citation, url and `confidence` of each rule used, so the UI can badge secondary sources.
 
-Each income line has the statutory rate and its source. If an economic (market) quote is present it also has `economicNgnValue` and `fxGapPct`. The gap is (economic - statutory) / statutory, in percent, 2 dp. Positive means the market value is higher than the official value.
+Each income line has the statutory rate (`ngnPerUnit`) and where it came from: `rateProvider` (the provider's full name), `ratePair`, `rateDate` and `rateSourceUrl`, so the UI never has to invent the word "official". If an economic (market) quote is present and dated the same Lagos day as the payment, the line also has `economicNgnValue`, `fxGapPct` and `economicQuote` (`provider`, `pair`, `date`, `sourceUrl`). If the market quote is from another day, the estimate does not refuse (the market quote does not change tax); the line leaves out `economicNgnValue` and `fxGapPct`, and an `informational` note of kind `fx_gap_omitted` names the entry and the quote date. The gap is (economic - statutory) / statutory, in percent, 2 dp. Positive means the market value is higher than the official value.
 
 Income the user declares through `incomeScope` appears in `declaredIncomeLines` as `{ label, amountNgn, source: "declared by you" }`, is added to gross income, and an `informational` note says it was not verified on chain.
 
@@ -52,17 +62,19 @@ Naira values are decimal strings with 2 dp. Rounding is half up, to the kobo. Ea
 The result is `{ status: "refused", reasons: [...], disclaimer }` with no numbers when any of these hold:
 
 - An in-year income entry has no statutory naira rate, or an invalid amount or rate.
-- A statutory quote has an empty source, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
-- `fx.economic` is present but malformed, has a zero or invalid rate, an empty source or a bad date. It is never silently dropped.
+- A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
+- An in-year income entry's asset is not in `assetBase` (only USDC today).
+- `fx.economic` is present but malformed, has a zero or invalid rate, an empty provider, a non-https `sourceUrl`, a wrong pair, a bad `retrievedAt` or a bad date. A well-formed market quote from another day is not a refusal (see Output). It is never silently dropped.
 - The rules file names a `valuation.rateDateRule` other than `"same_day"`.
 - An account's `lastSyncedAt` is older than `staleAfterHours` (default 24) before `asOf`, or after `asOf`.
 - An account's `coverageFrom` is later than the later of the tax year start and its `openedAt`. Being synced today proves nothing about last March.
+- An account's chronology is inconsistent: `openedAt` after `asOf`, `coverageFrom` after `asOf`, `lastSyncedAt` before `openedAt`, or `lastSyncedAt` before `coverageFrom`. Each reason names the account and the field.
 - An account has a gap that overlaps the tax year, or a gap whose `from` is after its `to`.
 - There are no linked accounts.
 - An entry's `accountId` is not one of the linked accounts, or an entry id appears twice.
 - An in-year incoming entry has `kind: "other"` (not classified yet).
 - `incomeScope` is missing, or says income arrives elsewhere without a valid `otherIncomeNgn`.
-- Any instant has no `Z` or numeric offset, or is not a valid date.
+- Any instant (including quote `retrievedAt`) has no `Z` or numeric offset, or is not a real date and time.
 - There are no rules for the country and year, or the profile rent is not a valid amount.
 
 An empty ledger is a valid input. With every account proven complete for the year it returns zero income and zero tax.

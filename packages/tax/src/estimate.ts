@@ -15,6 +15,7 @@ import type {
   DeclaredIncomeLine,
   Informational,
   IncomeLine,
+  LedgerEntry,
   Rules,
   SourceRef,
 } from "./types";
@@ -34,20 +35,50 @@ function refuse(reasons: string[]): EstimateResult {
   return { status: "refused", reasons, disclaimer: DISCLAIMER };
 }
 
-const INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})$/;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/** Parses an instant that must carry Z or a numeric offset. NaN when it does not. */
+function daysInMonth(y: number, m: number): number {
+  if (m === 2) return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28;
+  return [4, 6, 9, 11].includes(m) ? 30 : 31;
+}
+
+function validYmd(y: number, m: number, d: number): boolean {
+  return m >= 1 && m <= 12 && d >= 1 && d <= daysInMonth(y, m);
+}
+
+/**
+ * Parses an instant that must carry Z or a numeric offset, checking every
+ * component by hand. NaN when any part is impossible. Never uses Date.parse,
+ * which rolls 30 February over to 2 March.
+ */
 function ms(iso: string): number {
-  if (typeof iso !== "string" || !INSTANT_RE.test(iso)) return Number.NaN;
-  return Date.parse(iso);
+  if (typeof iso !== "string") return Number.NaN;
+  const m = INSTANT_RE.exec(iso);
+  if (!m) return Number.NaN;
+  const [y, mo, d, h, mi] = [m[1], m[2], m[3], m[4], m[5]].map(Number) as [number, number, number, number, number];
+  const sec = m[6] === undefined ? 0 : Number(m[6]);
+  if (!validYmd(y, mo, d) || h > 23 || mi > 59 || sec > 59) return Number.NaN;
+  const milli = m[7] === undefined ? 0 : Number(m[7].slice(0, 3).padEnd(3, "0"));
+  let offsetMin = 0;
+  if (m[8] !== "Z") {
+    const sign = m[8]!.startsWith("-") ? -1 : 1;
+    const oh = Number(m[8]!.slice(1, 3));
+    const om = Number(m[8]!.slice(4, 6));
+    if (om > 59 || oh > 14 || (oh === 14 && om > 0)) return Number.NaN;
+    offsetMin = sign * (oh * 60 + om);
+  }
+  const dt = new Date(0);
+  dt.setUTCFullYear(y, mo - 1, d);
+  dt.setUTCHours(h, mi, sec, milli);
+  return dt.getTime() - offsetMin * 60_000;
 }
 
 /** True only for a real calendar date written YYYY-MM-DD. */
 function validDate(d: unknown): d is string {
-  if (typeof d !== "string" || !DATE_RE.test(d)) return false;
-  const t = Date.parse(`${d}T00:00:00Z`);
-  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d;
+  if (typeof d !== "string") return false;
+  const m = DATE_RE.exec(d);
+  return !!m && validYmd(Number(m[1]), Number(m[2]), Number(m[3]));
 }
 
 const nonEmpty = (s: unknown): boolean => typeof s === "string" && s.trim() !== "";
@@ -58,6 +89,59 @@ function localDate(instantMs: number, offset: string): string {
   const [h = "0", m = "0"] = offset.slice(1).split(":");
   const shift = sign * (Number(h) * 60 + Number(m)) * 60_000;
   return new Date(instantMs + shift).toISOString().slice(0, 10);
+}
+
+type Quote = LedgerEntry["fx"]["statutory"] & object;
+
+/** Fields every quote needs, statutory or economic. Returns a reason or null. */
+function checkQuoteShape(e: LedgerEntry, q: Quote, label: string, asOfMs: number, assetBase: string | undefined): string | null {
+  const who = `Entry ${e.id}: the ${label}`;
+  if (q === null || typeof q !== "object") return `${who} is malformed.`;
+  if (!nonEmpty(q.provider)) return `${who} has no provider.`;
+  if (q.quote !== "NGN") return `${who} must be quoted in NGN, got "${String(q.quote)}".`;
+  if (!nonEmpty(q.base) || q.base !== assetBase) {
+    return `${who} is for the pair ${String(q.base)}/${String(q.quote)}, but ${e.asset} must be valued with a ${String(assetBase)}/NGN rate.`;
+  }
+  if (!nonEmpty(q.sourceUrl)) return `${who} has no sourceUrl.`;
+  if (!validDate(q.date)) return `${who} date is not a valid YYYY-MM-DD date.`;
+  const got = ms(q.retrievedAt);
+  if (Number.isNaN(got)) return `${who}: retrievedAt is not a valid date with a Z or +HH:MM offset.`;
+  if (got > asOfMs) return `${who}: retrievedAt (${q.retrievedAt}) is after ${String(asOfMsLabel(asOfMs))}. That cannot be right.`;
+  return null;
+}
+
+const asOfMsLabel = (t: number): string => new Date(t).toISOString();
+
+function baseFor(rules: Rules, asset: string): string | undefined {
+  const map = rules.valuation.assetBase;
+  return typeof asset === "string" && Object.prototype.hasOwnProperty.call(map, asset) ? map[asset] : undefined;
+}
+
+function checkStatutory(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): string | null {
+  const base = baseFor(rules, e.asset);
+  if (base === undefined) {
+    return `Entry ${e.id}: ${String(e.asset)} cannot be valued yet. Only ${Object.keys(rules.valuation.assetBase).join(", ")} can be valued today.`;
+  }
+  const bad = checkQuoteShape(e, q, "official naira rate", asOfMs, base);
+  if (bad) return bad;
+  const prov = rules.valuation.statutoryProviders.find((p) => p.id === q.provider);
+  if (!prov) return `Entry ${e.id}: the official naira rate comes from provider "${q.provider}", which is not an accepted official source.`;
+  if (!q.sourceUrl.startsWith(prov.urlPrefix)) {
+    return `Entry ${e.id}: the official naira rate sourceUrl must start with ${prov.urlPrefix} for provider ${prov.id}.`;
+  }
+  return null;
+}
+
+function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): string | null {
+  const bad = checkQuoteShape(e, q, "market rate", asOfMs, baseFor(rules, e.asset));
+  if (bad) return bad;
+  if (!/^https:\/\/\S+$/.test(q.sourceUrl)) return `Entry ${e.id}: the market rate sourceUrl must be an https URL.`;
+  try {
+    if (parseDec(q.ngnPerUnit).n === 0n) return `Entry ${e.id}: the market rate is zero.`;
+  } catch {
+    return `Entry ${e.id}: the market rate is not a valid number.`;
+  }
+  return null;
 }
 
 /**
@@ -101,6 +185,12 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       reasons.push(`Account "${a.label}" was last synced at ${a.lastSyncedAt}, which is too old. Sync it again.`);
     }
     const cov = ms(a.coverageFrom);
+    if (!Number.isNaN(synced) && !Number.isNaN(cov) && synced < cov) {
+      reasons.push(`Account "${a.label}": lastSyncedAt (${a.lastSyncedAt}) is before coverageFrom (${a.coverageFrom}). That cannot be right.`);
+    }
+    if (!Number.isNaN(cov) && cov > asOfMs) {
+      reasons.push(`Account "${a.label}": coverageFrom (${a.coverageFrom}) is after ${input.asOf}. That cannot be right.`);
+    }
     let required = periodStart;
     let openedOk = true;
     if (a.openedAt !== undefined) {
@@ -108,8 +198,16 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       if (Number.isNaN(opened)) {
         openedOk = false;
         reasons.push(`Account "${a.label}": openedAt is not a valid date with a Z or +HH:MM offset.`);
-      } else if (opened > required) {
-        required = opened;
+      } else {
+        if (opened > asOfMs) {
+          openedOk = false;
+          reasons.push(`Account "${a.label}": openedAt (${a.openedAt}) is after ${input.asOf}. That cannot be right.`);
+        }
+        if (!Number.isNaN(synced) && synced < opened) {
+          openedOk = false;
+          reasons.push(`Account "${a.label}": lastSyncedAt (${a.lastSyncedAt}) is before openedAt (${a.openedAt}). That cannot be right.`);
+        }
+        if (opened > required) required = opened;
       }
     }
     if (Number.isNaN(cov)) {
@@ -121,7 +219,8 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       const from = ms(g.from);
       const to = ms(g.to);
       if (Number.isNaN(from) || Number.isNaN(to)) {
-        reasons.push(`Account "${a.label}": a gap has a from or to that is not a valid date with a Z or +HH:MM offset.`);
+        if (Number.isNaN(from)) reasons.push(`Account "${a.label}": gap from is not a valid date with a Z or +HH:MM offset.`);
+        if (Number.isNaN(to)) reasons.push(`Account "${a.label}": gap to is not a valid date with a Z or +HH:MM offset.`);
       } else if (from > to) {
         reasons.push(`Account "${a.label}" has a gap that ends before it starts (${g.from} to ${g.to}).`);
       } else if (from < periodEnd && to >= periodStart) {
@@ -166,12 +265,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       continue;
     }
     const q = e.fx.statutory;
-    if (!nonEmpty(q.source)) {
-      reasons.push(`Entry ${e.id}: the official naira rate has no source.`);
-      continue;
-    }
-    if (!validDate(q.date)) {
-      reasons.push(`Entry ${e.id}: the official rate date is not a valid YYYY-MM-DD date.`);
+    const qReason = checkStatutory(e, q, rules, asOfMs);
+    if (qReason) {
+      reasons.push(qReason);
       continue;
     }
     const txDate = localDate(occurred, rules.timezoneOffset);
@@ -180,17 +276,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       continue;
     }
     if (e.fx.economic) {
-      const ec = e.fx.economic;
-      let econOk = nonEmpty(ec.source) && validDate(ec.date);
-      if (econOk) {
-        try {
-          if (parseDec(ec.ngnPerUnit).n === 0n) econOk = false;
-        } catch {
-          econOk = false;
-        }
-      }
-      if (!econOk) {
-        reasons.push(`Entry ${e.id}: the market rate is malformed or has no source.`);
+      const eReason = checkEconomic(e, e.fx.economic, rules, asOfMs);
+      if (eReason) {
+        reasons.push(eReason);
         continue;
       }
     }
@@ -243,14 +331,25 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       amount: e.amount,
       asset: e.asset,
       ngnPerUnit: q.ngnPerUnit,
-      rateSource: q.source,
+      rateProvider: rules.valuation.statutoryProviders.find((p) => p.id === q.provider)!.name,
+      ratePair: `${q.base}/${q.quote}`,
+      rateDate: q.date,
+      rateSourceUrl: q.sourceUrl,
       ruleId: rules.valuation.id,
       ngnValue: formatKobo(value),
     };
-    if (e.fx.economic) {
+    const ecq = e.fx.economic;
+    if (ecq && ecq.date !== localDate(ms(e.occurredAt), rules.timezoneOffset)) {
+      informational.push({
+        kind: "fx_gap_omitted",
+        id: e.id,
+        message: `Entry ${e.id}: the market rate is dated ${ecq.date}, not the payment day, so the market value and gap are not shown.`,
+      });
+    } else if (ecq) {
       try {
-        const econ = mulToKobo(amt, parseDec(e.fx.economic.ngnPerUnit));
+        const econ = mulToKobo(amt, parseDec(ecq.ngnPerUnit));
         line.economicNgnValue = formatKobo(econ);
+        line.economicQuote = { provider: ecq.provider, pair: `${ecq.base}/${ecq.quote}`, date: ecq.date, sourceUrl: ecq.sourceUrl };
         if (value > 0n) {
           const diff = econ - value;
           const abs = diff < 0n ? -diff : diff;
