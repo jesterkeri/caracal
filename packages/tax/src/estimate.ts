@@ -201,6 +201,7 @@ function shapeReasons(input: unknown): string[] {
       // Duplicates are found by id, so it must be a non-empty string: 1 and "1"
       // would otherwise count the same payment twice.
       else if (typeof e.id !== "string" || e.id.trim() === "") reasons.push(`Entry ${i + 1} has no id (a non-empty string).`);
+      else if (typeof e.txHash !== "string" || e.txHash.trim() === "") reasons.push(`Entry ${e.id} has no txHash (a non-empty string).`);
       else if (!isObject(e.fx)) reasons.push(`Entry ${String(e.id)}: fx must be an object with statutory and economic quotes.`);
     });
   if (!isObject(input.profile)) reasons.push("profile must be an object.");
@@ -302,7 +303,10 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
         if (Number.isNaN(to)) reasons.push(`Account "${a.label}": gap to is not a valid date with a Z or +HH:MM offset.`);
       } else if (from > to) {
         reasons.push(`Account "${a.label}" has a gap that ends before it starts (${g.from} to ${g.to}).`);
-      } else if (from < periodEnd && to >= periodStart) {
+      } else if (from < periodEnd && to > periodStart) {
+        // A gap is [from, to): `to` is the instant history resumes, the same
+        // meaning as coverageFrom. The year is [start, end). So a gap that only
+        // touches the year at one end does not overlap it.
         reasons.push(`Account "${a.label}" has missing history from ${g.from} to ${g.to}, inside ${input.taxYear}.`);
       }
     }
@@ -324,6 +328,18 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   for (const e of input.entries) {
     if (!KINDS.includes(e.kind)) reasons.push(`Entry ${String(e.id)} has an unknown kind "${String(e.kind)}".`);
     if (!DIRECTIONS.includes(e.direction)) reasons.push(`Entry ${String(e.id)} has an unknown direction "${String(e.direction)}".`);
+  }
+  // The same on-chain payment listed under two entry ids would be counted
+  // twice. One transaction paying the same account the same amount of the same
+  // asset twice is rare, and refusing it is the safe failure.
+  const paymentKeys = new Map<string, string>();
+  for (const e of input.entries) {
+    if (e.kind !== "income") continue;
+    const k = JSON.stringify([e.accountId, e.txHash, e.asset, e.amount]);
+    const first = paymentKeys.get(k);
+    if (first !== undefined) {
+      reasons.push(`Entries ${first} and ${e.id} have the same transaction (${e.txHash}), account, asset and amount, so they look like the same payment listed twice.`);
+    } else paymentKeys.set(k, e.id);
   }
   for (const e of input.entries) {
     if (!KINDS.includes(e.kind) || !DIRECTIONS.includes(e.direction)) continue;
