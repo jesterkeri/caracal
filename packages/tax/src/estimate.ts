@@ -170,12 +170,21 @@ function shapeReasons(input: unknown): string[] {
   if (!isObject(input)) return ["The estimate input must be an object."];
   const reasons: string[] = [];
   if (!Array.isArray(input.accounts)) reasons.push("accounts must be a list.");
-  else
+  else {
+    const ids = new Set<string>();
     input.accounts.forEach((a: unknown, i: number) => {
-      if (!isObject(a)) reasons.push(`Account ${i + 1} must be an object.`);
-      else if (!Array.isArray(a.gaps)) reasons.push(`Account ${i + 1}: gaps must be a list (empty if there are none).`);
+      if (!isObject(a)) {
+        reasons.push(`Account ${i + 1} must be an object.`);
+        return;
+      }
+      // Entries are matched to accounts by id, so ids must exist and be unique.
+      if (typeof a.id !== "string" || a.id.trim() === "") reasons.push(`Account ${i + 1} has no id.`);
+      else if (ids.has(a.id)) reasons.push(`Account id "${a.id}" appears more than once.`);
+      else ids.add(a.id);
+      if (!Array.isArray(a.gaps)) reasons.push(`Account ${i + 1}: gaps must be a list (empty if there are none).`);
       else if (!a.gaps.every(isObject)) reasons.push(`Account ${i + 1}: every gap must be an object with from and to.`);
     });
+  }
   if (!Array.isArray(input.entries)) reasons.push("entries must be a list.");
   else
     input.entries.forEach((e: unknown, i: number) => {

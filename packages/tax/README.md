@@ -61,7 +61,7 @@ Naira values are decimal strings with 2 dp. Rounding is half up, to the kobo. Ea
 
 The result is `{ status: "refused", reasons: [...], disclaimer }` with no numbers when any of these hold:
 
-- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no `gaps` list, an entry has no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
+- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no non-empty `id` or shares its `id` with another account, an account has no `gaps` list, an entry has no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
 - An in-year income entry has no statutory naira rate, or an invalid amount or rate.
 - A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
 - An in-year income entry's asset is not in `assetBase` (only USDC today).
