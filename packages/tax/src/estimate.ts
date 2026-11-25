@@ -25,6 +25,8 @@ const DEFAULT_STALE_HOURS = 24;
 const MAX_AMOUNT_DP = 7;
 /** Most decimal places an exchange rate (statutory or economic) may carry. */
 const MAX_RATE_DP = 6;
+/** Most decimal places a naira amount typed by a person may carry (kobo). */
+const MAX_NAIRA_INPUT_DP = 2;
 const DIRECTIONS: readonly string[] = ["in", "out"];
 const KINDS: readonly string[] = ["income", "own_transfer", "cashout", "split_internal", "refund", "other"];
 
@@ -254,6 +256,8 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   const parsed: Parsed[] = [];
   const seenIds = new Set<string>();
   const accountIds = new Set(input.accounts.map((a) => a.id));
+  const syncedById = new Map<string, { label: string; raw: string; ms: number }>();
+  for (const a of input.accounts) syncedById.set(a.id, { label: a.label, raw: a.lastSyncedAt, ms: ms(a.lastSyncedAt) });
   const openedAtById = new Map<string, { label: string; raw: string; ms: number }>();
   for (const a of input.accounts) {
     if (a.openedAt !== undefined) openedAtById.set(a.id, { label: a.label, raw: a.openedAt, ms: ms(a.openedAt) });
@@ -283,6 +287,11 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
     const opened = openedAtById.get(e.accountId);
     if (opened && !Number.isNaN(opened.ms) && occurred < opened.ms) {
       reasons.push(`Entry ${e.id} is dated ${e.occurredAt}, before account "${opened.label}" was opened (${opened.raw}). That cannot be right.`);
+      continue;
+    }
+    const sync = syncedById.get(e.accountId);
+    if (sync && !Number.isNaN(sync.ms) && occurred > sync.ms) {
+      reasons.push(`Entry ${e.id} is dated ${e.occurredAt}, after account "${sync.label}" was last synced (${sync.raw}), so that sync cannot have seen it. Sync the account again.`);
       continue;
     }
     const inYear = occurred >= periodStart && occurred < periodEnd;
@@ -334,20 +343,31 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   const SCOPE_MSG = "Tell us whether all your income for the year arrives in your linked accounts.";
   if (!scope || typeof scope.allIncomeInLinkedAccounts !== "boolean") {
     reasons.push(SCOPE_MSG);
-  } else if (scope.allIncomeInLinkedAccounts === false) {
+  } else if (scope.allIncomeInLinkedAccounts === true) {
+    const extra = Object.keys(scope).filter((k) => k !== "allIncomeInLinkedAccounts");
+    if (extra.length > 0) {
+      reasons.push(`${SCOPE_MSG} You said all income arrives in linked accounts, but also gave ${extra.join(", ")}. Those contradict each other.`);
+    }
+  } else {
+    const extra = Object.keys(scope).filter((k) => !["allIncomeInLinkedAccounts", "otherIncomeNgn", "otherIncomeNote"].includes(k));
+    if (extra.length > 0) reasons.push(`Income scope has unknown field(s): ${extra.join(", ")}.`);
     try {
-      otherKobo = toKobo(parseDec(scope.otherIncomeNgn as string));
+      const d = parseDec(scope.otherIncomeNgn as string);
+      if (d.scale > MAX_NAIRA_INPUT_DP) throw new RangeError("sub-kobo");
+      otherKobo = toKobo(d);
     } catch {
-      reasons.push(`${SCOPE_MSG} You said some income arrives elsewhere, so give that amount in naira.`);
+      reasons.push(`${SCOPE_MSG} You said some income arrives elsewhere, so give that amount in naira with at most ${MAX_NAIRA_INPUT_DP} decimal places.`);
     }
   }
 
   let rentKobo: bigint | null = null;
   if (input.profile.annualRentNgn !== undefined) {
     try {
-      rentKobo = toKobo(parseDec(input.profile.annualRentNgn));
+      const d = parseDec(input.profile.annualRentNgn);
+      if (d.scale > MAX_NAIRA_INPUT_DP) throw new RangeError("sub-kobo");
+      rentKobo = toKobo(d);
     } catch {
-      reasons.push("The annual rent in the profile is not a valid amount.");
+      reasons.push(`The annual rent in the profile is not a valid amount (naira with at most ${MAX_NAIRA_INPUT_DP} decimal places).`);
     }
   }
 

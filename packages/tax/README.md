@@ -81,6 +81,9 @@ The result is `{ status: "refused", reasons: [...], disclaimer }` with no number
 - An in-year incoming entry has `kind: "other"` (not classified yet).
 - `incomeScope` is missing, or says income arrives elsewhere without a valid `otherIncomeNgn`.
 - Any instant (including quote `retrievedAt`) has no `Z` or numeric offset, or is not a real date and time.
+- An entry is dated after its own account's `lastSyncedAt`: that sync cannot have seen it. The reason names the entry and the account.
+- `incomeScope` has `allIncomeInLinkedAccounts: true` together with any other field (`otherIncomeNgn`, `otherIncomeNote`, anything), or has unknown extra keys.
+- A naira amount the person typed (`otherIncomeNgn`, `annualRentNgn`) has more than 2 decimal places (`MAX_NAIRA_INPUT_DP`, kobo). It is refused, never rounded.
 - There are no rules for the country and year, or the profile rent is not a valid amount.
 
 An empty ledger is a valid input. With every account proven complete for the year it returns zero income and zero tax.
