@@ -61,7 +61,7 @@ Naira values are decimal strings with 2 dp. Rounding is half up, to the kobo. Ea
 
 The result is `{ status: "refused", reasons: [...], disclaimer }` with no numbers when any of these hold:
 
-- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no non-empty `id` or shares its `id` with another account, an account has no `gaps` list, an entry has no non-empty string `id` or `txHash`, or no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown.
+- The input is not the documented structure: it is not an object, `accounts` or `entries` is not a list, an account, gap or entry is not an object, an account has no non-empty `id` or shares its `id` with another account, an account has no `gaps` list, an entry has no non-empty string `id` or `txHash`, or no `fx` object, or `profile` is not an object. Malformed JSON is refused with a reason, never thrown. An object anywhere in the input with its own `toString` or `valueOf` field is refused, since it could make reading the input throw.
 - An in-year income entry has no statutory naira rate, or an invalid amount or rate.
 - A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
 - An in-year income entry's asset is not in `assetBase` (only USDC today).
@@ -76,8 +76,8 @@ The result is `{ status: "refused", reasons: [...], disclaimer }` with no number
 - An account's `lastSyncedAt` is older than `staleAfterHours` (default 24) before `asOf`, or after `asOf`.
 - An account's `coverageFrom` is later than the later of the tax year start and its `openedAt`. Being synced today proves nothing about last March.
 - An account's chronology is inconsistent: `openedAt` after `asOf`, `coverageFrom` after `asOf`, `lastSyncedAt` before `openedAt`, or `lastSyncedAt` before `coverageFrom`. Each reason names the account and the field.
-- An account has a gap that overlaps the tax year, or a gap whose `from` is after its `to`. A gap is `[from, to)`: `to` is the instant history resumes, the same meaning as `coverageFrom`, so a gap that only touches the year at one end does not overlap it.
-- Two income entries share the same account, `txHash`, asset and amount: they look like the same payment listed twice.
+- An account has a gap that overlaps the tax year, or a gap whose `from` is after its `to`. A gap is `[from, to)`: `to` is the instant history resumes, the same meaning as `coverageFrom`, so a gap that only touches the year at one end, or an empty gap (`from` equal to `to`), does not overlap it.
+- Two income entries share the same account, `txHash` (ignoring hex case), asset and amount (compared as numbers, so `10000` and `10000.0` match): they look like the same payment listed twice.
 - There are no linked accounts.
 - An entry's `accountId` is not one of the linked accounts, or an entry id appears twice.
 - An in-year incoming entry has `kind: "other"` (not classified yet).

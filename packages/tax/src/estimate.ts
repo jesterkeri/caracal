@@ -169,7 +169,39 @@ function parseTypedNaira(v: unknown) {
   return parseDec(v.trim());
 }
 
+/** An amount with trailing fractional zeros removed, or the raw value if it does not parse. */
+function canonicalAmount(v: unknown): unknown {
+  try {
+    const t = parseDec(v as string);
+    let n = t.n;
+    let scale = t.scale;
+    while (scale > 0 && n % 10n === 0n) {
+      n /= 10n;
+      scale -= 1;
+    }
+    return `${n}e-${scale}`;
+  } catch {
+    return v;
+  }
+}
+
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * JSON can only make string conversion throw through an object that has its
+ * own toString or valueOf field (e.g. {"toString": 1}). Reasons interpolate
+ * input values, so refuse such objects anywhere in the input before reading it.
+ */
+function convertibleKeyPath(v: unknown, path: string, seen: Set<object>): string | null {
+  if (typeof v !== "object" || v === null || seen.has(v)) return null;
+  seen.add(v);
+  if (!Array.isArray(v) && (Object.hasOwn(v, "toString") || Object.hasOwn(v, "valueOf"))) return path;
+  for (const [k, child] of Object.entries(v)) {
+    const found = convertibleKeyPath(child, Array.isArray(v) ? `${path}[${k}]` : `${path}.${k}`, seen);
+    if (found) return found;
+  }
+  return null;
+}
 
 /**
  * The structure every later check relies on, so malformed JSON is refused with
@@ -177,6 +209,8 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  */
 function shapeReasons(input: unknown): string[] {
   if (!isObject(input)) return ["The estimate input must be an object."];
+  const hostile = convertibleKeyPath(input, "input", new Set());
+  if (hostile) return [`${hostile} has a "toString" or "valueOf" field, which is not part of the documented structure.`];
   const reasons: string[] = [];
   if (!Array.isArray(input.accounts)) reasons.push("accounts must be a list.");
   else {
@@ -213,6 +247,16 @@ function shapeReasons(input: unknown): string[] {
  * not hold. Production callers leave it out.
  */
 export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateResult {
+  // Malformed JSON must be refused, never thrown. The checks below are meant to
+  // catch it first; this is the backstop for anything they miss.
+  try {
+    return estimateChecked(input, rulesOverride);
+  } catch (err) {
+    return refuse([`The input could not be read (${err instanceof Error ? err.name : "error"}). Check that it matches the documented structure.`]);
+  }
+}
+
+function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateResult {
   // Inputs often arrive as JSON from an untyped boundary: "2026" as a string
   // would still find the rules but break the period arithmetic, so check types.
   const shape = shapeReasons(input);
@@ -303,7 +347,7 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
         if (Number.isNaN(to)) reasons.push(`Account "${a.label}": gap to is not a valid date with a Z or +HH:MM offset.`);
       } else if (from > to) {
         reasons.push(`Account "${a.label}" has a gap that ends before it starts (${g.from} to ${g.to}).`);
-      } else if (from < periodEnd && to > periodStart) {
+      } else if (from < to && from < periodEnd && to > periodStart) {
         // A gap is [from, to): `to` is the instant history resumes, the same
         // meaning as coverageFrom. The year is [start, end). So a gap that only
         // touches the year at one end does not overlap it.
@@ -335,7 +379,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   const paymentKeys = new Map<string, string>();
   for (const e of input.entries) {
     if (e.kind !== "income") continue;
-    const k = JSON.stringify([e.accountId, e.txHash, e.asset, e.amount]);
+    // Compare the amount as a number (10000 = 10000.0) and the hash ignoring
+    // hex case, so formatting cannot hide a duplicate.
+    const k = JSON.stringify([e.accountId, String(e.txHash).toLowerCase(), e.asset, canonicalAmount(e.amount)]);
     const first = paymentKeys.get(k);
     if (first !== undefined) {
       reasons.push(`Entries ${first} and ${e.id} have the same transaction (${e.txHash}), account, asset and amount, so they look like the same payment listed twice.`);
