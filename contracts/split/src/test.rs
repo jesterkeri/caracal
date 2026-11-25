@@ -39,7 +39,21 @@ fn dep(s: &Setup, from: &Address, amt: i128) {
     dep_ref(s, from, amt, "INV-1");
 }
 
+fn open_inv(s: &Setup, amt: i128, rf: &str) {
+    s.env.mock_auths(&[MockAuth {
+        address: &s.owner,
+        invoke: &MockAuthInvoke {
+            contract: &s.id,
+            fn_name: "create_invoice",
+            args: (r(&s.env, rf), amt).into_val(&s.env),
+            sub_invokes: &[],
+        },
+    }]);
+    s.client.create_invoice(&r(&s.env, rf), &amt);
+}
+
 fn dep_ref(s: &Setup, from: &Address, amt: i128, rf: &str) {
+    open_inv(s, amt, rf);
     s.env.mock_auths(&[MockAuth {
         address: from,
         invoke: &MockAuthInvoke {
@@ -224,6 +238,7 @@ fn invalid_inputs_rejected() {
     let long = Bytes::from_slice(&s.env, &[b'a'; 65]);
     assert_eq!(s.client.try_deposit(&payer, &100, &long), Err(Ok(Error::InvalidInvoiceRef)));
     let max = Bytes::from_slice(&s.env, &[b'a'; 64]);
+    s.client.create_invoice(&max, &100);
     s.client.deposit(&payer, &100, &max);
     assert_eq!(s.client.try_deposit(&payer, &0, &ok), Err(Ok(Error::InvalidAmount)));
     assert_eq!(s.client.try_deposit(&payer, &-5, &ok), Err(Ok(Error::InvalidAmount)));
@@ -255,6 +270,7 @@ fn duplicate_invoice_rejected_and_is_paid() {
         s.client.try_deposit(&payer, &100, &r(&s.env, "INV-1")),
         Err(Ok(Error::InvoiceAlreadyPaid))
     );
+    s.client.create_invoice(&r(&s.env, "INV-2"), &100);
     s.client.deposit(&payer, &100, &r(&s.env, "INV-2"));
     assert_eq!(TokenClient::new(&s.env, &s.token).balance(&s.id), 200);
 }
@@ -266,12 +282,14 @@ fn huge_amounts_checked() {
     let big: i128 = i128::MAX / 10_000;
     fund(&s, &payer, big);
     s.env.mock_all_auths();
+    s.client.create_invoice(&r(&s.env, "BIG"), &big);
     s.client.deposit(&payer, &big, &r(&s.env, "BIG"));
     let (t, g, sp) = s.client.balances();
     assert_eq!(t + g + sp, big);
 
     // amount * bps overflows i128: clean error, no panic, no state change
     let over: i128 = i128::MAX / 1_000 + 1;
+    s.client.create_invoice(&r(&s.env, "OVER"), &over);
     assert_eq!(
         s.client.try_deposit(&payer, &over, &r(&s.env, "OVER")),
         Err(Ok(Error::Overflow))
@@ -328,6 +346,7 @@ fn failed_transfer_reverts_withdraw() {
     admin.set_authorized(&payer, &true);
     admin.set_authorized(&id, &true);
     admin.mint(&payer, &1_000);
+    client.create_invoice(&Bytes::from_slice(&env, b"INV-1"), &1_000);
     client.deposit(&payer, &1_000, &Bytes::from_slice(&env, b"INV-1"));
     let dest = Address::generate(&env);
     admin.set_authorized(&dest, &true);
@@ -335,4 +354,145 @@ fn failed_transfer_reverts_withdraw() {
     assert!(client.try_withdraw(&Pot::Spend, &dest, &100).is_err());
     assert_eq!(client.balances(), (100, 150, 750));
     assert_eq!(TokenClient::new(&env, &token).balance(&dest), 0);
+}
+
+fn pots_within_held(s: &Setup) {
+    let (t, g, sp) = s.client.balances();
+    assert!(t + g + sp <= TokenClient::new(&s.env, &s.token).balance(&s.id));
+}
+
+#[test]
+fn third_party_underpayment_cannot_burn_invoice() {
+    let s = setup(1000, 1500);
+    let attacker = Address::generate(&s.env);
+    let client = Address::generate(&s.env);
+    fund(&s, &attacker, 10);
+    fund(&s, &client, 1_000);
+    open_inv(&s, 1_000, "INV-1");
+    s.env.mock_all_auths();
+    assert_eq!(
+        s.client.try_deposit(&attacker, &1, &r(&s.env, "INV-1")),
+        Err(Ok(Error::WrongAmount))
+    );
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-1")), Some((1_000, 0)));
+    assert!(!s.client.is_paid(&r(&s.env, "INV-1")));
+    assert_eq!(s.client.balances(), (0, 0, 0));
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&attacker), 10);
+
+    s.env.mock_all_auths();
+    s.client.deposit(&client, &1_000, &r(&s.env, "INV-1"));
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-1")), Some((1_000, 1)));
+    assert!(s.client.is_paid(&r(&s.env, "INV-1")));
+    assert_eq!(s.client.balances(), (100, 150, 750));
+    pots_within_held(&s);
+}
+
+#[test]
+fn overpayment_and_partial_rejected() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 5_000);
+    open_inv(&s, 1_000, "INV-1");
+    s.env.mock_all_auths();
+    assert_eq!(s.client.try_deposit(&payer, &1_001, &r(&s.env, "INV-1")), Err(Ok(Error::WrongAmount)));
+    assert_eq!(s.client.try_deposit(&payer, &999, &r(&s.env, "INV-1")), Err(Ok(Error::WrongAmount)));
+    assert_eq!(s.client.balances(), (0, 0, 0));
+    assert_eq!(TokenClient::new(&s.env, &s.token).balance(&s.id), 0);
+}
+
+#[test]
+fn unknown_ref_rejected() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 100);
+    s.env.mock_all_auths();
+    assert_eq!(s.client.try_deposit(&payer, &100, &r(&s.env, "NOPE")), Err(Ok(Error::UnknownInvoice)));
+    assert_eq!(s.client.invoice(&r(&s.env, "NOPE")), None);
+    assert!(!s.client.is_paid(&r(&s.env, "NOPE")));
+}
+
+#[test]
+fn non_owner_cannot_create_or_cancel_invoice() {
+    let s = setup(1000, 1500);
+    let evil = Address::generate(&s.env);
+    let args: soroban_sdk::Vec<soroban_sdk::Val> = (r(&s.env, "INV-1"), 100i128).into_val(&s.env);
+    s.env.mock_auths(&[MockAuth {
+        address: &evil,
+        invoke: &MockAuthInvoke { contract: &s.id, fn_name: "create_invoice", args, sub_invokes: &[] },
+    }]);
+    assert!(s.client.try_create_invoice(&r(&s.env, "INV-1"), &100).is_err());
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-1")), None);
+
+    open_inv(&s, 100, "INV-1");
+    let args: soroban_sdk::Vec<soroban_sdk::Val> = (r(&s.env, "INV-1"),).into_val(&s.env);
+    s.env.mock_auths(&[MockAuth {
+        address: &evil,
+        invoke: &MockAuthInvoke { contract: &s.id, fn_name: "cancel_invoice", args, sub_invokes: &[] },
+    }]);
+    assert!(s.client.try_cancel_invoice(&r(&s.env, "INV-1")).is_err());
+    s.env.set_auths(&[]);
+    assert!(s.client.try_cancel_invoice(&r(&s.env, "INV-1")).is_err());
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-1")), Some((100, 0)));
+}
+
+#[test]
+fn create_invoice_twice_fails_even_after_paid_or_cancelled() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 1_000);
+    open_inv(&s, 100, "INV-1");
+    s.env.mock_all_auths();
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "INV-1"), &100), Err(Ok(Error::InvoiceExists)));
+    s.client.deposit(&payer, &100, &r(&s.env, "INV-1"));
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "INV-1"), &100), Err(Ok(Error::InvoiceExists)));
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "INV-1"), &555), Err(Ok(Error::InvoiceExists)));
+    s.client.create_invoice(&r(&s.env, "INV-2"), &100);
+    s.client.cancel_invoice(&r(&s.env, "INV-2"));
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "INV-2"), &100), Err(Ok(Error::InvoiceExists)));
+}
+
+#[test]
+fn create_invoice_validates_inputs() {
+    let s = setup(1000, 1500);
+    s.env.mock_all_auths();
+    assert_eq!(s.client.try_create_invoice(&Bytes::new(&s.env), &100), Err(Ok(Error::InvalidInvoiceRef)));
+    let long = Bytes::from_slice(&s.env, &[b'a'; 65]);
+    assert_eq!(s.client.try_create_invoice(&long, &100), Err(Ok(Error::InvalidInvoiceRef)));
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "A"), &0), Err(Ok(Error::InvalidAmount)));
+    assert_eq!(s.client.try_create_invoice(&r(&s.env, "A"), &-1), Err(Ok(Error::InvalidAmount)));
+}
+
+#[test]
+fn cancelled_cannot_be_paid_and_paid_cannot_be_cancelled() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 1_000);
+    open_inv(&s, 100, "INV-1");
+    s.env.mock_all_auths();
+    s.client.create_invoice(&r(&s.env, "INV-2"), &100);
+    s.client.cancel_invoice(&r(&s.env, "INV-1"));
+    let evs = s.env.events().all().filter_by_contract(&s.id);
+    assert_eq!(evs, std::vec![InvoiceCancelled { invoice_ref: r(&s.env, "INV-1") }.to_xdr(&s.env, &s.id)]);
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-1")), Some((100, 2)));
+    assert_eq!(s.client.try_deposit(&payer, &100, &r(&s.env, "INV-1")), Err(Ok(Error::InvoiceCancelled)));
+    assert_eq!(s.client.try_cancel_invoice(&r(&s.env, "INV-1")), Err(Ok(Error::InvoiceCancelled)));
+    assert!(!s.client.is_paid(&r(&s.env, "INV-1")));
+
+    s.client.deposit(&payer, &100, &r(&s.env, "INV-2"));
+    assert_eq!(s.client.try_cancel_invoice(&r(&s.env, "INV-2")), Err(Ok(Error::InvoiceAlreadyPaid)));
+    assert_eq!(s.client.try_cancel_invoice(&r(&s.env, "NOPE")), Err(Ok(Error::UnknownInvoice)));
+    assert_eq!(s.client.invoice(&r(&s.env, "INV-2")), Some((100, 1)));
+    assert_eq!(s.client.balances(), (10, 15, 75));
+    pots_within_held(&s);
+}
+
+#[test]
+fn create_invoice_emits_opened_event() {
+    let s = setup(1000, 1500);
+    open_inv(&s, 777, "INV-9");
+    let evs = s.env.events().all().filter_by_contract(&s.id);
+    assert_eq!(
+        evs,
+        std::vec![InvoiceOpened { invoice_ref: r(&s.env, "INV-9"), amount: 777 }.to_xdr(&s.env, &s.id)]
+    );
 }

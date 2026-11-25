@@ -22,6 +22,10 @@ pub enum Error {
     InvoiceAlreadyPaid = 6,
     Overflow = 7,
     InvalidPayer = 8,
+    InvoiceExists = 9,
+    UnknownInvoice = 10,
+    WrongAmount = 11,
+    InvoiceCancelled = 12,
 }
 
 #[contracttype]
@@ -33,6 +37,21 @@ pub enum Pot {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Status {
+    Open,
+    Paid,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+struct Invoice {
+    amount: i128,
+    status: Status,
+}
+
+#[contracttype]
 #[derive(Clone)]
 enum Key {
     Owner,
@@ -40,7 +59,7 @@ enum Key {
     TaxBps,
     GoalBps,
     Pot(Pot),
-    Paid(Bytes),
+    Invoice(Bytes),
 }
 
 #[contractevent(topics = ["split", "v1"])]
@@ -53,6 +72,17 @@ pub struct Split {
     pub tax: i128,
     pub goal: i128,
     pub spend: i128,
+}
+
+#[contractevent(topics = ["invoice_opened", "v1"])]
+pub struct InvoiceOpened {
+    pub invoice_ref: Bytes,
+    pub amount: i128,
+}
+
+#[contractevent(topics = ["invoice_cancelled", "v1"])]
+pub struct InvoiceCancelled {
+    pub invoice_ref: Bytes,
 }
 
 #[contractevent(topics = ["withdraw", "v1"])]
@@ -110,6 +140,30 @@ fn token_addr(env: &Env) -> Address {
     env.storage().instance().get(&Key::Token).unwrap()
 }
 
+fn check_ref(r: &Bytes) -> Result<(), Error> {
+    if r.is_empty() || r.len() > MAX_REF_LEN {
+        return Err(Error::InvalidInvoiceRef);
+    }
+    Ok(())
+}
+
+fn save_invoice(env: &Env, r: &Bytes, inv: &Invoice) {
+    let k = Key::Invoice(r.clone());
+    let p = env.storage().persistent();
+    p.set(&k, inv);
+    p.extend_ttl(&k, PAID_TTL_THRESHOLD, PAID_TTL_EXTEND_TO);
+}
+
+fn load_invoice(env: &Env, r: &Bytes) -> Option<Invoice> {
+    let k = Key::Invoice(r.clone());
+    let p = env.storage().persistent();
+    let inv: Option<Invoice> = p.get(&k);
+    if inv.is_some() {
+        p.extend_ttl(&k, PAID_TTL_THRESHOLD, PAID_TTL_EXTEND_TO);
+    }
+    inv
+}
+
 #[contractimpl]
 impl SplitContract {
     pub fn __constructor(
@@ -138,8 +192,15 @@ impl SplitContract {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if invoice_ref.is_empty() || invoice_ref.len() > MAX_REF_LEN {
-            return Err(Error::InvalidInvoiceRef);
+        check_ref(&invoice_ref)?;
+        let mut inv = load_invoice(&env, &invoice_ref).ok_or(Error::UnknownInvoice)?;
+        match inv.status {
+            Status::Paid => return Err(Error::InvoiceAlreadyPaid),
+            Status::Cancelled => return Err(Error::InvoiceCancelled),
+            Status::Open => {}
+        }
+        if amount != inv.amount {
+            return Err(Error::WrongAmount);
         }
         let s = env.storage().instance();
         let tax_bps: u32 = s.get(&Key::TaxBps).unwrap();
@@ -150,17 +211,12 @@ impl SplitContract {
         if tax + goal + spend != amount || spend < 0 {
             return Err(Error::Overflow);
         }
-        let paid_key = Key::Paid(invoice_ref.clone());
-        let p = env.storage().persistent();
-        if p.has(&paid_key) {
-            return Err(Error::InvoiceAlreadyPaid);
-        }
         let new_tax = get_pot(&env, Pot::Tax).checked_add(tax).ok_or(Error::Overflow)?;
         let new_goal = get_pot(&env, Pot::Goal).checked_add(goal).ok_or(Error::Overflow)?;
         let new_spend = get_pot(&env, Pot::Spend).checked_add(spend).ok_or(Error::Overflow)?;
 
-        p.set(&paid_key, &true);
-        p.extend_ttl(&paid_key, PAID_TTL_THRESHOLD, PAID_TTL_EXTEND_TO);
+        inv.status = Status::Paid;
+        save_invoice(&env, &invoice_ref, &inv);
         set_pot(&env, Pot::Tax, new_tax);
         set_pot(&env, Pot::Goal, new_goal);
         set_pot(&env, Pot::Spend, new_spend);
@@ -170,15 +226,46 @@ impl SplitContract {
         Ok(())
     }
 
+    pub fn create_invoice(env: Env, invoice_ref: Bytes, amount: i128) -> Result<(), Error> {
+        owner(&env).require_auth();
+        bump(&env);
+        check_ref(&invoice_ref)?;
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        if env.storage().persistent().has(&Key::Invoice(invoice_ref.clone())) {
+            return Err(Error::InvoiceExists);
+        }
+        save_invoice(&env, &invoice_ref, &Invoice { amount, status: Status::Open });
+        InvoiceOpened { invoice_ref, amount }.publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_invoice(env: Env, invoice_ref: Bytes) -> Result<(), Error> {
+        owner(&env).require_auth();
+        bump(&env);
+        check_ref(&invoice_ref)?;
+        let mut inv = load_invoice(&env, &invoice_ref).ok_or(Error::UnknownInvoice)?;
+        match inv.status {
+            Status::Paid => return Err(Error::InvoiceAlreadyPaid),
+            Status::Cancelled => return Err(Error::InvoiceCancelled),
+            Status::Open => {}
+        }
+        inv.status = Status::Cancelled;
+        save_invoice(&env, &invoice_ref, &inv);
+        InvoiceCancelled { invoice_ref }.publish(&env);
+        Ok(())
+    }
+
+    /// (amount, status) where status is 0 open, 1 paid, 2 cancelled.
+    pub fn invoice(env: Env, invoice_ref: Bytes) -> Option<(i128, u32)> {
+        bump(&env);
+        load_invoice(&env, &invoice_ref).map(|i| (i.amount, i.status as u32))
+    }
+
     pub fn is_paid(env: Env, invoice_ref: Bytes) -> bool {
         bump(&env);
-        let k = Key::Paid(invoice_ref);
-        let p = env.storage().persistent();
-        let paid = p.has(&k);
-        if paid {
-            p.extend_ttl(&k, PAID_TTL_THRESHOLD, PAID_TTL_EXTEND_TO);
-        }
-        paid
+        matches!(load_invoice(&env, &invoice_ref), Some(Invoice { status: Status::Paid, .. }))
     }
 
     pub fn reconcile(env: Env) -> Result<i128, Error> {
