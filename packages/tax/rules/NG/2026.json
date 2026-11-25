@@ -1,0 +1,102 @@
+{
+  "country": "NG",
+  "year": 2026,
+  "currency": "NGN",
+  "timezoneOffset": "+01:00",
+  "pit": {
+    "id": "NG-2026-PIT",
+    "citation": "Nigeria Tax Act 2025, s.58 and Fourth Schedule (per PwC Tax Summaries)",
+    "url": "https://taxsummaries.pwc.com/nigeria/individual",
+    "confidence": "secondary",
+    "verifiedOn": "2026-11-25",
+    "bands": [
+      {
+        "id": "NG-2026-PIT-BAND-1",
+        "from": "0",
+        "to": "800000",
+        "rate": "0"
+      },
+      {
+        "id": "NG-2026-PIT-BAND-2",
+        "from": "800000",
+        "to": "3000000",
+        "rate": "0.15"
+      },
+      {
+        "id": "NG-2026-PIT-BAND-3",
+        "from": "3000000",
+        "to": "12000000",
+        "rate": "0.18"
+      },
+      {
+        "id": "NG-2026-PIT-BAND-4",
+        "from": "12000000",
+        "to": "25000000",
+        "rate": "0.21"
+      },
+      {
+        "id": "NG-2026-PIT-BAND-5",
+        "from": "25000000",
+        "to": "50000000",
+        "rate": "0.23"
+      },
+      {
+        "id": "NG-2026-PIT-BAND-6",
+        "from": "50000000",
+        "to": null,
+        "rate": "0.25"
+      }
+    ]
+  },
+  "rentRelief": {
+    "id": "NG-2026-RELIEF-RENT",
+    "citation": "Nigeria Tax Act 2025, s.30(2)(a)(vi) (per Legal500)",
+    "url": "https://www.legal500.com/intelligence/nigeria/tax/understanding-personal-income-tax-under-the-nigerian-tax-act-2025",
+    "confidence": "secondary",
+    "verifiedOn": "2026-11-25",
+    "rate": "0.2",
+    "capNgn": "500000"
+  },
+  "virtualAssetIncome": {
+    "id": "NG-2026-VA-INCOME",
+    "citation": "NRS Information Circular No. 2026/21, Guidelines on the Taxation of Virtual Assets, 31 Jul 2026 (per KPMG, Taxing the Digital Frontier)",
+    "url": "https://assets.kpmg.com/content/dam/kpmgsites/ng/pdf/2026/10/Taxing%20the%20Digital%20Frontier.pdf",
+    "confidence": "secondary",
+    "verifiedOn": "2026-11-25",
+    "summary": "Professional fees received in virtual assets are taxable income."
+  },
+  "valuation": {
+    "id": "NG-2026-VA-VALUATION",
+    "citation": "NRS Information Circular No. 2026/21, Guidelines on the Taxation of Virtual Assets, 31 Jul 2026 (per The Paypers)",
+    "url": "https://thepaypers.com/crypto-web3-and-cbdc/expert-views/nigerias-new-tax-rules-for-virtual-assets",
+    "confidence": "secondary",
+    "verifiedOn": "2026-11-25",
+    "summary": "Virtual assets are valued at the official naira rate for each transaction date.",
+    "basis": "analogy",
+    "note": "The circular states the conversion rule explicitly for gains (CBN/NAFEM rate on the disposal date, per PwC) and for employment income (USD fair value on the payment date, per KPMG), but not for professional fees. Caracal applies the official rate on the receipt date by analogy."
+  },
+  "stampDuty": {
+    "id": "NG-2026-STAMP-CONVERSION",
+    "citation": "Nigeria Tax Act 2025, Ninth Schedule item 33, per NRS Information Circular 2026/21 (PwC Nigeria tax alert)",
+    "url": "https://www.pwc.com/ng/en/assets/pdf/tax-alert-taxing-the-intangible.pdf",
+    "confidence": "secondary",
+    "verifiedOn": "2026-11-25",
+    "rate": "0.015",
+    "summary": "Stamp duty of 1.5% ad valorem applies to token-to-fiat and fiat-to-token conversions. The transferee bears it.",
+    "additionalUrls": [
+      "https://assets.kpmg.com/content/dam/kpmgsites/ng/pdf/2026/10/Taxing%20the%20Digital%20Frontier.pdf"
+    ]
+  },
+  "notModelled": [
+    {
+      "id": "NG-2026-NM-WHT-PROFESSIONAL-FEES",
+      "title": "Withholding tax on professional fees paid in crypto",
+      "reason": "WHT applies to payments for services made in virtual assets (KPMG, PwC), but no source states the rate for professional fees. Not modelled until the circular text is read."
+    },
+    {
+      "id": "NG-2026-NM-WHT-DISPOSAL",
+      "title": "1% WHT on disposal proceeds (Categories 1, 3, 5)",
+      "reason": "Circular para 8.0. KPMG says it lacks a basis in the NTA. Disposals are out of scope."
+    }
+  ]
+}
