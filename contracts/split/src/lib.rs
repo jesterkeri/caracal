@@ -26,6 +26,7 @@ pub enum Error {
     UnknownInvoice = 10,
     WrongAmount = 11,
     InvoiceCancelled = 12,
+    InvalidRecipient = 13,
 }
 
 #[contracttype]
@@ -299,6 +300,9 @@ impl SplitContract {
         bump(&env);
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+        if to == env.current_contract_address() {
+            return Err(Error::InvalidRecipient);
         }
         let bal = get_pot(&env, pot);
         if amount > bal {

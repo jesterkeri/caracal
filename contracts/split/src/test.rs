@@ -496,3 +496,18 @@ fn create_invoice_emits_opened_event() {
         std::vec![InvoiceOpened { invoice_ref: r(&s.env, "INV-9"), amount: 777 }.to_xdr(&s.env, &s.id)]
     );
 }
+
+#[test]
+fn withdraw_to_self_is_refused_and_changes_nothing() {
+    let s = setup(1000, 1500);
+    let payer = Address::generate(&s.env);
+    fund(&s, &payer, 1_000);
+    dep(&s, &payer, 1_000);
+    let before = s.client.balances();
+    let tok = TokenClient::new(&s.env, &s.token);
+    let held = tok.balance(&s.id);
+    owner_auth!(s, "withdraw", (Pot::Spend, &s.id, 10i128));
+    assert_eq!(s.client.try_withdraw(&Pot::Spend, &s.id, &10), Err(Ok(Error::InvalidRecipient)));
+    assert_eq!(s.client.balances(), before);
+    assert_eq!(tok.balance(&s.id), held);
+}
