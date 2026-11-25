@@ -49,21 +49,27 @@ export async function POST(request: Request) {
 
   const upstream = process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM;
   let res: Response;
+  let out: string;
   try {
+    // The timeout covers both the request and reading the answer.
     res = await fetch(upstream, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(verdict.body),
       signal: AbortSignal.timeout(60_000),
     });
+    out = await res.text();
   } catch (e) {
     const cause = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e);
-    console.error("relay upstream unreachable:", cause);
+    console.error("relay upstream failed:", cause);
     return fail("The fee relayer could not be reached. Try again.", 502);
   }
-  const out = await res.text();
+  // 204, 205 and 304 may not carry a body; Response throws if given one.
+  if (NULL_BODY_STATUSES.has(res.status)) return new Response(null, { status: res.status });
   return new Response(out, {
     status: res.status,
     headers: { "Content-Type": res.headers.get("Content-Type") ?? "application/json" },
   });
 }
+
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
