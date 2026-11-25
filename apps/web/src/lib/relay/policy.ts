@@ -38,8 +38,8 @@ export type Policy = {
   wasmFunctions: ReadonlyMap<string, ReadonlySet<string>>;
   /** wasm hashes Caracal sponsors deploying, each with a check of its constructor arguments. */
   deployable: ReadonlyMap<string, ArgsRule>;
-  /** wasm hashes a classic (G) account may authorise deploying: the wallet kit's shared deployer. */
-  deployerAuth: ReadonlySet<string>;
+  /** Classic (G) accounts allowed to sign, each with the wasm hashes it may deploy (the wallet kit's shared deployer). */
+  deployerAuth: ReadonlyMap<string, ReadonlySet<string>>;
   /** wasm hashes whose `execute(target, fn, args)` forwards a call that is then checked. These are the wallets. */
   executors: ReadonlySet<string>;
   /** Stellar asset contracts -> functions sponsored on each. */
@@ -101,7 +101,22 @@ function strkey(a: xdr.ScAddress): string {
   }
 }
 
-async function checkDeploy(c: xdr.CreateContractArgsV2, policy: Policy, ctx: Ctx) {
+/** The account a deployment is created from (its contract id preimage), or null for asset contracts. */
+function deployer(c: xdr.CreateContractArgsV2): string | null {
+  const pre = c.contractIdPreimage();
+  if (pre.switch().name !== "contractIdPreimageFromAddress") return null;
+  return strkey(pre.fromAddress().address());
+}
+
+/**
+ * `signer` is the address whose auth entry covers this deployment. The deployer
+ * in the preimage must be that same address: otherwise an unrelated account,
+ * possibly the relayer as transaction source, would be the deployer.
+ */
+async function checkDeploy(c: xdr.CreateContractArgsV2, policy: Policy, ctx: Ctx, signer: string) {
+  const from = deployer(c);
+  if (from === null) throw new Denied("Only deployments from an address are sponsored");
+  if (from !== signer) throw new Denied("The deployer must be the address that authorises the deployment");
   const exe = c.executable();
   if (exe.switch().name !== "contractExecutableWasm") {
     throw new Denied("Only wasm contracts on the allowlist can be deployed");
@@ -167,6 +182,7 @@ async function checkCall(target: string, fn: string, args: xdr.ScVal[], d: Deps,
 
 async function checkInvocationTree(
   root: xdr.SorobanAuthorizedInvocation,
+  signer: string,
   d: Deps,
   budget: { nodes: number },
 ): Promise<void> {
@@ -182,7 +198,7 @@ async function checkInvocationTree(
         break;
       }
       case "sorobanAuthorizedFunctionTypeCreateContractV2HostFn":
-        await checkDeploy(f.createContractV2HostFn(), d.policy, d.ctx);
+        await checkDeploy(f.createContractV2HostFn(), d.policy, d.ctx, signer);
         break;
       default:
         throw new Denied("This authorization type is not sponsored");
@@ -240,19 +256,23 @@ export async function checkPayload(
     }
 
     // Who signs: a passkey wallet, or (only to deploy a wallet) the kit's shared deployer.
+    const signers: string[] = [];
     for (const entry of entries) {
       const cr = entry.credentials();
       const signer = strkey((cr.switch().name === "sorobanCredentialsAddressV2" ? cr.addressV2() : cr.address()).address());
+      signers.push(signer);
       if (signer.startsWith("C")) {
         if (!(await ctx.isWallet(signer))) throw new Denied("Only Caracal passkey wallets can sign sponsored calls");
         continue;
       }
       const root = entry.rootInvocation();
       const rf = root.function();
+      const allowed = policy.deployerAuth.get(signer);
       const deploysWallet =
+        allowed !== undefined &&
         rf.switch().name === "sorobanAuthorizedFunctionTypeCreateContractV2HostFn" &&
         rf.createContractV2HostFn().executable().switch().name === "contractExecutableWasm" &&
-        policy.deployerAuth.has(rf.createContractV2HostFn().executable().wasmHash().toString("hex")) &&
+        allowed.has(rf.createContractV2HostFn().executable().wasmHash().toString("hex")) &&
         root.subInvocations().length === 0;
       if (!deploysWallet) throw new Denied("A classic account may only sign a wallet deployment");
     }
@@ -266,18 +286,21 @@ export async function checkPayload(
     switch (fn.switch().name) {
       case "hostFunctionTypeCreateContractV2": {
         const c = fn.createContractV2();
-        await checkDeploy(c, policy, ctx);
-        // The deployer must explicitly authorise exactly this deployment, so the
-        // relayer's own account is never the implicit deployer.
+        // The deployer must explicitly authorise exactly this deployment with
+        // its own auth entry, so the relayer's account is never the implicit
+        // deployer.
+        const from = deployer(c);
         const want = c.toXDR("base64");
-        const authorised = entries.some((e) => {
+        const authorised = entries.some((e, i) => {
           const rf = e.rootInvocation().function();
           return (
+            signers[i] === from &&
             rf.switch().name === "sorobanAuthorizedFunctionTypeCreateContractV2HostFn" &&
             rf.createContractV2HostFn().toXDR("base64") === want
           );
         });
-        if (!authorised) throw new Denied("The deployment is not authorised by any auth entry");
+        if (!authorised) throw new Denied("The deployment is not authorised by its deployer");
+        await checkDeploy(c, policy, ctx, from!);
         break;
       }
       case "hostFunctionTypeInvokeContract": {
@@ -290,7 +313,7 @@ export async function checkPayload(
     }
 
     const budget = { nodes: 0 };
-    for (const e of entries) await checkInvocationTree(e.rootInvocation(), d, budget);
+    for (let i = 0; i < entries.length; i++) await checkInvocationTree(entries[i]!.rootInvocation(), signers[i]!, d, budget);
 
     return { ok: true, body: { func: o.func, auth: auth as string[] } };
   } catch (e) {

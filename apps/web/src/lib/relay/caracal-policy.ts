@@ -76,7 +76,7 @@ export const CARACAL_POLICY: Policy = {
     [SMART_ACCOUNT.accountWasmHash, walletConstructor],
     [SPLIT.wasmHash, splitConstructor],
   ]),
-  deployerAuth: new Set([SMART_ACCOUNT.accountWasmHash]),
+  deployerAuth: new Map([[SMART_ACCOUNT.sharedDeployer, new Set([SMART_ACCOUNT.accountWasmHash])]]),
   executors: new Set([SMART_ACCOUNT.accountWasmHash]),
   sacFunctions: new Map([[TOKENS.usdc, new Set(["transfer"])]]),
   callRules: new Map<string, ArgsRule>([

@@ -15,6 +15,9 @@ export const SMART_ACCOUNT = {
   // OpenZeppelin stellar-accounts v0.8.0 account build.
   accountWasmHash: "c514d35ea67eaea9bfc1fb3327854c0c06111bc1ddebd4fe217c504c1004b9e1",
   webauthnVerifier: "CC7EKIHQP3TN4CARQDND6CEOY2UXLWWC2X5GHTD5NLAT7BG5GPZIOM3F",
+  // smart-account-kit 0.10.0 shared deployer: Keypair.fromRawEd25519Seed(sha256("openzeppelin-smart-account-kit")).
+  // Sign-only; it never pays fees. Seen as the deployer in wallet deploy tx 1559440b...
+  sharedDeployer: "GAAH4OT36RRCCAGKARGPN2HLHT2NOBVFHO4GUHA6CF7UKQ4MMV24WQ4N",
 } as const;
 
 export const SPLIT = {
