@@ -73,6 +73,7 @@
     "verifiedOn": "2026-11-25",
     "summary": "Virtual assets are valued at the official naira rate for each transaction date.",
     "basis": "analogy",
+    "rateDateRule": "same_day",
     "note": "The circular states the conversion rule explicitly for gains (CBN/NAFEM rate on the disposal date, per PwC) and for employment income (USD fair value on the payment date, per KPMG), but not for professional fees. Caracal applies the official rate on the receipt date by analogy."
   },
   "stampDuty": {

@@ -7,6 +7,7 @@ export type FxQuote = {
 
 export type LedgerEntry = {
   id: string;
+  accountId: string;
   txHash: string;
   occurredAt: string;
   direction: "in" | "out";
@@ -20,10 +21,18 @@ export type Account = {
   id: string;
   label: string;
   lastSyncedAt: string;
+  /** ISO instant (with offset) from which this account's history is complete. */
+  coverageFrom: string;
+  /** ISO instant (with offset) when the account came into existence, if known. */
+  openedAt?: string;
   gaps: { from: string; to: string }[];
 };
 
-export type Profile = { annualRentNgn?: string };
+export type IncomeScope =
+  | { allIncomeInLinkedAccounts: true }
+  | { allIncomeInLinkedAccounts: false; otherIncomeNgn: string; otherIncomeNote?: string };
+
+export type Profile = { annualRentNgn?: string; incomeScope: IncomeScope };
 
 export type EstimateInput = {
   country: "NG";
@@ -55,7 +64,7 @@ export type Rules = {
   };
   rentRelief: RuleSource & { rate: string; capNgn: string };
   virtualAssetIncome: RuleSource & { summary: string };
-  valuation: RuleSource & { summary: string; basis: string; note: string };
+  valuation: RuleSource & { summary: string; basis: string; note: string; rateDateRule: string };
   stampDuty: RuleSource & { rate: string; summary: string; additionalUrls: string[] };
   notModelled: { id: string; title: string; reason: string }[];
 };
@@ -86,6 +95,12 @@ export type IncomeLine = {
   fxGapPct?: string;
 };
 
+export type DeclaredIncomeLine = {
+  label: string;
+  amountNgn: string;
+  source: "declared by you";
+};
+
 export type BandResult = {
   from: string;
   to: string | null;
@@ -96,7 +111,7 @@ export type BandResult = {
 };
 
 export type Informational = {
-  kind: "stamp_duty" | "not_modelled" | "rate_date";
+  kind: "stamp_duty" | "not_modelled" | "declared_income";
   id: string;
   message: string;
 };
@@ -112,6 +127,7 @@ export type Estimate = {
   totalTaxNgn: string;
   effectiveRate: string;
   incomeLines: IncomeLine[];
+  declaredIncomeLines: DeclaredIncomeLine[];
   informational: Informational[];
   sources: SourceRef[];
   disclaimer: string;
