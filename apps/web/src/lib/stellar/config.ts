@@ -21,9 +21,9 @@ export const SMART_ACCOUNT = {
 } as const;
 
 export const SPLIT = {
-  // sha256 of contracts/split wasm with invoice binding (fix/invoice-binding,
-  // deployed 2026-11-25 as CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB).
-  wasmHash: "70fb8ddce2908fc095439eb57f099fe559d8ffee85fe76750d48ec93059a990d",
+  // sha256 of contracts/split wasm (invoice binding + withdraw-to-self guard),
+  // deployed 2026-11-25 as CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M.
+  wasmHash: "b97d71c33aa88dbc12bacb07f4903590e2a0ad4fc4729219e8e9c94d6c2f8c58",
 } as const;
 
 export const TOKENS = {

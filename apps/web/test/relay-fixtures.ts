@@ -1,7 +1,7 @@
 // Shared fixtures for the relay policy tests, shaped like real testnet data:
 // - WALLET: a passkey wallet deployed 2026-11-25 (tx 77975e3e...), running the
 //   OpenZeppelin account wasm.
-// - SPLIT_ID: the split contract deployed 2026-11-25 (tx 7c61879a...). Its live
+// - SPLIT_ID: the split contract deployed 2026-11-25 (tx 9db1ab3c...). Its live
 //   instance storage keys are Token, Owner, TaxBps, GoalBps, Pot(..). On chain its
 //   owner is the CLI deployer; here it is owned by WALLET, as an app-deployed split
 //   would be.
@@ -12,7 +12,7 @@ import type { InstanceLookup, WasmLookup } from "../src/lib/relay/policy";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 
 export const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
-export const SPLIT_ID = "CAD5AH4U3ONNMZJKYC2BECMOMFACKG4JGNYLZIEERSIYWX2NAC26DVVB";
+export const SPLIT_ID = "CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M";
 export const OLD_SPLIT_ID = "CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2";
 export const OLD_SPLIT_HASH = "24d6dafcf0d0204ce0437071191562003bc4fea039fc92ee5746c10e30ccaf13";
 /** smart-account-kit's shared deployer, from deploy tx 1559440b... */
