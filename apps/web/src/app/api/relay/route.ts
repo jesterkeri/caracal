@@ -66,10 +66,22 @@ export async function POST(request: Request) {
   }
   // 204, 205 and 304 may not carry a body; Response throws if given one.
   if (NULL_BODY_STATUSES.has(res.status)) return new Response(null, { status: res.status });
-  return new Response(out, {
-    status: res.status,
-    headers: { "Content-Type": res.headers.get("Content-Type") ?? "application/json" },
-  });
+  // The wallet kit reads `success` from the answer. Anything that is not the
+  // relayer's JSON (a CDN error page, an empty body) becomes our own 502.
+  if (!isRelayerAnswer(out)) {
+    console.error("relay upstream answered", res.status, "with an unreadable body");
+    return fail("The fee relayer gave an answer Caracal could not read. Try again.", 502);
+  }
+  return new Response(out, { status: res.status, headers: { "Content-Type": "application/json" } });
+}
+
+function isRelayerAnswer(text: string): boolean {
+  try {
+    const v: unknown = JSON.parse(text);
+    return typeof v === "object" && v !== null && typeof (v as { success?: unknown }).success === "boolean";
+  } catch {
+    return false;
+  }
 }
 
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);

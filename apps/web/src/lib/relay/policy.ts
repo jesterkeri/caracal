@@ -207,6 +207,17 @@ async function checkInvocationTree(
   }
 }
 
+/**
+ * Node's base64 decoder skips characters it does not know and stops at "=", so
+ * a lenient decode could check different bytes than the upstream relayer
+ * parses. The body is forwarded as received, so accept a string only if it is
+ * exactly the canonical encoding of what was decoded.
+ */
+function canonical<T extends { toXDR(format: "base64"): string }>(value: T, received: string): T {
+  if (value.toXDR("base64") !== received) throw new Error("not canonical base64 XDR");
+  return value;
+}
+
 export async function checkPayload(
   body: unknown,
   policy: Policy,
@@ -245,7 +256,7 @@ export async function checkPayload(
       if (typeof a !== "string") throw new Denied("Auth entries must be base64 XDR strings", 400);
       let entry: xdr.SorobanAuthorizationEntry;
       try {
-        entry = xdr.SorobanAuthorizationEntry.fromXDR(a, "base64");
+        entry = canonical(xdr.SorobanAuthorizationEntry.fromXDR(a, "base64"), a);
       } catch {
         throw new Denied("An auth entry is not valid XDR", 400);
       }
@@ -279,7 +290,7 @@ export async function checkPayload(
 
     let fn: xdr.HostFunction;
     try {
-      fn = xdr.HostFunction.fromXDR(o.func, "base64");
+      fn = canonical(xdr.HostFunction.fromXDR(o.func, "base64"), o.func);
     } catch {
       throw new Denied("func is not valid XDR", 400);
     }
