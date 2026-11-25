@@ -190,6 +190,6 @@ describe("output labelling", () => {
     expect(estimate(input([], { taxYear: 2031 })).disclaimer).toBe("This is an estimate, not tax advice.");
   });
   it("has no em dashes in the rules data", () => {
-    expect(JSON.stringify(getRules("NG", 2026))).not.toContain("—");
+    expect(JSON.stringify(getRules("NG", 2026))).not.toContain(String.fromCharCode(0x2014));
   });
 });
