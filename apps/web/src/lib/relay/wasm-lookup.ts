@@ -33,8 +33,13 @@ export function rpcContractLookup(rpcUrl: string): { wasm: WasmLookup; instance:
       if (exe.switch().name === "contractExecutableWasm") result.hash = exe.wasmHash().toString("hex");
       result.storage = instance.storage() ?? [];
     }
-    if (cache.size >= MAX_ENTRIES) cache.clear();
-    cache.set(contractId, { info: result, at: Date.now() });
+    // Only cache contracts that exist. A wallet or split looked up a moment
+    // before its deploy lands must be found on the next request, not refused
+    // for the rest of the TTL.
+    if (result.hash !== null || result.storage !== null) {
+      if (cache.size >= MAX_ENTRIES) cache.clear();
+      cache.set(contractId, { info: result, at: Date.now() });
+    }
     return result;
   }
 

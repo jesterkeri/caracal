@@ -165,6 +165,14 @@ function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): 
  * not hold. Production callers leave it out.
  */
 export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateResult {
+  // Inputs often arrive as JSON from an untyped boundary: "2026" as a string
+  // would still find the rules but break the period arithmetic, so check types.
+  if (typeof input.taxYear !== "number" || !Number.isInteger(input.taxYear)) {
+    return refuse([`taxYear must be a whole number, got ${JSON.stringify(input.taxYear)}.`]);
+  }
+  if (typeof input.country !== "string") {
+    return refuse([`country must be a string, got ${JSON.stringify(input.country)}.`]);
+  }
   const rules = rulesOverride ?? getRules(input.country, input.taxYear);
   if (!rules) {
     return refuse([`No tax rules for ${input.country} ${input.taxYear}.`]);

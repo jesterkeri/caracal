@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   const back = (msg: string) =>
     NextResponse.redirect(new URL(`/signin?error=${encodeURIComponent(msg)}`, url.origin));
 
-  const upstreamError = url.searchParams.get("error_description") ?? url.searchParams.get("error");
+  const upstreamError = url.searchParams.get("error_description") || url.searchParams.get("error");
   if (upstreamError) return back(upstreamError);
   if (!code) return back("Sign-in was not started from Caracal. Use the Continue with Google button.");
 
