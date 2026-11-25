@@ -4,43 +4,36 @@
 // The relayer holds no user funds or keys, but it does pay real fees and
 // submits as its own account. So before forwarding, this route enforces a
 // sponsorship policy (src/lib/relay/policy.ts): bounded body, address-signed
-// auth only, and only allowlisted deployments and contract calls. Rate limits
-// are in memory, per server instance (testnet only; see policy.ts).
+// auth only, and only allowlisted deployments and allowlisted functions on
+// allowlisted contracts, checked through every authorisation tree.
+//
+// Rate limits here are a per-process burst control, NOT a global sponsor
+// budget: each server instance counts on its own and a restart resets it. The
+// sponsor's real budget is whatever the upstream relayer enforces. A shared
+// quota needs a shared store and is planned with the database.
 //
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
 // relayer. Calling it from the server means no browser CORS and no key in the
 // bundle.
 
-import { NETWORK, SMART_ACCOUNT, SPLIT, TOKENS } from "@/lib/stellar/config";
-import { checkPayload, readBounded, WindowLimiter, type Policy } from "@/lib/relay/policy";
+import { NETWORK } from "@/lib/stellar/config";
+import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
+import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
 import { rpcWasmLookup } from "@/lib/relay/wasm-lookup";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
 
-const POLICY: Policy = {
-  wasmAllowlist: new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash]),
-  sacAllowlist: new Map([[TOKENS.usdc, new Set(["transfer"])]]),
-};
-
 const lookupWasm = rpcWasmLookup(NETWORK.rpcUrl);
 const perIp = new WindowLimiter(10, 60_000);
-const global = new WindowLimiter(120, 60_000);
-
-// On Vercel, x-forwarded-for is set by the platform. Elsewhere it can be
-// spoofed, which is why the global limit also applies.
-function clientIp(request: Request): string {
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]!.trim();
-  return request.headers.get("x-real-ip")?.trim() || "unknown";
-}
+const perInstance = new WindowLimiter(120, 60_000);
 
 const fail = (error: string, status: number) =>
   Response.json({ success: false, error }, { status });
 
 export async function POST(request: Request) {
-  if (!perIp.take(clientIp(request))) return fail("Too many requests. Wait a minute.", 429);
-  if (!global.take("all")) return fail("The fee sponsor is busy. Try again shortly.", 429);
+  if (!perIp.take(clientKey(request, process.env))) return fail("Too many requests. Wait a minute.", 429);
+  if (!perInstance.take("all")) return fail("The fee sponsor is busy. Try again shortly.", 429);
 
   const text = await readBounded(request);
   if (text === null) return fail("Payload too large", 413);
@@ -51,7 +44,7 @@ export async function POST(request: Request) {
     return fail("Body is not JSON", 400);
   }
 
-  const verdict = await checkPayload(body, POLICY, lookupWasm);
+  const verdict = await checkPayload(body, CARACAL_POLICY, lookupWasm);
   if (!verdict.ok) return fail(verdict.error, verdict.status);
 
   const upstream = process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM;

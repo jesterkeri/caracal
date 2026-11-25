@@ -1,6 +1,7 @@
 import { Address, xdr } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
-import { checkPayload, readBounded, WindowLimiter, type Policy } from "../src/lib/relay/policy";
+import { checkPayload, readBounded, WindowLimiter, clientKey } from "../src/lib/relay/policy";
+import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { rpcWasmLookup } from "../src/lib/relay/wasm-lookup";
 import { NETWORK, SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 
@@ -11,10 +12,7 @@ const OLD_SPLIT_ID = "CB2WIGKDHY542ZLLQQPK7JB2ZN2NL25JLQT7YADWEWMEAHDXFWCFLGQ2";
 const OLD_SPLIT_HASH = "24d6dafcf0d0204ce0437071191562003bc4fea039fc92ee5746c10e30ccaf13";
 const RELAYER_G = "GDO5SPZ7UYT3M6S4WQ4SM5UQ7XGKIKTXWMPG2SONWFD2LULZXBEULKGX";
 
-const POLICY: Policy = {
-  wasmAllowlist: new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash]),
-  sacAllowlist: new Map([[TOKENS.usdc, new Set(["transfer"])]]),
-};
+const POLICY = CARACAL_POLICY;
 
 const fakeChain: Record<string, string | null> = {
   [SPLIT_ID]: SPLIT.wasmHash,

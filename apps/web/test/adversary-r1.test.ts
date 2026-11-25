@@ -1,13 +1,11 @@
 import { Address, xdr } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
-import { checkPayload, readBounded, WindowLimiter, type Policy } from "../src/lib/relay/policy";
+import { checkPayload, readBounded, WindowLimiter, clientKey } from "../src/lib/relay/policy";
+import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
-const POLICY: Policy = {
-  wasmAllowlist: new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash]),
-  sacAllowlist: new Map([[TOKENS.usdc, new Set(["transfer"])]]),
-};
+const POLICY = CARACAL_POLICY;
 const lookup = async (id: string) => (id === WALLET ? SMART_ACCOUNT.accountWasmHash : null);
 const args = (c: string, fn: string) => new xdr.InvokeContractArgs({ contractAddress: Address.fromString(c).toScAddress(), functionName: fn, args: [] });
 const invoke = (c: string, fn: string) => xdr.HostFunction.hostFunctionTypeInvokeContract(args(c, fn)).toXDR();
@@ -15,7 +13,7 @@ const mkAuth = (sub = false) => {
   const inner = new xdr.SorobanAuthorizedInvocation({ function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(args(TOKENS.xlm, "transfer")), subInvocations: [] });
   return new xdr.SorobanAuthorizationEntry({
     credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({ address: Address.fromString(WALLET).toScAddress(), nonce: xdr.Int64.fromString("1"), signatureExpirationLedger: 10, signature: xdr.ScVal.scvVoid() })),
-    rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(args(WALLET, "x")), subInvocations: sub ? [inner] : [] }),
+    rootInvocation: new xdr.SorobanAuthorizedInvocation({ function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(args(TOKENS.usdc, "transfer")), subInvocations: sub ? [inner] : [] }),
   }).toXDR();
 };
 const b64 = (b: Buffer) => b.toString("base64");
