@@ -124,7 +124,7 @@ describe("what counts as income", () => {
       income("1", "100", "1"),
       income("2", "100", null, { occurredAt: "2025-12-31T10:00:00Z" }),
       income("3", "100", null, { occurredAt: "2027-01-01T10:00:00Z" }),
-    ]));
+    ], { asOf: "2027-01-02T12:00:00Z", accounts: [{ ...okAccount, lastSyncedAt: "2027-01-02T06:00:00Z" }] }));
     expect(r.incomeLines).toHaveLength(1);
   });
   it("uses the Lagos calendar year at the edges", () => {
