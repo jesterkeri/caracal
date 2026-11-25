@@ -16,3 +16,4 @@ contracts/**/test_snapshots/
 .claude/worktrees/
 .claude/design/
 graphify-out/
+supabase/.temp/
