@@ -16,7 +16,7 @@ The output is always an estimate: `disclaimer: "This is an estimate, not tax adv
 ## API
 
 - `estimate(input: EstimateInput): EstimateResult`
-- `stampDutyOnCashout(amountNgn, rules)` returns `{ duty, rate, ruleId, source }`
+- `stampDutyNotice(rules)` returns `{ status: "requires_review", ratePct, borneBy, message, ruleId, source }`. It never computes a naira amount.
 - `getRules(country, year)` returns the rules or `null`
 
 Types are in `src/types.ts`.
@@ -61,7 +61,7 @@ The result is `{ status: "refused", reasons: [...], disclaimer }` with no number
 
 Valuation: the circular states the conversion rule explicitly for gains and for employment income, but not for professional fees. Caracal applies the official rate on the receipt date by analogy. If the supplied rate is dated differently from the payment date (Nigeria time), an `informational` note says so.
 
-Stamp duty is reported as information and through `stampDutyOnCashout`. It is not added to the tax total.
+Stamp duty is information only. The cited rule says the transferee (the party receiving the tokens) bears it, and on a cash-out that is the buyer, not the user. So Caracal shows a sourced notice and deducts nothing. It is never added to the tax total.
 
 ## Not modelled
 

@@ -225,18 +225,29 @@ export function estimate(input: EstimateInput): EstimateResult {
   };
 }
 
-/** Stamp duty on converting an amount of naira, per the rules for that year. */
-export function stampDutyOnCashout(
-  amountNgn: string,
-  rules: Rules,
-): { duty: string; rate: string; ruleId: string; source: SourceRef } {
-  const kobo = toKobo(parseDec(amountNgn));
-  const duty = koboTimesRate(kobo, parseDec(rules.stampDuty.rate));
+/**
+ * Stamp duty notice for the cash-out screen. Information only: it never
+ * computes an amount and never deducts anything from the user's payout,
+ * because the rule says the transferee (the party receiving the tokens) bears
+ * the duty, and on a cash-out that is the buyer, not the user. Decided by
+ * Joshua on 2026-11-25 after review.
+ */
+export function stampDutyNotice(rules: Rules): {
+  status: "requires_review";
+  ratePct: string;
+  borneBy: "transferee";
+  message: string;
+  ruleId: string;
+  source: SourceRef;
+} {
+  const r = parseDec(rules.stampDuty.rate);
+  const ratePct = formatRatio(r.n * 100n, 10n ** BigInt(r.scale), 2);
   return {
-    duty: formatKobo(duty),
-    rate: rules.stampDuty.rate,
+    status: "requires_review",
+    ratePct,
+    borneBy: "transferee",
+    message: `Stamp duty of ${ratePct}% may apply to this conversion. Under the rule cited, the party receiving the tokens bears it, so nothing is taken from your payout here. This needs review by a tax practitioner.`,
     ruleId: rules.stampDuty.id,
     source: toSource(rules.stampDuty),
   };
 }
-

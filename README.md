@@ -19,11 +19,11 @@ So she guesses. She over-spends in a good month, and the tax bill or the yearly 
 ## What Caracal does
 
 1. **Sign up with Google and a fingerprint.** Caracal creates a passkey smart wallet on Stellar. There is no seed phrase and no XLM to buy, because Caracal sponsors network fees.
-2. **Send an invoice.** The client gets a pay link. They can pay in XLM or another Stellar asset, and Ada receives an exact amount of USDC.
-3. **The split happens on chain.** A Soroban contract that only Ada controls sorts each payment into a tax pot, a savings goal and spendable money.
-4. **Tax in naira, with the law shown.** Every payment is valued in naira on the day it arrived. The estimate names the rule and source behind each line, and it refuses to show a number when data is missing or stale.
-5. **Safe to spend.** One naira number: spendable money minus rent and bills that are building up minus goal money. Tap it to see the formula.
-6. **Cash out to naira** through a Stellar anchor, with the 1.5% stamp duty shown before Ada confirms.
+2. **Send an invoice.** The client gets a pay link and pays the invoice straight into Ada's split contract in USDC, in one signature. A client holding only XLM first converts it to the exact USDC amount on the Stellar DEX (a second signature).
+3. **The split happens on chain, in the same transaction as the payment.** A Soroban contract that only Ada controls sorts the payment into a tax pot, a savings goal and spendable money, and records the invoice it paid.
+4. **Prepare for tax, in naira, with the law shown.** Every payment is valued in naira on the day it arrived. The estimate names the rule and source behind each line, and it refuses to show a number when data is missing or stale. Caracal prepares records for Ada and her accountant. It does not file returns or pay tax.
+5. **Safe to spend.** One naira number: the spendable pot minus the rent and bills building up that it does not already cover. The tax and goal pots are already set aside, so they are not subtracted twice. Tap it to see the formula.
+6. **Cash out** through a Stellar anchor (SEP-24). On testnet this uses the SDF test anchor, which is a simulated withdrawal, not naira reaching a bank. A live naira payout needs a licensed anchor partner. Caracal shows a sourced note on stamp duty and deducts nothing for it.
 
 Caracal never holds user funds or keys. It is an estimate tool, not a tax adviser.
 
@@ -33,7 +33,7 @@ Caracal never holds user funds or keys. It is an estimate tool, not a tax advise
 |---|---|---|
 | Sign-up | Passkey smart wallet: a Soroban smart account via `smart-account-kit` and OpenZeppelin smart accounts | building |
 | No XLM needed | Fee sponsorship through the OpenZeppelin Channels relayer (fee bump), called only from our server | building |
-| Client pays | Classic `path_payment_strict_receive` on the Stellar DEX (XLM in, exact USDC out) | planned |
+| Client pays | Direct USDC `deposit` into the split contract; for XLM, a classic `path_payment_strict_receive` on the Stellar DEX first (XLM in, exact USDC out) | planned |
 | Payment arrives | Soroban split contract, one per user, emitting a `split` event per payment | building |
 | Invoice match | Invoice reference passed into the contract and emitted in its event | building |
 | Ledger | Horizon payments and Soroban events indexed into Postgres; the tax engine reads this | planned |
@@ -56,7 +56,18 @@ Details and sources for every choice are in [docs/research/verify-2026-11-25.md]
 
 ## Who can move money
 
-Only the wallet owner. The split contract has no admin and no upgrade function. The fee sponsor can pay network fees and nothing else. The full contract rules are in `contracts/split/README.md`.
+| Action | Who |
+|---|---|
+| Sign for the wallet | The user's passkey only |
+| Withdraw or move money between pots | The user (owner) only |
+| Change the split | The user only |
+| Pay an invoice into the contract | Anyone, with their own funds and their own signature |
+| Upgrade or pause the contract | Nobody: there is no admin and no upgrade function |
+| Pay network fees | The fee sponsor (OpenZeppelin Channels). It can pay fees and nothing else |
+| Read the ledger | Caracal's indexer, rebuilt from the public chain at any time |
+| Hold funds during a cash-out | The anchor, for the length of its own withdrawal process |
+
+Google sign-in identifies the account in the app. It cannot sign transactions or recover the wallet. The full contract rules are in `contracts/split/README.md`.
 
 ## Run it
 

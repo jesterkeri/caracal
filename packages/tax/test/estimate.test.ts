@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimate, getRules, stampDutyOnCashout } from "../src";
+import { estimate, getRules, stampDutyNotice } from "../src";
 import type { Account, EstimateInput, LedgerEntry } from "../src";
 
 const ASOF = "2026-12-01T12:00:00Z";
@@ -171,13 +171,17 @@ describe("fx gap", () => {
 
 describe("stamp duty", () => {
   const rules = getRules("NG", 2026)!;
-  it("is 1.5% of the amount", () => {
-    expect(stampDutyOnCashout("766225", rules)).toMatchObject({
-      duty: "11493.38",
-      rate: "0.015",
+  it("is a notice only, with no amount deducted", () => {
+    const n = stampDutyNotice(rules);
+    expect(n).toMatchObject({
+      status: "requires_review",
+      ratePct: "1.50",
+      borneBy: "transferee",
       ruleId: "NG-2026-STAMP-CONVERSION",
       source: { confidence: "secondary" },
     });
+    expect(n).not.toHaveProperty("duty");
+    expect(n.message).toContain("nothing is taken from your payout");
   });
 });
 

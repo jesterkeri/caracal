@@ -1,0 +1,14 @@
+# Decisions
+
+| Date | Decision | Why |
+|---|---|---|
+| 2026-11-25 | Wallet: `smart-account-kit` (OpenZeppelin smart accounts), with `passkey-kit` as the fallback | Current Stellar guide; Launchtube-era tooling is retired |
+| 2026-11-25 | Fees: OpenZeppelin Channels testnet relayer, called only from our server | Launchtube is retired; Channels blocks browser calls; the API key must stay server-side |
+| 2026-11-25 | One split contract per user, constructor-initialised, no admin, no upgrade | Users' funds never mix; nothing can front-run init; no one but the owner moves money |
+| 2026-11-25 | Pay flow: the client calls `deposit(from, amount, invoice_ref)` in USDC first. Then "pay in XLM" adds a classic path payment to the client's own account before the deposit (two signatures) | Classic payments cannot reach contract addresses, and a plain transfer does not run the split. Joshua chose this over a Soroswap route |
+| 2026-11-25 | Invoice reference is a contract argument and appears in the `split` event; one deposit per invoice | Soroban transactions cannot carry memos, and a muxed id is not readable inside the contract |
+| 2026-11-25 | Naira rate: CBN official rate, labelled with its source, behind an oracle-shaped interface | Reflector's testnet FX feed has no NGN |
+| 2026-11-25 | Stamp duty at cash-out: show a sourced notice, deduct nothing | The rule puts the duty on the transferee (the token buyer on a cash-out). Joshua chose inform, don't deduct |
+| 2026-11-25 | Withholding tax is not modelled | No source gives the rate for professional fees paid in crypto |
+| 2026-11-25 | Cash-out auth: SEP-45 (contract accounts), on testanchor.stellar.org | The user's wallet is a contract account; the test anchor lists SEP-45 |
+| 2026-11-25 | Core flow (features 1 to 4) end to end on testnet by Sat 28 Nov | Joshua kept the card's date. Submission is Tue 1 Dec; the Lagos showcase is Sat 5 Dec |
