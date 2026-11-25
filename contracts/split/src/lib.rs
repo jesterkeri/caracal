@@ -358,3 +358,5 @@ mod test;
 mod adv_test;
 #[cfg(test)]
 mod adv_r1_test;
+#[cfg(test)]
+mod adv_r2b_test;
