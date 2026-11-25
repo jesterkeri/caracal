@@ -85,7 +85,8 @@ describe("F5 strict instants", () => {
     it(`impossible ${field} refuses and names it`, () => expect(reasons(i)).toContain(field));
   }
   it("accepts a leap day and rejects a non-leap one", () => {
-    const at = (d: string) => estimate(inp([], { asOf: d, staleAfterHours: 1e7 })).status;
+    // The year is closed at this asOf, so the account must be synced up to it.
+    const at = (d: string) => estimate(inp([], { asOf: d, staleAfterHours: 1e7 }, { ...acct, lastSyncedAt: d })).status;
     expect(at("2028-02-29T12:00:00Z")).toBe("ok");
     for (const d of ["2026-02-29T12:00:00Z", "1900-02-29T12:00:00Z"]) {
       expect(reasons(inp([], { asOf: d }))).toContain("asOf is not a valid date");

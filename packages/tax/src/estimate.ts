@@ -23,6 +23,10 @@ import type {
 export const DISCLAIMER = "This is an estimate, not tax advice.";
 const DEFAULT_STALE_HOURS = 24;
 const MAX_AMOUNT_DP = 7;
+/** Most decimal places an exchange rate (statutory or economic) may carry. */
+const MAX_RATE_DP = 6;
+const DIRECTIONS: readonly string[] = ["in", "out"];
+const KINDS: readonly string[] = ["income", "own_transfer", "cashout", "split_internal", "refund", "other"];
 
 const toSource = (r: { id: string; citation: string; url: string; confidence: SourceRef["confidence"] }): SourceRef => ({
   ruleId: r.id,
@@ -94,7 +98,7 @@ function localDate(instantMs: number, offset: string): string {
 type Quote = LedgerEntry["fx"]["statutory"] & object;
 
 /** Fields every quote needs, statutory or economic. Returns a reason or null. */
-function checkQuoteShape(e: LedgerEntry, q: Quote, label: string, asOfMs: number, assetBase: string | undefined): string | null {
+function checkQuoteShape(e: LedgerEntry, q: Quote, label: string, asOfMs: number, assetBase: string | undefined, offset: string): string | null {
   const who = `Entry ${e.id}: the ${label}`;
   if (q === null || typeof q !== "object") return `${who} is malformed.`;
   if (!nonEmpty(q.provider)) return `${who} has no provider.`;
@@ -107,6 +111,16 @@ function checkQuoteShape(e: LedgerEntry, q: Quote, label: string, asOfMs: number
   const got = ms(q.retrievedAt);
   if (Number.isNaN(got)) return `${who}: retrievedAt is not a valid date with a Z or +HH:MM offset.`;
   if (got > asOfMs) return `${who}: retrievedAt (${q.retrievedAt}) is after ${String(asOfMsLabel(asOfMs))}. That cannot be right.`;
+  if (got < ms(`${q.date}T00:00:00${offset}`)) {
+    return `${who}: retrievedAt (${q.retrievedAt}) is before the start of the quote date ${q.date}. A rate cannot be fetched before its day begins.`;
+  }
+  try {
+    if (parseDec(q.ngnPerUnit).scale > MAX_RATE_DP) {
+      return `${who} rate has more than ${MAX_RATE_DP} decimal places, which no real rate source gives.`;
+    }
+  } catch {
+    // An unparseable rate is reported by the caller.
+  }
   return null;
 }
 
@@ -122,7 +136,7 @@ function checkStatutory(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number):
   if (base === undefined) {
     return `Entry ${e.id}: ${String(e.asset)} cannot be valued yet. Only ${Object.keys(rules.valuation.assetBase).join(", ")} can be valued today.`;
   }
-  const bad = checkQuoteShape(e, q, "official naira rate", asOfMs, base);
+  const bad = checkQuoteShape(e, q, "official naira rate", asOfMs, base, rules.timezoneOffset);
   if (bad) return bad;
   const prov = rules.valuation.statutoryProviders.find((p) => p.id === q.provider);
   if (!prov) return `Entry ${e.id}: the official naira rate comes from provider "${q.provider}", which is not an accepted official source.`;
@@ -133,7 +147,7 @@ function checkStatutory(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number):
 }
 
 function checkEconomic(e: LedgerEntry, q: Quote, rules: Rules, asOfMs: number): string | null {
-  const bad = checkQuoteShape(e, q, "market rate", asOfMs, baseFor(rules, e.asset));
+  const bad = checkQuoteShape(e, q, "market rate", asOfMs, baseFor(rules, e.asset), rules.timezoneOffset);
   if (bad) return bad;
   if (!/^https:\/\/\S+$/.test(q.sourceUrl)) return `Entry ${e.id}: the market rate sourceUrl must be an https URL.`;
   try {
@@ -165,6 +179,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
 
   const periodStart = ms(`${input.taxYear}-01-01T00:00:00${rules.timezoneOffset}`);
   const periodEnd = ms(`${input.taxYear + 1}-01-01T00:00:00${rules.timezoneOffset}`);
+  if (asOfMs < periodStart) {
+    return refuse([`asOf (${input.asOf}) is before ${input.taxYear} begins, so the tax year has not started.`]);
+  }
   const staleHours = input.staleAfterHours ?? DEFAULT_STALE_HOURS;
   if (!Number.isFinite(staleHours) || staleHours <= 0) {
     return refuse([`staleAfterHours must be a positive number of hours, got ${String(input.staleAfterHours)}.`]);
@@ -183,6 +200,9 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
       reasons.push(`Account "${a.label}" says it was synced at ${a.lastSyncedAt}, which is after ${input.asOf}. That cannot be right.`);
     } else if (asOfMs - synced > staleMs) {
       reasons.push(`Account "${a.label}" was last synced at ${a.lastSyncedAt}, which is too old. Sync it again.`);
+    }
+    if (!Number.isNaN(synced) && asOfMs >= periodEnd && synced < periodEnd) {
+      reasons.push(`Account "${a.label}" was last synced at ${a.lastSyncedAt}, before ${input.taxYear} ended, so income from the end of the year may be missing. Sync it again.`);
     }
     const cov = ms(a.coverageFrom);
     if (!Number.isNaN(synced) && !Number.isNaN(cov) && synced < cov) {
@@ -234,7 +254,18 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
   const parsed: Parsed[] = [];
   const seenIds = new Set<string>();
   const accountIds = new Set(input.accounts.map((a) => a.id));
+  const openedAtById = new Map<string, { label: string; raw: string; ms: number }>();
+  for (const a of input.accounts) {
+    if (a.openedAt !== undefined) openedAtById.set(a.id, { label: a.label, raw: a.openedAt, ms: ms(a.openedAt) });
+  }
+  // Every entry's kind and direction must be a known value, checked before any
+  // filtering so an unknown value can never silently drop an entry.
   for (const e of input.entries) {
+    if (!KINDS.includes(e.kind)) reasons.push(`Entry ${String(e.id)} has an unknown kind "${String(e.kind)}".`);
+    if (!DIRECTIONS.includes(e.direction)) reasons.push(`Entry ${String(e.id)} has an unknown direction "${String(e.direction)}".`);
+  }
+  for (const e of input.entries) {
+    if (!KINDS.includes(e.kind) || !DIRECTIONS.includes(e.direction)) continue;
     if (seenIds.has(e.id)) {
       reasons.push(`Entry ${e.id} appears more than once in the ledger.`);
       continue;
@@ -247,6 +278,11 @@ export function estimate(input: EstimateInput, rulesOverride?: Rules): EstimateR
     const occurred = ms(e.occurredAt);
     if (Number.isNaN(occurred)) {
       reasons.push(`Entry ${e.id}: occurredAt is not a valid date with a Z or +HH:MM offset.`);
+      continue;
+    }
+    const opened = openedAtById.get(e.accountId);
+    if (opened && !Number.isNaN(opened.ms) && occurred < opened.ms) {
+      reasons.push(`Entry ${e.id} is dated ${e.occurredAt}, before account "${opened.label}" was opened (${opened.raw}). That cannot be right.`);
       continue;
     }
     const inYear = occurred >= periodStart && occurred < periodEnd;

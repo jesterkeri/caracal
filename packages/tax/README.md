@@ -65,6 +65,12 @@ The result is `{ status: "refused", reasons: [...], disclaimer }` with no number
 - A statutory quote has a provider not in `statutoryProviders`, a `sourceUrl` outside that provider's `urlPrefix`, a quote currency other than NGN, a `base` that does not match the asset, a `retrievedAt` that is invalid or after `asOf`, a date that is not a real `YYYY-MM-DD`, or a date that fails the rate date rule (see below).
 - An in-year income entry's asset is not in `assetBase` (only USDC today).
 - `fx.economic` is present but malformed, has a zero or invalid rate, an empty provider, a non-https `sourceUrl`, a wrong pair, a bad `retrievedAt` or a bad date. A well-formed market quote from another day is not a refusal (see Output). It is never silently dropped.
+- A quote's `retrievedAt` is before the start of its own `date` (Lagos calendar day, the rules' `timezoneOffset`). This applies to statutory and economic quotes.
+- A quote's `ngnPerUnit` has more than 6 decimal places (`MAX_RATE_DP`), statutory or economic.
+- `asOf` is at or after the end of the tax year but an account's `lastSyncedAt` is before the year end: income from the end of the year may be missing.
+- `asOf` is before the start of the tax year (the tax year has not started).
+- An entry is dated before its account's `openedAt`.
+- An entry's `kind` or `direction` is not one of the allowed values (`income`, `own_transfer`, `cashout`, `split_internal`, `refund`, `other`; `in`, `out`). This is checked for every entry before any filtering, and the reason names the entry.
 - The rules file names a `valuation.rateDateRule` other than `"same_day"`.
 - An account's `lastSyncedAt` is older than `staleAfterHours` (default 24) before `asOf`, or after `asOf`.
 - An account's `coverageFrom` is later than the later of the tax year start and its `openedAt`. Being synced today proves nothing about last March.
