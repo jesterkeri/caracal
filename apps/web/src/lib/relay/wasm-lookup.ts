@@ -1,5 +1,10 @@
 // Reads a deployed contract's instance entry via Soroban RPC: which wasm it
 // runs and its instance storage. Small in-memory cache. Server only.
+//
+// The cache feeds the policy's first, cheap filter. It is not the final word
+// on what code runs: a wallet can be upgraded after it is cached, so the relay
+// also checks the wasm in the simulated footprint and pins that footprint in
+// the signed transaction (sponsor.ts).
 
 import { Address, rpc, xdr } from "@stellar/stellar-sdk";
 import type { InstanceLookup, WasmLookup } from "./policy";
@@ -53,7 +58,7 @@ export function rpcContractLookup(rpcUrl: string): { wasm: WasmLookup; instance:
 }
 
 /** Plain http is allowed only for an RPC on this machine (a local quickstart). */
-function isLoopback(url: string): boolean {
+export function isLoopback(url: string): boolean {
   try {
     const host = new URL(url).hostname;
     return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
