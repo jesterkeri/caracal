@@ -240,3 +240,47 @@ describe("r4k follow-up: the marker per account, and its start time", () => {
     expect(shown).not.toMatch(/Create wallet with a passkey/);
   });
 });
+
+describe("r4m follow-up: the marker's clock", () => {
+  const blocked: import("../src/lib/auth/wallet-binding").KeyValue = {
+    getItem: () => {
+      throw new DOMException("Access is denied", "SecurityError");
+    },
+    setItem: () => {
+      throw new DOMException("Access is denied", "SecurityError");
+    },
+    removeItem: () => {
+      throw new DOMException("Access is denied", "SecurityError");
+    },
+  };
+  it("storage blocked: the age counts from this page's own start, then the wait ends", async () => {
+    const { creationMarker, CREATION_SETTLE_MS } = await import("../src/lib/auth/creation-marker");
+    let t = 1_000_000;
+    const m = creationMarker(blocked, () => t);
+    m.markCreation("A", true);
+    t += 60_000;
+    expect(m.creationAge()).toBe(60_000);
+    t += CREATION_SETTLE_MS;
+    expect(m.creationAge()).toBeGreaterThanOrEqual(CREATION_SETTLE_MS);
+  });
+  it("storage blocked and no start known here: the full wait from the first look, then it ends", async () => {
+    const { creationMarker, CREATION_SETTLE_MS } = await import("../src/lib/auth/creation-marker");
+    let t = 5_000_000;
+    const m = creationMarker(blocked, () => t);
+    expect(m.creationAge()).toBe(0);
+    t += CREATION_SETTLE_MS;
+    expect(m.creationAge()).toBe(CREATION_SETTLE_MS);
+  });
+  it("a second mark (the passkey now exists) restarts the wait", async () => {
+    const { creationMarker } = await import("../src/lib/auth/creation-marker");
+    const local = new Map<string, string>();
+    const store = { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => void local.set(k, v), removeItem: (k: string) => void local.delete(k) };
+    let t = 1_000_000;
+    const m = creationMarker(store, () => t);
+    m.markCreation("A", true);
+    t += 50_000; // the passkey prompt
+    m.markCreation("A", true);
+    expect(m.creationAge()).toBe(0);
+    expect(local.get("caracal.creationUnconfirmed")).toBe("A");
+  });
+});

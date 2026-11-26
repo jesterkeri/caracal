@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { bindIfStillSignedIn, followAccount, readSignInState } from "@/lib/auth/account";
-import { SIGN_OUT_FAILED, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import { SIGN_OUT_FAILED, WALLET_OWNER_KEY, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { passkeyName } from "@/lib/stellar/passkey-name";
+import { CREATION_SETTLE_MS, creationMarker } from "@/lib/auth/creation-marker";
 import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
@@ -23,68 +24,6 @@ let signingOutHere = false;
 // the wallet and removed its owner either way.
 let signOutsStartedHere = 0;
 
-/**
- * Set to the account's id just before a wallet creation is sent, and removed
- * once its outcome is known (created, or nothing was sent). While it is set
- * for the signed-in account, the page offers only Connect, even after a
- * reload: the last attempt may have created a wallet.
- */
-const CREATION_UNCONFIRMED_KEY = "caracal.creationUnconfirmed";
-const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
-/**
- * How long a creation may still be finishing (the relay's own limits are
- * shorter). Before that, "start a new wallet anyway" waits: another tab, or
- * the network, may still complete the first one.
- */
-const CREATION_SETTLE_MS = 3 * 60_000;
-
-/** The accounts with an unconfirmed creation on this browser (comma-separated ids; Supabase ids are UUIDs). */
-function unconfirmedIds(): string[] {
-  const v = browserStore.getItem(CREATION_UNCONFIRMED_KEY);
-  return v ? v.split(",").filter(Boolean) : [];
-}
-function creationUnconfirmedFor(id: string): boolean {
-  try {
-    return unconfirmedIds().includes(id);
-  } catch {
-    return false; // storage blocked: nothing could have been recorded either
-  }
-}
-/**
- * Milliseconds since the latest unconfirmed creation on this browser started
- * (one start time for all accounts, so the wait is never shorter than any
- * attempt's). With no usable start time recorded (none, or one in the
- * future), it is recorded now: an unknown age waits the full time, then ends.
- */
-function creationAge(): number {
-  try {
-    const at = Number(browserStore.getItem(CREATION_STARTED_AT_KEY));
-    // A start in the future (the clock was set back since) is not trusted
-    // either: it is recorded again as now, so the wait ends.
-    if (at > 0 && at <= Date.now()) return Date.now() - at;
-    browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
-    return 0;
-  } catch {
-    return 0;
-  }
-}
-/** Records (unconfirmed true) or clears this account's creation attempt; other accounts' are kept. */
-function markCreation(id: string, unconfirmed: boolean) {
-  try {
-    const others = unconfirmedIds().filter((x) => x !== id);
-    const ids = unconfirmed ? [...others, id] : others;
-    if (ids.length === 0) {
-      browserStore.removeItem(CREATION_UNCONFIRMED_KEY);
-      browserStore.removeItem(CREATION_STARTED_AT_KEY);
-      return;
-    }
-    browserStore.setItem(CREATION_UNCONFIRMED_KEY, ids.join(","));
-    if (unconfirmed) browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
-  } catch (e) {
-    console.error("could not record the wallet creation attempt:", e instanceof Error ? e.message : String(e));
-  }
-}
-
 /** Longest wait for loading the wallet kit and restoring a saved wallet (provenance check and RPC reads). */
 const RESTORE_TIMEOUT_MS = 30_000;
 
@@ -99,6 +38,11 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
 
 /** smart-account-kit 0.10.0 errors raised only after it found a contract at the passkey's address. */
 const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousError", "WalletOwnershipError", "WalletCodeNotAcceptedError"]);
+
+const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(browserStore);
+
+const WALLET_RECORDED_ELSEWHERE =
+  "This account already has a wallet on this browser, created or connected in another tab. Reload the page to open it.";
 
 const CREATION_TOO_RECENT =
   "The last attempt started less than 3 minutes ago and may still finish. Wait a few minutes, then check with \"I already have a wallet\" first.";
@@ -243,6 +187,18 @@ export default function WalletPage() {
       setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
       return;
     }
+    // This page may be older than a wallet created since in another tab:
+    // the record is read again, not the state the page loaded with.
+    let recordedOwner: string | null = null;
+    try {
+      recordedOwner = browserStore.getItem(WALLET_OWNER_KEY);
+    } catch {
+      // storage blocked: nothing can have been recorded by another tab either
+    }
+    if (recordedOwner === account.id) {
+      setState({ kind: "error", message: WALLET_RECORDED_ELSEWHERE });
+      return;
+    }
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
@@ -260,6 +216,9 @@ export default function WalletPage() {
     let passkeyMade = typeof kit.events?.on !== "function";
     const stop = kit.events?.on?.("credentialCreated", () => {
       passkeyMade = true;
+      // The wait before "Start a new one anyway" counts from here, not from
+      // before the passkey prompt (which can take a minute).
+      markCreation(account.id, true);
     });
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
     markCreation(account.id, true);
