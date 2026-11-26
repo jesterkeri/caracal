@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { SIGN_OUT_FAILED, bindWallet, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import { SIGN_OUT_FAILED, bindWallet, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
@@ -33,7 +33,7 @@ export default function WalletPage() {
       const me = { id: data.user.id, email: data.user.email ?? null };
       setAccount(me);
       const kit = await getKit();
-      if (!(await mayRestoreWallet(window.localStorage, kit, me.id))) return setState({ kind: "idle" });
+      if (!(await mayRestoreWallet(browserStore, kit, me.id))) return setState({ kind: "idle" });
       const r = await kit.connectWallet();
       setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle" });
     })().catch((e: unknown) => {
@@ -48,13 +48,19 @@ export default function WalletPage() {
 
   function connected(contractId: string, txHash?: string) {
     if (!account) return;
-    bindWallet(window.localStorage, account.id);
+    try {
+      bindWallet(browserStore, account.id);
+    } catch (e) {
+      // Storage is blocked: the wallet is this person's for this visit, but it
+      // will not be restored on a later visit (mayRestoreWallet fails closed).
+      console.error("could not record the wallet's owner:", e instanceof Error ? e.message : String(e));
+    }
     setState({ kind: "connected", contractId, txHash });
   }
 
   async function signOut() {
     try {
-      await signOutEverywhere(window.localStorage, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
+      await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
       // The wallet is already disconnected and unbound; only the session survived.

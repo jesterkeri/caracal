@@ -7,6 +7,17 @@ export const WALLET_OWNER_KEY = "caracal.walletOwner";
 
 /** The parts of window.localStorage used here, so tests can pass a fake. */
 export type KeyValue = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+/**
+ * This browser's localStorage, read only when used. Reading window.localStorage
+ * itself throws when the browser blocks site storage; passing it directly
+ * would throw before sign-out could catch it and end the session.
+ */
+export const browserStore: KeyValue = {
+  getItem: (k) => window.localStorage.getItem(k),
+  setItem: (k, v) => window.localStorage.setItem(k, v),
+  removeItem: (k) => window.localStorage.removeItem(k),
+};
+
 /** The part of the passkey kit used here. */
 export type Disconnectable = { disconnect(): Promise<void> };
 
@@ -20,7 +31,14 @@ export function bindWallet(store: KeyValue, userId: string): void {
  * same account. Otherwise the saved session is disconnected and forgotten.
  */
 export async function mayRestoreWallet(store: KeyValue, kit: Disconnectable | Promise<Disconnectable>, userId: string): Promise<boolean> {
-  if (store.getItem(WALLET_OWNER_KEY) === userId) return true;
+  let owner: string | null = null;
+  try {
+    owner = store.getItem(WALLET_OWNER_KEY);
+  } catch (e) {
+    // Unreadable counts as not bound: never restore what cannot be checked.
+    console.error("could not read the wallet's owner:", errorText(e));
+  }
+  if (owner === userId) return true;
   try {
     store.removeItem(WALLET_OWNER_KEY);
   } catch (e) {

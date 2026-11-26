@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { SIGNIN_ERRORS, signinErrorMessage } from "@/lib/auth/signin-errors";
-import { SIGN_OUT_FAILED, endSupabaseSession, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import { SIGN_OUT_FAILED, browserStore, endSupabaseSession, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { getKit } from "@/lib/stellar/kit";
@@ -42,7 +42,7 @@ export default function SignIn() {
     // Also disconnects the passkey wallet, so the next person to sign in on
     // this browser never sees this account's wallet.
     try {
-      await signOutEverywhere(window.localStorage, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
+      await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
       setEmail(null);
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
