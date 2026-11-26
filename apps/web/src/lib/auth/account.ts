@@ -55,12 +55,35 @@ export async function readSignInState(auth: AccountAuth): Promise<SignInState> {
  */
 export function followAccount(auth: AccountAuth, expectedId: string | null, onChange: () => void, ownChange: () => boolean = () => false): () => void {
   let fired = false;
-  const { data } = auth.onAuthStateChange((_event, session) => {
-    if (fired || ownChange() || (session?.user?.id ?? null) === expectedId) return;
+  let gone = false;
+  const fire = () => {
+    if (fired || gone || ownChange()) return;
     fired = true;
     onChange();
+  };
+  const { data } = auth.onAuthStateChange((event, session) => {
+    if (fired || ownChange() || (session?.user?.id ?? null) === expectedId) return;
+    // supabase-js also sends INITIAL_SESSION with no session when its first
+    // read of the stored session failed on the network, so that one alone does
+    // not prove a sign-out: the account is read again, and only a confirmed
+    // other account or a confirmed sign-out counts. (One that names another
+    // account is a change.)
+    if (event === "INITIAL_SESSION" && !session) {
+      // Deferred: supabase-js holds its session lock while it calls back.
+      setTimeout(() => {
+        readSignInState(auth).then((now) => {
+          if (now.kind === "unverified") return;
+          if ((now.kind === "verified" ? now.id : null) !== expectedId) fire();
+        });
+      }, 0);
+      return;
+    }
+    fire();
   });
-  return () => data.subscription.unsubscribe();
+  return () => {
+    gone = true;
+    data.subscription.unsubscribe();
+  };
 }
 
 /**
