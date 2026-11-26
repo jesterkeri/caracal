@@ -17,6 +17,8 @@ when they are found, not saved for this day.
 | Day 1 adversary r4e (suspicion) | `apps/web/src/app/signin/page.tsx` | Coming Back from Google may restore the page from the browser's back/forward cache with "Opening Google..." still disabled (no `pageshow` handler) | Not proven; check in a real browser |
 | Day 1 adversary r4e (suspicion) | `/api/relay` | No per-IP or per-account rate limit, so anyone can spend the fee account's quota (an Origin check would not stop a script) | Not proven; decide on a limit before the deploy |
 | Day 1 adversary r4d (suspicion) | `apps/web/src/app/wallet/page.tsx` | After "not-saved" (the session could not be confirmed when binding), the page still says "Signed in as ..." | Not proven |
+| Day 1 adversary r4h (suspicion) | `apps/web/src/app/wallet/page.tsx` | After signing out and back in, or after an unbound saved session is disconnected, Create and Connect are offered with no hint that this browser already held a wallet | Not proven; a copy question |
+| Day 1 adversary r4h (suspicion) | `apps/web/src/app/signin/page.tsx` | After a successful Sign out here, the account follower still expects the old account, so signing in again as the same account in another tab is not picked up until a reload | Not proven |
 
 ## User pipeline testing
 

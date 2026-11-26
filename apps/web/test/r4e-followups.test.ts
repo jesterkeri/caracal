@@ -19,7 +19,23 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function renderWallet(states: unknown[], createWallet?: () => Promise<unknown>) {
+/** A kit event emitter like smart-account-kit's (on returns an unsubscribe). */
+function emitter() {
+  const listeners = new Map<string, Set<(d: unknown) => void>>();
+  return {
+    on(e: string, f: (d: unknown) => void) {
+      if (!listeners.has(e)) listeners.set(e, new Set());
+      listeners.get(e)!.add(f);
+      return () => listeners.get(e)!.delete(f);
+    },
+    emit(e: string, d: unknown) {
+      for (const f of listeners.get(e) ?? []) f(d);
+    },
+  };
+}
+async function renderWallet(states: unknown[], create?: (events: ReturnType<typeof emitter>) => Promise<unknown>, opts: { noEvents?: boolean } = {}) {
+  const events = opts.noEvents ? undefined : emitter();
+  const createWallet = create ? () => create(events ?? emitter()) : undefined;
   const setters: { i: number; v: unknown }[] = [];
   vi.doMock("react", async () => {
     const actual = await vi.importActual<typeof import("react")>("react");
@@ -35,7 +51,7 @@ async function renderWallet(states: unknown[], createWallet?: () => Promise<unkn
     };
   });
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: {} }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve({ disconnect: async () => {}, createWallet }) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve({ disconnect: async () => {}, createWallet, events }) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", { location: { replace: vi.fn(), reload: vi.fn(), origin: "https://caracal.test", search: "" } });
@@ -131,7 +147,7 @@ describe("r4f follow-up: an empty INITIAL_SESSION is checked before it counts as
 });
 
 describe("r4g follow-up: which create failures still offer Create", () => {
-  it("a closed passkey prompt (NotAllowedError, nothing sent) keeps Create", async () => {
+  it("a closed passkey prompt (before the passkey exists, nothing sent) keeps Create", async () => {
     const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async () => {
       throw Object.assign(new Error("The operation either timed out or was not allowed."), { name: "NotAllowedError" });
     });
@@ -140,9 +156,10 @@ describe("r4g follow-up: which create failures still offer Create", () => {
     vi.resetModules();
     expect(texts((await renderWallet([state, "", A])).tree).join(" | ")).toMatch(/Create wallet with a passkey/);
   });
-  it("any other throw (it may come after the deploy) offers Connect only", async () => {
-    const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async () => {
-      throw new Error("QuotaExceededError: could not save the session");
+  it("a throw after the passkey was made (it may come after the deploy) offers Connect only", async () => {
+    const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async (events) => {
+      events.emit("credentialCreated", { credential: {} }); // as smart-account-kit does once the passkey exists
+      throw Object.assign(new Error("The transaction was aborted"), { name: "InvalidStateError" }); // IndexedDB saving the session
     });
     await click(tree, "Create wallet")!();
     const state = setters.filter((s) => s.i === 0).at(-1)!.v;
@@ -155,6 +172,29 @@ describe("r4g follow-up: which create failures still offer Create", () => {
     const shown = texts((await renderWallet([{ kind: "idle", knownWallet: true }, "", A])).tree).join(" | ");
     expect(shown).toMatch(/I already have a wallet/);
     expect(shown).not.toMatch(/Create wallet with a passkey/);
+  });
+});
+
+describe("r4h follow-up: the name given to the passkey", () => {
+  it.each([
+    ["Ada", "Ada"],
+    ["  Ada  ", "Ada"],
+    ["", "Caracal user"],
+    ["Oluwaseun Adebayo Olanrewaju Johnson", "Oluwaseun Adebayo Olanre"],
+    ["Ọlálékan Ọlálékan Ọlálékan", "Ọlálékan Ọláléka"], // cut at whole characters: exactly 24 bytes
+  ])("%j is given as %j, within 24 UTF-8 bytes", async (typed, given) => {
+    const { passkeyName } = await import("../src/lib/stellar/passkey-name");
+    expect(passkeyName(typed)).toBe(given);
+    expect(new TextEncoder().encode(passkeyName(typed)).length).toBeLessThanOrEqual(24);
+  });
+  it("a kit with no event API: a throw counts as after the passkey (fail closed)", async () => {
+    const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async () => {
+      throw new Error("anything");
+    }, { noEvents: true });
+    await click(tree, "Create wallet")!();
+    const state = setters.filter((s) => s.i === 0).at(-1)!.v;
+    vi.resetModules();
+    expect(texts((await renderWallet([state, "", A])).tree).join(" | ")).not.toMatch(/Create wallet with a passkey/);
   });
 });
 

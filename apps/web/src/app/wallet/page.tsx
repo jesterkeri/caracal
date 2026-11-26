@@ -6,6 +6,7 @@ import { SIGN_OUT_FAILED, browserStore, endSupabaseSession, mayRestoreWallet, si
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
+import { passkeyName } from "@/lib/stellar/passkey-name";
 import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
@@ -54,8 +55,6 @@ function createOffered(state: State): boolean {
   return state.kind === "error" && state.createAllowed === true;
 }
 
-/** Errors from the passkey prompt itself (closed, timed out, refused): nothing was sent. SimpleWebAuthn keeps the browser's error name. */
-const PASSKEY_STEP_ERRORS = new Set(["NotAllowedError", "AbortError", "InvalidStateError", "NotSupportedError", "SecurityError", "ConstraintError"]);
 
 export default function WalletPage() {
   const [state, setState] = useState<State>({ kind: "busy", label: "Checking for a saved wallet" });
@@ -156,29 +155,49 @@ export default function WalletPage() {
   async function create() {
     if (!account) return; // a wallet is always bound to its signed-in owner
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
+    let kit: Awaited<ReturnType<typeof getKit>>;
     try {
-      const kit = await getKit();
-      const r = await kit.createWallet("Caracal", name.trim() || "Caracal user", { autoSubmit: true });
-      if (r.submitResult && !r.submitResult.success) {
-        // The kit returns (never throws) every failure after the passkey was
-        // made. Only the relay's own answer can prove nothing was sent: its
-        // refusals before sending say "Nothing was sent". Anything else (a
-        // hash, a timeout, a gateway page, a refusal of unknown timing) may
-        // have created the wallet, so a second try could make another.
-        const detail = r.submitResult.error.message;
-        const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
-        if (!sent && detail.includes("Nothing was sent")) return setState({ kind: "error", message: detail, createAllowed: true });
-        setState({ kind: "error", message: detail, checkFirst: true });
-        return;
-      }
+      kit = await getKit();
+    } catch (e) {
+      // Nothing was made or sent; what was known before still holds.
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), createAllowed: true });
+      return;
+    }
+    // The kit announces credentialCreated once the passkey exists, before the
+    // wallet is built or sent. A failure before it sent nothing, whatever its
+    // error; one after it may follow a deploy (the kit saves its session after
+    // submitting). Without the event API nothing can be told apart, so every
+    // failure counts as after.
+    let passkeyMade = typeof kit.events?.on !== "function";
+    const stop = kit.events?.on?.("credentialCreated", () => {
+      passkeyMade = true;
+    });
+    let r: Awaited<ReturnType<typeof kit.createWallet>>;
+    try {
+      r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
+      return;
+    } finally {
+      stop?.();
+    }
+    if (r.submitResult && !r.submitResult.success) {
+      // Only the relay's own answer can prove nothing was sent: its refusals
+      // before sending say "Nothing was sent". Anything else (a hash, a
+      // timeout, a gateway page, a refusal of unknown timing) may have created
+      // the wallet, so a second try could make another.
+      const detail = r.submitResult.error.message;
+      const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
+      if (!sent && detail.includes("Nothing was sent")) return setState({ kind: "error", message: detail, createAllowed: true });
+      setState({ kind: "error", message: detail, checkFirst: true });
+      return;
+    }
+    try {
       await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
     } catch (e) {
-      // A failure of the passkey prompt happens before anything is sent. Any
-      // other throw may come after the wallet was deployed (the kit saves its
-      // session after submitting), so the outcome is unknown.
-      const message = e instanceof Error ? e.message : String(e);
-      const passkeyStep = e instanceof Error && PASSKEY_STEP_ERRORS.has(e.name);
-      setState(passkeyStep ? { kind: "error", message, createAllowed: true } : { kind: "error", message, checkFirst: true });
+      // The wallet was made; only recording its owner failed.
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true });
     }
   }
 
@@ -244,9 +263,10 @@ export default function WalletPage() {
       {account && (state.kind === "idle" || state.kind === "error") && (
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-sm">
-            Your name (shown in the passkey prompt)
+            Your name, as the passkey prompt shows it (a short name: longer ones are cut)
             <input
               className="rounded-md border px-3 py-2 text-base"
+              maxLength={24}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Ada"
