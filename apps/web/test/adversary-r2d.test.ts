@@ -110,11 +110,20 @@ describe("adv r3b follow-up: a proxy refusal's wording never reaches the user", 
     );
     expect(r.status).toBe(400);
     const j = await r.json();
-    expect(j).toEqual({ success: false, error: "The fee relayer refused to create this wallet (INVALID_SALT). Try again." });
+    // INVALID_SALT is not a code known to be raised before sending (r3e), so the
+    // outcome is unknown and the person checks before creating another wallet.
+    expect(j).toEqual({ success: false, error: "Caracal could not confirm whether your wallet was created (INVALID_SALT). Before creating another, reload the page and check with Connect, using your passkey." });
   });
   it("a refusal with HTTP 200 still becomes an error status", async () => {
     const r = await post(async () => new Response(JSON.stringify({ success: false, error: "nope" }), { status: 200 }));
     expect(r.status).toBe(502);
-    expect((await r.json()).error).toBe("The fee relayer refused to create this wallet. Try again.");
+    expect((await r.json()).error).toBe("Caracal could not confirm whether your wallet was created. Before creating another, reload the page and check with Connect, using your passkey.");
+  });
+});
+
+describe("r3e follow-up: a proxy refusal known to come before sending", () => {
+  it("says nothing was sent", async () => {
+    const r = await post(async () => new Response(JSON.stringify({ success: false, error: "x", data: { code: "INVALID_PARAMS" } }), { status: 400 }));
+    expect((await r.json()).error).toBe("The fee relayer refused to create this wallet (INVALID_PARAMS). Nothing was sent. Try again.");
   });
 });

@@ -42,8 +42,10 @@ export const RPC_TIMEOUT_MS = 20_000;
 /** Rejects if `p` has not settled within `ms`, so a hung call cannot hold the relay's queue. */
 export function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // setTimeout fires at once for a delay above 2^31-1 ms, so cap it there.
+  const delay = Math.min(Math.max(ms, 0), 2_147_483_647);
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms);
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), delay);
   });
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }

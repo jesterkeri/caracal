@@ -31,7 +31,7 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
-import { channelsClient, codeOf, submitToChannels, type Submitter } from "@/lib/relay/channels";
+import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
 
@@ -46,7 +46,14 @@ const chain = rpcContractLookup(NETWORK.rpcUrl);
 const oneAtATime = serial();
 let channelsFor: { key: string; client: Submitter } | null = null;
 /** One Channels client per key, built on first use. */
-const channelsTimeout = () => Number(process.env.CHANNELS_TIMEOUT_MS) || 60_000;
+/** CHANNELS_TIMEOUT_MS: a whole number of milliseconds up to 10 minutes; anything else means the 60 s default. */
+function channelsTimeout(): number {
+  const raw = process.env.CHANNELS_TIMEOUT_MS;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= 1 && n <= 600_000) return n;
+  if (raw) console.error("relay: CHANNELS_TIMEOUT_MS must be 1 to 600000 ms; using 60000");
+  return 60_000;
+}
 function channels(apiKey: string): Submitter {
   if (channelsFor?.key !== apiKey) {
     channelsFor = { key: apiKey, client: channelsClient(apiKey, process.env.CHANNELS_BASE_URL || undefined, channelsTimeout()) };
@@ -163,7 +170,9 @@ export async function POST(request: Request) {
     } catch (e) {
       const cause = e instanceof Error ? ((e.cause as { code?: string } | undefined)?.code ?? e.message) : String(e);
       console.error("relay upstream failed:", cause);
-      return fail("The fee relayer could not be reached. Try again.", 502);
+      // It may have failed before sending, or timed out after the proxy
+      // submitted: the wallet may exist, so the person checks first.
+      return fail(walletUnconfirmed(null), 502);
     }
   });
   if (answer instanceof Response) return answer;
@@ -182,7 +191,11 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     console.error("relay upstream refused:", res.status, out.slice(0, 300));
     const code = codeOf(parsed.data);
-    return fail(`The fee relayer refused to create this wallet${code ? ` (${code})` : ""}. Try again.`, res.status >= 400 ? res.status : 502);
+    const status = res.status >= 400 ? res.status : 502;
+    if (code && REFUSED_BEFORE_SUBMIT.has(code)) {
+      return fail(`The fee relayer refused to create this wallet (${code}). Nothing was sent. Try again.`, status);
+    }
+    return fail(walletUnconfirmed(code), status);
   }
   // As on the Channels path, only a confirmed transaction with a hash is a
   // created wallet; the answer is rebuilt from those fields, not passed on.
@@ -190,10 +203,18 @@ export async function POST(request: Request) {
   if (typeof d.hash !== "string" || !/^[0-9a-f]{64}$/i.test(d.hash) || d.status !== "confirmed") {
     const status = typeof d.status === "string" && /^[a-z_]{1,20}$/.test(d.status) ? d.status : null;
     console.error("relay upstream answered success without a confirmed transaction:", out.slice(0, 300));
-    return fail(`The fee relayer did not confirm this wallet's creation${status ? ` (status: ${status})` : ""}. Check your wallet before trying again.`, 502);
+    return fail(walletUnconfirmed(status ? `status: ${status}` : null), 502);
   }
   const transactionId = typeof d.transactionId === "string" ? d.transactionId : null;
   return Response.json({ success: true, data: { transactionId, hash: d.hash, status: "confirmed" } }, { status: 200 });
+}
+
+/**
+ * The outcome of a wallet creation is unknown. A retry would make a second
+ * passkey and wallet, so the person first checks whether the first one exists.
+ */
+function walletUnconfirmed(detail: string | null): string {
+  return `Caracal could not confirm whether your wallet was created${detail ? ` (${detail})` : ""}. Before creating another, reload the page and check with Connect, using your passkey.`;
 }
 
 function relayerAnswer(text: string): { success: boolean; data?: unknown } | null {

@@ -89,9 +89,14 @@ export default function WalletPage() {
   }
 
   async function disconnect() {
-    const kit = await getKit();
-    await kit.disconnect();
-    setState({ kind: "idle" });
+    try {
+      const kit = await getKit();
+      await kit.disconnect();
+      setState({ kind: "idle" });
+    } catch (e) {
+      console.error("could not disconnect the wallet:", e instanceof Error ? e.message : String(e));
+      setState({ kind: "error", message: "Caracal could not disconnect this wallet. Reload the page and try again." });
+    }
   }
 
   return (

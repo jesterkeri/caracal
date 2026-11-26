@@ -33,7 +33,7 @@ export function channelsClient(apiKey: string, baseUrl = DEFAULT_CHANNELS, timeo
  * including WAIT_TIMEOUT, may come after sending, so the user is told to
  * check before retrying. Re-check this list when upgrading the plugin.
  */
-const REFUSED_BEFORE_SUBMIT: ReadonlySet<string> = new Set([
+export const REFUSED_BEFORE_SUBMIT: ReadonlySet<string> = new Set([
   "API_KEY_REQUIRED", "UNAUTHORIZED", "UNSUPPORTED_NETWORK", "INVALID_PARAMS", "INVALID_PAYLOAD",
   "INVALID_ENVELOPE_TYPE", "INVALID_UNSIGNED_XDR", "INVALID_SIGNATURE", "TIMEBOUNDS_EXPIRED", "TIMEBOUNDS_TOO_FAR",
   "FEE_LIMIT_EXCEEDED", "FEE_MISMATCH", "AUTH_EXPIRY_TOO_SHORT", "SIMULATION_FAILED",
