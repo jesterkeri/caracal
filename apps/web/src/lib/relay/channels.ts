@@ -2,7 +2,8 @@
 // official client (@openzeppelin/relayer-plugin-channels, pinned at 0.21.1),
 // which wraps it in a fee bump. Server only.
 //
-// The wallet kit expects { success, data: { transactionId, hash, status } }.
+// The wallet kit expects { success, data: { transactionId, hash, status } },
+// and gets success only for a transaction Channels reports as confirmed.
 // Anything Channels answers that does not carry a transaction hash (an empty
 // body, an HTML error page, a refusal, a timeout) becomes a clear error,
 // because without a hash nobody can tell whether the payment happened.
@@ -51,7 +52,19 @@ export async function submitToChannels(client: Submitter, xdr: string): Promise<
       console.error("channels answered without a transaction hash:", JSON.stringify(r).slice(0, 200));
       return { ok: false, status: 502, error: "The fee relayer gave no transaction result. Check your activity before trying again." };
     }
-    return { ok: true, data: { transactionId: r.transactionId ?? null, hash: r.hash, status: r.status ?? "submitted" } };
+    // Plugin 0.21.1 throws only for "failed"; any other final status (expired,
+    // canceled, or one added later) is passed on as a success. Only a
+    // confirmed transaction is reported as done.
+    if (r.status !== "confirmed") {
+      const status = typeof r.status === "string" && /^[a-z_]{1,20}$/.test(r.status) ? r.status : null;
+      console.error("channels answered a hash without confirmation:", r.hash, status ?? "");
+      return {
+        ok: false,
+        status: 502,
+        error: `The fee relayer did not confirm this transaction${status ? ` (status: ${status})` : ""}. Check your activity before trying again.`,
+      };
+    }
+    return { ok: true, data: { transactionId: r.transactionId ?? null, hash: r.hash, status: r.status } };
   } catch (e) {
     if (e instanceof PluginExecutionError) {
       const code = codeOf(e.errorDetails);

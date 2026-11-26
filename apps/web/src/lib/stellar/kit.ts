@@ -20,6 +20,11 @@ export function getKit(): Promise<SmartAccountKit> {
           rpName: "Caracal",
         }),
     );
+    // A failed load (say, a network blip fetching the chunk) is not kept, so
+    // the next call tries again instead of failing until the page reloads.
+    kitPromise.catch(() => {
+      kitPromise = null;
+    });
   }
   return kitPromise;
 }

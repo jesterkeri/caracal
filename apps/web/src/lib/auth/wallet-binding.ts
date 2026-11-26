@@ -64,9 +64,15 @@ export async function signOutEverywhere(
   kit: Disconnectable | Promise<Disconnectable>,
   endSession: () => Promise<Ended>,
 ): Promise<void> {
-  store.removeItem(WALLET_OWNER_KEY);
   let ended: Ended;
   try {
+    // If storage refuses, the binding stays; the next account still never
+    // gets this wallet, because mayRestoreWallet compares it to their id.
+    try {
+      store.removeItem(WALLET_OWNER_KEY);
+    } catch (e) {
+      console.error("could not forget the wallet's owner:", errorText(e));
+    }
     await disconnectQuietly(kit);
   } finally {
     ended = await endSession();

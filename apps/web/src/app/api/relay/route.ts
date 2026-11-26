@@ -55,7 +55,7 @@ function channels(apiKey: string): Submitter {
 }
 let sponsorDeps: SponsorDeps | null | undefined;
 
-/** Built on first use. Null when RELAY_SOURCE_SECRET is not set or not valid. */
+/** Built on first use. Null when RELAY_SOURCE_SECRET or the RPC URL is not set or not valid. */
 function sponsor(): SponsorDeps | null {
   if (sponsorDeps !== undefined) return sponsorDeps;
   let source: Keypair;
@@ -65,7 +65,14 @@ function sponsor(): SponsorDeps | null {
     console.error("relay: RELAY_SOURCE_SECRET is missing or invalid");
     return (sponsorDeps = null);
   }
-  const server = new rpc.Server(NETWORK.rpcUrl, { allowHttp: isLoopback(NETWORK.rpcUrl) });
+  let server: rpc.Server;
+  try {
+    // Refuses http except on this machine (.env.example: https, except a local RPC).
+    server = new rpc.Server(NETWORK.rpcUrl, { allowHttp: isLoopback(NETWORK.rpcUrl) });
+  } catch (e) {
+    console.error("relay: NEXT_PUBLIC_STELLAR_RPC_URL is not usable:", e instanceof Error ? e.message : String(e));
+    return (sponsorDeps = null);
+  }
   return (sponsorDeps = {
     source,
     networkPassphrase: NETWORK.passphrase,
