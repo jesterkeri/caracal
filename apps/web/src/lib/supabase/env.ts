@@ -15,9 +15,12 @@ export function supabaseEnvOrNull(): { url: string; anonKey: string } | null {
 }
 
 function usableUrl(url: string): boolean {
+  // supabase-js itself requires http:// or https:// (so not "https:host"),
+  // then parses the URL; both checks are mirrored here.
+  if (!/^https?:\/\//i.test(url.trim())) return false;
   try {
-    const u = new URL(url);
-    return u.protocol === "https:" || u.protocol === "http:";
+    new URL(url.trim());
+    return true;
   } catch {
     return false;
   }

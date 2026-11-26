@@ -17,10 +17,21 @@ export default function SignIn() {
     if (!configured) return;
     // Only fixed messages are shown; the URL carries a code, never wording.
     const code = new URLSearchParams(window.location.search).get("error");
-    supabaseBrowser()
-      .auth.getUser()
-      .then(({ data }) => setEmail(data.user?.email ?? null))
-      .catch((e: unknown) => console.error("could not read the session:", e instanceof Error ? e.message : String(e)))
+    const auth = supabaseBrowser().auth;
+    // If the session cannot be verified (Supabase unreachable), a session still
+    // stored in this browser keeps its Sign out control.
+    const storedSession = async () => {
+      const { data } = await auth.getSession();
+      if (data.session) setEmail(data.session.user.email ?? "your Google account");
+    };
+    auth
+      .getUser()
+      .then(({ data, error }) => (data.user ? setEmail(data.user.email ?? "your Google account") : error ? storedSession() : undefined))
+      .catch((e: unknown) => {
+        console.error("could not read the session:", e instanceof Error ? e.message : String(e));
+        return storedSession();
+      })
+      .catch(() => undefined)
       .finally(() => setError(signinErrorMessage(code)));
   }, [configured]);
 

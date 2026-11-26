@@ -127,6 +127,15 @@ export default function WalletPage() {
           </button>
         </p>
       )}
+      {!account && state.kind === "error" && (
+        // Sign-in could not be checked; a session may still be stored here, so
+        // signing out stays possible (it works without reaching Supabase).
+        <p className="text-sm">
+          <button className="underline" onClick={signOut}>
+            Sign out of this browser
+          </button>
+        </p>
+      )}
       <p className="text-sm opacity-80">
         Your wallet is a smart contract on Stellar testnet, controlled by a passkey on this device.
         There is no seed phrase. Caracal pays the network fee and can never move your money.

@@ -11,9 +11,18 @@ export const SUPABASE_REQUEST_TIMEOUT_MS = 10_000;
  * would otherwise block every later auth call, including the local sign-out.
  */
 export const fetchWithTimeout: typeof fetch = (input, init) => {
-  const deadline = AbortSignal.timeout(SUPABASE_REQUEST_TIMEOUT_MS);
-  const signal = init?.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([init.signal, deadline]) : (init?.signal ?? deadline);
-  return fetch(input, { ...init, signal });
+  // Built by hand (not AbortSignal.timeout/any) so it works on every browser
+  // and keeps both the deadline and the caller's own signal.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("Supabase did not answer in time", "TimeoutError")), SUPABASE_REQUEST_TIMEOUT_MS);
+  const outer = init?.signal;
+  const forward = () => controller.abort(outer?.reason);
+  if (outer?.aborted) forward();
+  else outer?.addEventListener("abort", forward, { once: true });
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timer);
+    outer?.removeEventListener("abort", forward);
+  });
 };
 
 export function supabaseBrowser() {
