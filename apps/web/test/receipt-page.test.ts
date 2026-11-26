@@ -60,7 +60,7 @@ describe("receipt page", () => {
     r.resultMetaXdr = m.toXDR("base64");
     vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(r);
     const page = await render(PAYMENT);
-    expect(page).toMatch(/not a payment into a Caracal split contract/);
+    expect(page).toMatch(/could not confirm this transaction as a payment into a Caracal split contract/);
     expect(page).not.toContain("0.0075");
   });
 
@@ -89,6 +89,30 @@ describe("receipt page", () => {
 
   it("the network cannot be reached", async () => {
     vi.spyOn(rpc.Server.prototype, "_getTransaction").mockRejectedValue(new TypeError("fetch failed"));
+    expect(await render(PAYMENT)).toMatch(/could not reach the Stellar network/);
+  });
+});
+
+describe("rcpt3 follow-ups", () => {
+  it("the payer and the freelancer are shown in full, so a look-alike address cannot pass for theirs", async () => {
+    vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(raw("7b4c51da"));
+    const page = await render(PAYMENT);
+    expect(page).toContain("GDO5SPZ7UYT3M6S4WQ4SM5UQ7XGKIKTXWMPG2SONWFD2LULZXBEULKGX");
+  });
+  it("a close time in the future is not believed", async () => {
+    const r = raw("7b4c51da");
+    r.createdAt = String(Math.floor(Date.now() / 1000) + 30 * 86_400);
+    vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(r);
+    expect(await render(PAYMENT)).toMatch(/could not read this transaction's details/);
+  });
+  it("a status the reader does not know is not stated as a failure", async () => {
+    const r = raw("7b4c51da");
+    r.status = "PENDING";
+    vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(r);
+    expect(await render(PAYMENT)).not.toMatch(/no payment was made/);
+  });
+  it("the RPC not answering (stellar-sdk's axios error) is still 'could not reach'", async () => {
+    vi.spyOn(rpc.Server.prototype, "_getTransaction").mockRejectedValue(Object.assign(new Error("fetch failed"), { name: "AxiosError", isAxiosError: true }));
     expect(await render(PAYMENT)).toMatch(/could not reach the Stellar network/);
   });
 });

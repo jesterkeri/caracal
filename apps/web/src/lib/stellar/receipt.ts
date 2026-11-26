@@ -67,16 +67,19 @@ export async function readSplitReceipt(hash: string, deps: ReceiptDeps): Promise
     console.error("could not read the transaction:", e instanceof Error ? e.message : String(e));
     // The SDK parses the answer inside the same call; an answer it cannot parse
     // came back from the network, so it is not "could not reach".
-    return { kind: isXdrError(e) ? "unreadable" : "unreachable" };
+    return { kind: isNetworkError(e) ? "unreachable" : "unreadable" };
   }
   if (tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND) return { kind: "not-found" };
-  if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS) return { kind: "failed" };
+  if (tx.status === rpc.Api.GetTransactionStatus.FAILED) return { kind: "failed" };
+  // Any other status is one this reader does not know, so it states nothing about it.
+  if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS) return { kind: "unreadable" };
 
   try {
     // The SDK passes the RPC's close time on as it came (a numeric string today).
     const ledger = Number(tx.ledger);
     const closed = Number(tx.createdAt);
-    if (!Number.isSafeInteger(ledger) || ledger <= 0 || !Number.isSafeInteger(closed) || closed <= 0) {
+    // A close time is believed only between Stellar's launch (2015) and a day from now.
+    if (!Number.isSafeInteger(ledger) || ledger <= 0 || !Number.isSafeInteger(closed) || closed < EARLIEST_CLOSE || closed > Date.now() / 1000 + 86_400) {
       throw new Error(`unusable ledger ${tx.ledger} or close time ${tx.createdAt}`);
     }
     const instances = instanceStates(tx.resultMetaXdr);
@@ -105,9 +108,23 @@ export async function readSplitReceipt(hash: string, deps: ReceiptDeps): Promise
   }
 }
 
-/** js-xdr reports a value it cannot decode as a TypeError of its own kind, or "Bad union switch". */
-function isXdrError(e: unknown): boolean {
-  return e instanceof TypeError && (/^Xdr/.test(e.name) || /^(Bad union switch|XDR )/i.test(e.message));
+/** Stellar's mainnet launch, 2015-06-30: no ledger closed before it. */
+const EARLIEST_CLOSE = 1_435_622_400;
+
+/**
+ * Only a failure to get an answer is "could not reach": the HTTP client's own
+ * errors (stellar-sdk uses axios: no connection, no answer, an HTTP error
+ * status; or fetch's "fetch failed"), the time limit from `within`, or a JSON-RPC error the RPC sent
+ * back. Anything else means an answer came back that could not be read.
+ */
+function isNetworkError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const o = e as { isAxiosError?: unknown; message?: unknown; code?: unknown };
+  if (o.isAxiosError === true) return true;
+  // A fetch-based client's own failure to connect.
+  if (e instanceof TypeError && /^(fetch failed|Failed to fetch|NetworkError)/.test(e.message)) return true;
+  if (e instanceof Error && / did not answer within \d+ ms$/.test(e.message)) return true;
+  return !(e instanceof Error) && typeof o.code === "number" && typeof o.message === "string";
 }
 
 /**

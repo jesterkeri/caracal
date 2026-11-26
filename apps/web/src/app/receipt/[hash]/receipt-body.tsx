@@ -27,7 +27,7 @@ const MESSAGES: Record<Exclude<ReceiptRead["kind"], "found">, string> = {
   "not-found":
     "Caracal could not find this payment. Check the link. The network keeps about a week of history, so an older payment may no longer show here; it can still be seen on Stellar Expert.",
   failed: "This transaction failed on the network, so no payment was made.",
-  "no-split": "This transaction is not a payment into a Caracal split contract.",
+  "no-split": "Caracal could not confirm this transaction as a payment into a Caracal split contract, so it shows no receipt for it.",
   unreachable: "Caracal could not reach the Stellar network just now. Reload the page to try again.",
   unreadable: "Caracal could not read this transaction's details from the network, so it shows no receipt for it.",
   "not-set-up": "Receipts are not set up on this server: its Stellar RPC setting (NEXT_PUBLIC_STELLAR_RPC_URL) cannot be used.",
@@ -55,7 +55,7 @@ export async function ReceiptBody({ params }: { params: Promise<{ hash: string }
               <div>
                 <p className="text-3xl font-semibold">{formatUsdc(p.amount)} USDC</p>
                 <p className="text-sm opacity-80">
-                  paid for invoice <strong>{p.invoiceRef}</strong>
+                  paid for invoice <strong className="whitespace-pre-wrap">{p.invoiceRef}</strong>
                 </p>
               </div>
               <div className="flex flex-col gap-2 rounded-lg border p-4">
@@ -74,9 +74,9 @@ export async function ReceiptBody({ params }: { params: Promise<{ hash: string }
               </div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
                 <dt className="opacity-70">From</dt>
-                <dd className="font-mono">{shortAddress(p.from)}</dd>
+                <dd className="break-all font-mono">{p.from}</dd>
                 <dt className="opacity-70">To</dt>
-                <dd className="font-mono">{shortAddress(p.owner)}</dd>
+                <dd className="break-all font-mono">{p.owner}</dd>
               </dl>
               <a className="text-sm underline" href={explorerLink("contract", p.splitContract)}>
                 View the split contract
