@@ -53,13 +53,15 @@ function creationUnconfirmedFor(id: string): boolean {
 /**
  * Milliseconds since the latest unconfirmed creation on this browser started
  * (one start time for all accounts, so the wait is never shorter than any
- * attempt's). With no start time recorded, it is recorded now: an unknown age
- * waits the full time rather than none.
+ * attempt's). With no usable start time recorded (none, or one in the
+ * future), it is recorded now: an unknown age waits the full time, then ends.
  */
 function creationAge(): number {
   try {
     const at = Number(browserStore.getItem(CREATION_STARTED_AT_KEY));
-    if (at > 0) return Date.now() - at;
+    // A start in the future (the clock was set back since) is not trusted
+    // either: it is recorded again as now, so the wait ends.
+    if (at > 0 && at <= Date.now()) return Date.now() - at;
     browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
     return 0;
   } catch {
@@ -210,7 +212,9 @@ export default function WalletPage() {
     // is confirmed again before this wallet is recorded as its.
     const bound = await bindIfStillSignedIn(browserStore, supabaseBrowser().auth, getKit(), account.id);
     if (bound === "account-changed") return accountChanged();
-    markCreation(account.id, false); // this account's wallet is known now
+    // Recorded as this account's: a reload restores it, so the note goes.
+    // "not-saved" keeps it: nothing on this browser would remember the wallet.
+    if (bound === "bound") markCreation(account.id, false);
     // "not-saved": the wallet is this person's for this visit, but it will not
     // be restored on a later visit (mayRestoreWallet fails closed).
     setState({ kind: "connected", contractId, txHash });

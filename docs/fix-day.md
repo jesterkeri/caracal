@@ -21,6 +21,9 @@ when they are found, not saved for this day.
 | Day 1 adversary r4h (suspicion) | `apps/web/src/app/signin/page.tsx` | After a successful Sign out here, the account follower still expects the old account, so signing in again as the same account in another tab is not picked up until a reload | Not proven |
 | Day 1 adversary r4i (suspicion) | `apps/web/src/lib/supabase/deadline.ts` | The 10 s deadline could abort a token refresh whose answer (a rotated refresh token) was already on its way. Supabase allows reuse of the parent token for a short interval, so a retry should recover; check against the project's settings | Not proven |
 | Day 1 adversary r4k (suspicion) | `apps/web/src/app/route.ts` | A sign-in return at the site root with `?code=` and an `error_code` but no `error` is forwarded to the callback, which drops the upstream error | Not proven |
+| Day 1 adversary r4l (suspicion) | `apps/web/src/app/wallet/page.tsx` | Connect and Create have no limit after the passkey step, so an RPC that accepts the connection and never answers leaves "busy" until a reload (the kit's own relayer wait is up to 360 s) | Not proven |
+| Day 1 adversary r4l (suspicion) | `apps/web/src/lib/relay/channels.ts` | A Channels 429 that comes with a body loses its status, so the person reads "check your activity" instead of "busy" | Not proven |
+| Day 1 adversary r4l (suspicion) | `/api/relay` queue | The relay queue has no per-request deadline; a backlog longer than the 3-minute wait could let a creation land after "Start a new one anyway" is allowed. Decide on a queue deadline before the deploy | Not proven; related to the r4b deploy note |
 
 ## User pipeline testing
 
