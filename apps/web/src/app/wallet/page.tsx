@@ -18,6 +18,18 @@ const WALLET_UNCHECKED = "Caracal could not load your saved wallet. Check your c
 // a change made in another tab, and does not reload the page mid sign-out.
 let signingOutHere = false;
 
+/** Longest wait for loading the wallet kit and restoring a saved wallet (provenance check and RPC reads). */
+const RESTORE_TIMEOUT_MS = 30_000;
+
+/** `p`, or a rejection once `ms` has passed: a restore that never answers ends in an error, not endless "Checking". */
+function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${RESTORE_TIMEOUT_MS} ms`)), RESTORE_TIMEOUT_MS);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 const WALLET_MAYBE_CREATED =
   "Caracal could not confirm whether your wallet was created. Before creating another, reload the page and check with Connect, using your passkey.";
 
@@ -72,12 +84,12 @@ export default function WalletPage() {
         () => signingOutHere,
       );
       setAccount(me);
-      const kit = await getKit();
+      const kit = await restoreWithin(getKit(), "loading the wallet kit");
       if (stale()) return;
       const mayRestore = await mayRestoreWallet(browserStore, kit, me.id);
       if (stale()) return;
       if (!mayRestore) return setState({ kind: "idle" });
-      const r = await kit.connectWallet();
+      const r = await restoreWithin(kit.connectWallet(), "restoring the saved wallet");
       if (stale()) return;
       setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle" });
     })().catch((e: unknown) => {
@@ -181,11 +193,15 @@ export default function WalletPage() {
       {!account && state.kind === "error" && (
         // Sign-in could not be checked; a session may still be stored here, so
         // signing out stays possible (it works without reaching Supabase).
-        <p className="text-sm">
-          <button className="underline" onClick={signOut}>
-            Sign out of this browser
-          </button>
-        </p>
+        // What failed is shown too, including a Sign out that did not finish.
+        <div className="flex flex-col gap-2 text-sm">
+          <p className="text-red-600">{state.message}</p>
+          <p>
+            <button className="underline" onClick={signOut}>
+              Sign out of this browser
+            </button>
+          </p>
+        </div>
       )}
       <p className="text-sm opacity-80">
         Your wallet is a smart contract on Stellar testnet, controlled by a passkey on this device.
@@ -205,9 +221,12 @@ export default function WalletPage() {
               placeholder="Ada"
             />
           </label>
-          <button className="rounded-md bg-black px-4 py-3 text-white" onClick={create}>
-            Create wallet with a passkey
-          </button>
+          {!(state.kind === "error" && state.message === WALLET_MAYBE_CREATED) && (
+            // Hidden while a wallet may already exist: a second try would make another.
+            <button className="rounded-md bg-black px-4 py-3 text-white" onClick={create}>
+              Create wallet with a passkey
+            </button>
+          )}
           <button className="rounded-md border px-4 py-3" onClick={connect}>
             I already have a wallet
           </button>

@@ -73,6 +73,7 @@ export default function SignIn() {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
       signOutsHere += 1;
       setSignIn({ kind: "signed-out" });
+      setError(null); // an earlier "still signed in" is no longer true
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
       setError(SIGN_OUT_FAILED);

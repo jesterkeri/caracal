@@ -14,6 +14,9 @@ when they are found, not saved for this day.
 | Receipt adversary round 4 (suspicion) | `refText` | A UTF-8 invoice reference such as "Café-1" is shown as hex, but the decisions row says only a non-text reference is | Not proven |
 | Receipt adversary round 4 (suspicion) | Receipt card | A long invoice reference with no breaks may overflow a narrow card | Not proven, cosmetic |
 | Receipt adversary round 4 (suspicion) | Receipt page | No rate limit or caching in front of the RPC call | Not proven |
+| Day 1 adversary r4e (suspicion) | `apps/web/src/app/signin/page.tsx` | Coming Back from Google may restore the page from the browser's back/forward cache with "Opening Google..." still disabled (no `pageshow` handler) | Not proven; check in a real browser |
+| Day 1 adversary r4e (suspicion) | `/api/relay` | No per-IP or per-account rate limit, so anyone can spend the fee account's quota (an Origin check would not stop a script) | Not proven; decide on a limit before the deploy |
+| Day 1 adversary r4d (suspicion) | `apps/web/src/app/wallet/page.tsx` | After "not-saved" (the session could not be confirmed when binding), the page still says "Signed in as ..." | Not proven |
 
 ## User pipeline testing
 
