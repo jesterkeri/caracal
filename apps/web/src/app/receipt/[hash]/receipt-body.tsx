@@ -14,7 +14,7 @@ async function read(hash: string): Promise<ReceiptRead> {
     server ??= new rpc.Server(NETWORK.rpcUrl, { allowHttp: isLoopback(NETWORK.rpcUrl) });
   } catch (e) {
     console.error("receipt: the RPC URL is not usable:", e instanceof Error ? e.message : String(e));
-    return { kind: "unreachable" };
+    return { kind: "not-set-up" };
   }
   const rpcServer = server;
   return readSplitReceipt(hash, {
@@ -30,6 +30,7 @@ const MESSAGES: Record<Exclude<ReceiptRead["kind"], "found">, string> = {
   "no-split": "This transaction is not a payment into a Caracal split contract.",
   unreachable: "Caracal could not reach the Stellar network just now. Reload the page to try again.",
   unreadable: "Caracal could not read this transaction's details from the network, so it shows no receipt for it.",
+  "not-set-up": "Receipts are not set up on this server: its Stellar RPC setting (NEXT_PUBLIC_STELLAR_RPC_URL) cannot be used.",
 };
 
 export async function ReceiptBody({ params }: { params: Promise<{ hash: string }> }) {

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { rpc, xdr } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NETWORK, SPLIT } from "../src/lib/stellar/config";
-import { formatUsdc, formatXlm, instanceWasms, readSplitReceipt, type ReceiptDeps } from "../src/lib/stellar/receipt";
+import { formatUsdc, formatXlm, instanceStates as metaInstances, readSplitReceipt, type ReceiptDeps } from "../src/lib/stellar/receipt";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -59,9 +59,10 @@ describe("split receipt from the chain", () => {
 
   it("the real meta shows the split contract's instance before and after, both on Caracal's wasm", () => {
     const m = xdr.TransactionMeta.fromXDR(raw("7b4c51da").resultMetaXdr, "base64");
-    const seen = instanceWasms(m).get(SPLIT_CONTRACT);
-    expect(seen?.length).toBeGreaterThanOrEqual(2);
-    expect(seen?.every((w) => w === SPLIT.wasmHash)).toBe(true);
+    const seen = metaInstances(m).get(SPLIT_CONTRACT);
+    expect(seen?.wasms.length).toBeGreaterThanOrEqual(2);
+    expect(seen?.before).toBeGreaterThanOrEqual(1);
+    expect(seen?.wasms.every((w) => w === SPLIT.wasmHash)).toBe(true);
   });
 
   it("a contract that switched to Caracal's wasm during the transaction (before: other code) is not a receipt", async () => {
@@ -135,4 +136,15 @@ describe.runIf(process.env.CARACAL_NETWORK_TESTS === "1")("split receipt on test
     expect(["found", "not-found"]).toContain(r.kind);
     if (r.kind === "found") expect(r.receipts[0]!.spend).toBe(BigInt(75000));
   }, 30_000);
+});
+
+describe("rcpt2 follow-ups", () => {
+  it("an RPC answer without the events field: the events are read from the meta, so the real deposit is still found", async () => {
+    const r = raw("7b4c51da");
+    delete r.events;
+    vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(r);
+    const server = new rpc.Server("https://soroban-testnet.stellar.org");
+    const got = await readSplitReceipt(PAYMENT, { getTransaction: (h) => server.getTransaction(h), networkPassphrase: NETWORK.passphrase });
+    expect(got.kind).toBe("found");
+  });
 });
