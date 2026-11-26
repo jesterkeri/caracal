@@ -284,3 +284,18 @@ describe("r4m follow-up: the marker's clock", () => {
     expect(local.get("caracal.creationUnconfirmed")).toBe("A");
   });
 });
+
+describe("r4n follow-up: blocked storage named on Create and Connect too", () => {
+  it("Connect failing on IndexedDB says to allow site data", async () => {
+    const b = browser(() => null);
+    b.kit.connectWallet = async () => {
+      throw new Error("IndexedDB is not available in this environment");
+    };
+    const page = await render(b, A, [{ kind: "idle" }, "", A]);
+    await click(page.tree, "I already have a wallet")!();
+    await settle();
+    const state = page.setters.filter((s) => s.i === 0).at(-1)!.v as { message: string };
+    expect(state.message).toMatch(/blocking site storage/);
+    expect(state.message).not.toMatch(/check your connection/i);
+  });
+});

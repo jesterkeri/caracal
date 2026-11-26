@@ -15,6 +15,24 @@ type Account = { id: string; email: string | null };
 const ACCOUNT_CHANGED = "The signed-in account changed. Reloading";
 const SIGN_IN_UNCHECKED = "Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.";
 const WALLET_UNCHECKED = "Caracal could not load your saved wallet. Check your connection and reload the page.";
+const STORAGE_BLOCKED =
+  "This browser is blocking site storage (site data), which the wallet needs to remember your passkey. Allow site data for this site, or leave private browsing, then reload the page.";
+
+/**
+ * Whether a failure is the browser refusing site storage: the wallet kit reads
+ * localStorage when it starts (a SecurityError when site data is blocked) and
+ * keeps its passkey records in IndexedDB. A reload cannot fix that.
+ */
+function storageBlocked(e: unknown): boolean {
+  if (!(e instanceof Error) && !(e instanceof DOMException)) return false;
+  return e.name === "SecurityError" || /IndexedDB|localStorage|site data/i.test(e.message);
+}
+
+/** What a failed Create or Connect shows: blocked storage by name, anything else as the kit said it. */
+function failureText(e: unknown): string {
+  if (storageBlocked(e)) return STORAGE_BLOCKED;
+  return e instanceof Error ? e.message : String(e);
+}
 
 // True while this tab signs out. Its own sign-out event is then not taken for
 // a change made in another tab, and does not reload the page mid sign-out.
@@ -139,7 +157,8 @@ export default function WalletPage() {
       // so creating or connecting is offered only after a successful check.
       // Each failure is named for what failed: a wrong RPC setting, the wallet
       // after a verified sign-in, or the sign-in check itself.
-      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : verified ? WALLET_UNCHECKED : SIGN_IN_UNCHECKED;
+      const message =
+        e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : verified && storageBlocked(e) ? STORAGE_BLOCKED : verified ? WALLET_UNCHECKED : SIGN_IN_UNCHECKED;
       // Create is not offered: whether this account has a wallet is unknown
       // (the kit or the saved wallet could not be loaded). Reloading retries.
       setState({ kind: "error", message });
@@ -205,7 +224,7 @@ export default function WalletPage() {
       kit = await getKit();
     } catch (e) {
       // Nothing was made or sent; what was known before still holds.
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), createAllowed: true });
+      setState({ kind: "error", message: failureText(e), createAllowed: true });
       return;
     }
     // The kit announces credentialCreated once the passkey exists, before the
@@ -288,7 +307,7 @@ export default function WalletPage() {
       // this passkey's address, a closed prompt) leaves it for an unconfirmed
       // creation.
       const proven = e instanceof Error && WALLET_PROVEN_ERRORS.has(e.name);
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: !proven && creationUnconfirmedFor(account.id) });
+      setState({ kind: "error", message: failureText(e), checkFirst: !proven && creationUnconfirmedFor(account.id) });
     }
   }
 

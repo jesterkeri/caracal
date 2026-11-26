@@ -24,6 +24,8 @@ when they are found, not saved for this day.
 | Day 1 adversary r4l (suspicion) | `apps/web/src/app/wallet/page.tsx` | Connect and Create have no limit after the passkey step, so an RPC that accepts the connection and never answers leaves "busy" until a reload (the kit's own relayer wait is up to 360 s) | Not proven |
 | Day 1 adversary r4l (suspicion) | `apps/web/src/lib/relay/channels.ts` | A Channels 429 that comes with a body loses its status, so the person reads "check your activity" instead of "busy" | Not proven |
 | Day 1 adversary r4l (suspicion) | `/api/relay` queue | The relay queue has no per-request deadline; a backlog longer than the 3-minute wait could let a creation land after "Start a new one anyway" is allowed. Decide on a queue deadline before the deploy | Not proven; related to the r4b deploy note |
+| Day 1 adversary r4n (suspicion) | `apps/web/src/app/wallet/page.tsx` | During the first sign-in check (up to about 60 s when Supabase is unreachable) the wallet page shows no Sign out; the sign-in page does | Not proven |
+| Day 1 adversary r4n (suspicion) | `apps/web/src/lib/supabase/server.ts` | The callback's `setAll` ignores the `Cache-Control: no-store` that @supabase/ssr passes with auth cookies | Not proven; check before the deploy |
 
 ## User pipeline testing
 
