@@ -9,7 +9,7 @@ type User = { id: string; email?: string | null };
 /** The parts of the Supabase auth client used here. */
 export type AccountAuth = {
   getUser(): Promise<{ data: { user: User | null }; error: unknown }>;
-  getSession(): Promise<{ data: { session: unknown } }>;
+  getSession(): Promise<{ data: { session: unknown }; error?: unknown }>;
   onAuthStateChange(cb: (event: string, session: { user: User } | null) => void): { data: { subscription: { unsubscribe(): void } } };
 };
 
@@ -33,8 +33,13 @@ export async function readSignInState(auth: AccountAuth): Promise<SignInState> {
   }
   // Not verified. A session still stored here keeps its sign-out control.
   try {
-    const { data } = await auth.getSession();
-    return data.session ? { kind: "unverified" } : { kind: "signed-out" };
+    // With an expired access token and Supabase unreachable, supabase-js
+    // returns { session: null, error } while the session and its refresh token
+    // stay stored. That is not "signed out": it cannot be told apart from a
+    // live session, so it keeps its Sign out control.
+    const { data, error } = await auth.getSession();
+    if (error) console.error("could not read the stored session:", errorText(error));
+    return data.session || error ? { kind: "unverified" } : { kind: "signed-out" };
   } catch (e) {
     console.error("could not read the stored session:", errorText(e));
     return { kind: "unverified" };

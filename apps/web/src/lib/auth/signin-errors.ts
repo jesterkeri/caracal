@@ -9,7 +9,22 @@ export const SIGNIN_ERRORS = {
     "Sign-in did not finish. This happens if it was opened in another browser or tab, or took too long. Try again.",
   config: "Sign-in is not set up on this server yet. The site owner needs to add the Supabase settings.",
   failed: "Sign-in did not finish. Try again.",
+  unreachable: "Caracal could not reach the sign-in service to finish signing you in. Check your connection and try again.",
 } as const;
+
+/** Codes Supabase gives a code exchange that could not finish with this browser's sign-in attempt. */
+const EXCHANGE_EXPIRED = new Set(["flow_state_expired", "flow_state_not_found", "bad_code_verifier", "bad_oauth_state", "bad_oauth_callback", "pkce_code_verifier_not_found"]);
+
+/**
+ * The message code for a failed code exchange. Only causes the error shows are
+ * named: an expired or foreign sign-in attempt, or Supabase not answering;
+ * anything else gets the generic message.
+ */
+export function exchangeErrorCode(error: { code?: string; name?: string; status?: number }): SigninErrorCode {
+  if (error.code && EXCHANGE_EXPIRED.has(error.code)) return "expired";
+  if (error.name === "AuthRetryableFetchError" || (typeof error.status === "number" && (error.status === 0 || error.status >= 500))) return "unreachable";
+  return "failed";
+}
 
 export type SigninErrorCode = keyof typeof SIGNIN_ERRORS;
 

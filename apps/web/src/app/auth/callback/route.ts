@@ -3,7 +3,7 @@
 // URL by hand has no code, so it shows an error instead of signing anyone in.
 // Errors go to /signin as a known code, never as upstream text.
 import { NextResponse } from "next/server";
-import { signinUrl, upstreamErrorCode, type SigninErrorCode } from "@/lib/auth/signin-errors";
+import { exchangeErrorCode, signinUrl, upstreamErrorCode, type SigninErrorCode } from "@/lib/auth/signin-errors";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { supabaseServer } from "@/lib/supabase/server";
 
@@ -20,11 +20,18 @@ export async function GET(request: Request) {
   if (!code) return back("not_started");
   if (!supabaseEnvOrNull()) return back("config");
 
-  const supabase = await supabaseServer();
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  let error: { code?: string; name?: string; status?: number; message: string } | null;
+  try {
+    const supabase = await supabaseServer();
+    ({ error } = await supabase.auth.exchangeCodeForSession(code));
+  } catch (e) {
+    // A request that throws (a timeout from the 10 s deadline) never reached an answer.
+    console.error("sign-in code exchange threw:", e instanceof Error ? e.message : String(e));
+    return back("unreachable");
+  }
   if (error) {
     console.error("sign-in code exchange failed:", error.code ?? error.message);
-    return back("expired");
+    return back(exchangeErrorCode(error));
   }
   return NextResponse.redirect(new URL("/wallet", url.origin));
 }
