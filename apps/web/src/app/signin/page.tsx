@@ -11,6 +11,9 @@ import { getKit } from "@/lib/stellar/kit";
 // True while this tab signs out, so its own sign-out event does not reload the
 // page before the wallet disconnect has finished.
 let signingOutHere = false;
+// Counts sign-outs started here. A sign-in check that began before one is out
+// of date when it ends, and does not overwrite the signed-out state.
+let signOutsHere = 0;
 
 export default function SignIn() {
   const configured = supabaseEnvOrNull() !== null;
@@ -25,18 +28,21 @@ export default function SignIn() {
     const auth = supabaseBrowser().auth;
     let unfollow: (() => void) | undefined;
     let gone = false;
+    const signOutsAtStart = signOutsHere;
     // Only a session Supabase confirmed is shown as signed in. One that is
     // stored here but could not be confirmed keeps its Sign out control.
     readSignInState(auth)
       .then((now) => {
         if (gone) return;
+        // An error already shown (a sign-out that failed meanwhile) is kept.
+        setError((shown) => shown ?? signinErrorMessage(code));
+        if (signOutsHere !== signOutsAtStart) return;
         setSignIn(now);
         // A sign-in or sign-out in another tab: show the page for the new state.
         if (now.kind !== "unverified") {
           unfollow = followAccount(auth, now.kind === "verified" ? now.id : null, () => window.location.reload(), () => signingOutHere);
         }
-      })
-      .finally(() => setError(signinErrorMessage(code)));
+      });
     return () => {
       gone = true;
       unfollow?.();
@@ -61,6 +67,7 @@ export default function SignIn() {
     // Also disconnects the passkey wallet, so the next person to sign in on
     // this browser never sees this account's wallet.
     signingOutHere = true;
+    signOutsHere += 1;
     try {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
       setSignIn({ kind: "signed-out" });
@@ -95,6 +102,16 @@ export default function SignIn() {
         // not be confirmed. Signing out works without reaching Supabase.
         <div className="flex flex-col gap-3">
           <p>Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.</p>
+          <button className="text-sm underline" onClick={signOut}>
+            Sign out of this browser
+          </button>
+        </div>
+      ) : configured && signIn === null ? (
+        // Checking can take up to the 10 s request deadline. A session may be
+        // stored here, so Sign out is offered meanwhile, and Google is not:
+        // starting a second sign-in over an unknown one helps no one.
+        <div className="flex flex-col gap-3">
+          <p className="text-sm">Checking your sign-in...</p>
           <button className="text-sm underline" onClick={signOut}>
             Sign out of this browser
           </button>

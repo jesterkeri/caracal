@@ -10,7 +10,7 @@ import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
 
-const ACCOUNT_CHANGED = "The signed-in account changed in another tab. Reloading";
+const ACCOUNT_CHANGED = "The signed-in account changed. Reloading";
 const SIGN_IN_UNCHECKED = "Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.";
 const WALLET_UNCHECKED = "Caracal could not load your saved wallet. Check your connection and reload the page.";
 
@@ -47,32 +47,42 @@ export default function WalletPage() {
     let unfollow: (() => void) | undefined;
     let gone = false;
     let verified = false;
+    // Set once the account changed (here or in another tab). Restoring takes
+    // seconds; whatever it finds after that is no longer this account's to show.
+    let accountMoved = false;
+    // The restore's later steps do nothing once the page unmounted, the account
+    // changed, or this tab signed out (the page is then on its way to /signin).
+    const stale = () => gone || accountMoved || signingOutHere;
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
       const now = await readSignInState(auth);
       if (now.kind === "signed-out") return window.location.replace("/signin");
       if (now.kind === "unverified") throw new Error("the sign-in could not be verified");
-      if (gone) return;
+      if (stale()) return;
       verified = true;
       const me = { id: now.id, email: now.email };
       unfollow = followAccount(
         auth,
         me.id,
         () => {
-          setAccount(null);
-          setState({ kind: "busy", label: ACCOUNT_CHANGED });
-          window.location.reload();
+          accountMoved = true;
+          accountChanged();
         },
         () => signingOutHere,
       );
       setAccount(me);
       const kit = await getKit();
-      if (!(await mayRestoreWallet(browserStore, kit, me.id))) return setState({ kind: "idle" });
+      if (stale()) return;
+      const mayRestore = await mayRestoreWallet(browserStore, kit, me.id);
+      if (stale()) return;
+      if (!mayRestore) return setState({ kind: "idle" });
       const r = await kit.connectWallet();
+      if (stale()) return;
       setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle" });
     })().catch((e: unknown) => {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
+      if (stale()) return;
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
       // Each failure is named for what failed: a wrong RPC setting, the wallet

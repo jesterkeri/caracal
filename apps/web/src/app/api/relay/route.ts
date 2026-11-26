@@ -155,6 +155,12 @@ export async function POST(request: Request) {
   if (!toProxy && !channelsKey) {
     return fail("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
+  // Sent as an HTTP header: a pasted space, newline or non-ASCII character
+  // would make every request fail with an error that does not name the key.
+  if (!toProxy && !/^[\x21-\x7e]+$/.test(channelsKey!)) {
+    console.error("relay: CHANNELS_API_KEY must be printable ASCII with no spaces or newlines");
+    return fail("Sponsored contract calls are not set up correctly on this server (CHANNELS_API_KEY). Wallet creation works.", 503);
+  }
   const channelsUrl = toProxy ? undefined : upstreamUrl("CHANNELS_BASE_URL");
   if (channelsUrl === null) {
     console.error("relay: CHANNELS_BASE_URL must be an https URL (http only on this machine)");

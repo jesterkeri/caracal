@@ -17,12 +17,26 @@ const EXCHANGE_EXPIRED = new Set(["flow_state_expired", "flow_state_not_found", 
 
 /**
  * The message code for a failed code exchange. Only causes the error shows are
- * named: an expired or foreign sign-in attempt, or Supabase not answering;
- * anything else gets the generic message.
+ * named: an expired or foreign sign-in attempt, or Supabase not answering
+ * (auth-js reports that as AuthRetryableFetchError: no answer, the request
+ * deadline, or a gateway status). An answer Supabase did give, such as a 500,
+ * is not "could not reach": it gets the generic message.
  */
 export function exchangeErrorCode(error: { code?: string; name?: string; status?: number }): SigninErrorCode {
   if (error.code && EXCHANGE_EXPIRED.has(error.code)) return "expired";
-  if (error.name === "AuthRetryableFetchError" || (typeof error.status === "number" && (error.status === 0 || error.status >= 500))) return "unreachable";
+  if (error.name === "AuthRetryableFetchError" || error.status === 0) return "unreachable";
+  return "failed";
+}
+
+/**
+ * The message code for a code exchange that threw instead of returning an
+ * error: "unreachable" only for a network failure or the request deadline,
+ * anything else (a setup or program error) gets the generic message.
+ */
+export function thrownExchangeErrorCode(e: unknown): SigninErrorCode {
+  const name = e instanceof Error || e instanceof DOMException ? e.name : "";
+  if (name === "TimeoutError" || name === "AbortError" || name === "AuthRetryableFetchError") return "unreachable";
+  if (e instanceof TypeError && /fetch failed|Failed to fetch|NetworkError|Load failed/i.test(e.message)) return "unreachable";
   return "failed";
 }
 
