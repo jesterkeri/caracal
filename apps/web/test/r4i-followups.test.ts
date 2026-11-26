@@ -147,3 +147,48 @@ describe("r4i follow-up: two tabs of one browser", () => {
     expect(state.message).toMatch(/already under way in another tab/);
   });
 });
+
+describe("r4j follow-up: the relay's refusals before sending", () => {
+  it.each([
+    ["Too many requests. Wait a minute.", "Too many requests. Wait a minute. Nothing was sent."],
+    ["Payload too large", "Payload too large. Nothing was sent."],
+    ["The network could not be reached to check this call. Try again.", "The network could not be reached to check this call. Nothing was sent. Try again."],
+    ["Already. Nothing was sent. Try again.", "Already. Nothing was sent. Try again."],
+  ])("%j becomes %j", async (from, to) => {
+    const { refusalText } = await import("../src/lib/relay/refusal");
+    expect(refusalText(from)).toBe(to);
+  });
+});
+
+describe("r4j follow-up: starting a new wallet after an unknown outcome", () => {
+  async function unknownThenEscape(startedAgoMs: number) {
+    const b = browser(() => ({ contractId: "CX", submitResult: { success: false, error: new Error("Relayer request failed with status 504") } }));
+    const first = await render(b, A, [{ kind: "idle" }, "Ada", A]);
+    await click(first.tree, "Create wallet")!();
+    await settle();
+    b.local.set("caracal.creationStartedAt", String(Date.now() - startedAgoMs));
+    const state = first.setters.filter((s) => s.i === 0).at(-1)!.v;
+    vi.resetModules();
+    const create = vi.spyOn(b.kit, "createWallet");
+    const page = await render(b, A, [state, "Ada", A]);
+    const escape = click(page.tree, "Start a new one anyway");
+    expect(escape, "the escape is offered on the unknown-outcome screen").not.toBeNull();
+    await escape!();
+    return { create, page, b };
+  }
+  it("less than 3 minutes after the attempt: it waits, and creates nothing", async () => {
+    const { create, page, b } = await unknownThenEscape(60_000);
+    expect(create).not.toHaveBeenCalled();
+    expect(b.local.get(KEY)).toBe("A");
+    const state = page.setters.filter((s) => s.i === 0).at(-1)!.v as { message: string };
+    expect(state.message).toMatch(/less than 3 minutes ago/);
+  });
+  it("3 minutes or more after: the person's choice clears the marker and starts a creation", async () => {
+    const { create } = await unknownThenEscape(4 * 60_000);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+  it("not offered where a wallet is proven (a failed Connect)", async () => {
+    const shown = texts((await render(browser(() => null), A, [{ kind: "error", message: "The indexer did not return one complete schema-2 birth claim." }, "", A])).tree).join(" | ");
+    expect(shown).not.toMatch(/Start a new one anyway/);
+  });
+});

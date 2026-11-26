@@ -30,6 +30,13 @@ let signOutsStartedHere = 0;
  * reload: the last attempt may have created a wallet.
  */
 const CREATION_UNCONFIRMED_KEY = "caracal.creationUnconfirmed";
+const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
+/**
+ * How long a creation may still be finishing (the relay's own limits are
+ * shorter). Before that, "start a new wallet anyway" waits: another tab, or
+ * the network, may still complete the first one.
+ */
+const CREATION_SETTLE_MS = 3 * 60_000;
 
 function creationUnconfirmedFor(id: string): boolean {
   try {
@@ -38,10 +45,24 @@ function creationUnconfirmedFor(id: string): boolean {
     return false; // storage blocked: nothing could have been recorded either
   }
 }
+/** Milliseconds since the unconfirmed creation started, or Infinity when unknown. */
+function creationAge(): number {
+  try {
+    const at = Number(browserStore.getItem(CREATION_STARTED_AT_KEY));
+    return at > 0 ? Date.now() - at : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
 function markCreation(id: string | null) {
   try {
-    if (id === null) browserStore.removeItem(CREATION_UNCONFIRMED_KEY);
-    else browserStore.setItem(CREATION_UNCONFIRMED_KEY, id);
+    if (id === null) {
+      browserStore.removeItem(CREATION_UNCONFIRMED_KEY);
+      browserStore.removeItem(CREATION_STARTED_AT_KEY);
+    } else {
+      browserStore.setItem(CREATION_UNCONFIRMED_KEY, id);
+      browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
+    }
   } catch (e) {
     console.error("could not record the wallet creation attempt:", e instanceof Error ? e.message : String(e));
   }
@@ -58,6 +79,9 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
   });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
+
+const CREATION_TOO_RECENT =
+  "The last attempt started less than 3 minutes ago and may still finish. Wait a few minutes, then check with \"I already have a wallet\" first.";
 
 const CREATION_IN_PROGRESS =
   "A wallet creation for this account is already under way in another tab, or an earlier one could not be confirmed.";
@@ -191,6 +215,12 @@ export default function WalletPage() {
 
   async function create() {
     if (!account) return; // a wallet is always bound to its signed-in owner
+    // Another tab of this browser may be creating this account's wallet right
+    // now, or an earlier attempt's outcome is unknown: do not start a second.
+    if (creationUnconfirmedFor(account.id)) {
+      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
+      return;
+    }
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
@@ -210,12 +240,6 @@ export default function WalletPage() {
       passkeyMade = true;
     });
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
-    // Another tab of this browser may be creating this account's wallet right
-    // now, or an earlier attempt's outcome is unknown: do not start a second.
-    if (creationUnconfirmedFor(account.id)) {
-      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
-      return;
-    }
     markCreation(account.id);
     try {
       r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
@@ -247,6 +271,17 @@ export default function WalletPage() {
       // The wallet was made; only recording its owner failed.
       setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true });
     }
+  }
+
+  /** After an unknown outcome, the person checked with Connect and found no wallet. */
+  async function createAnyway() {
+    if (!account) return;
+    if (creationAge() < CREATION_SETTLE_MS) {
+      setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
+      return;
+    }
+    markCreation(null);
+    await create();
   }
 
   async function connect() {
@@ -335,6 +370,13 @@ export default function WalletPage() {
           {state.kind === "error" && <p className="text-sm text-red-600">{state.message}</p>}
           {(state.kind === "error" || state.kind === "idle") && state.checkFirst && !(state.kind === "error" && state.message.includes("check with Connect")) && (
             <p className="text-sm">{WALLET_MAYBE_EXISTS}</p>
+          )}
+          {(state.kind === "error" || state.kind === "idle") && state.checkFirst && (
+            // The way out when "I already have a wallet" found nothing: the
+            // person says so, and only once the last attempt cannot still finish.
+            <button className="text-sm underline" onClick={createAnyway}>
+              No wallet found? Start a new one anyway
+            </button>
           )}
         </div>
       )}

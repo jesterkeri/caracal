@@ -27,6 +27,7 @@
 // relayer. Calling it from the server means no browser CORS and no key in the
 // bundle.
 
+import { refusalText } from "@/lib/relay/refusal";
 import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
@@ -110,31 +111,45 @@ const perInstance = new WindowLimiter(120, 60_000);
 const fail = (error: string, status: number) =>
   Response.json({ success: false, error }, { status });
 
+const refuse = (error: string, status: number) => fail(refusalText(error), status);
+
+/** Whether a request body (not yet checked) asks to deploy a contract. */
+function deploysContract(body: unknown): boolean {
+  try {
+    const func = (body as { func?: unknown })?.func;
+    return typeof func === "string" && xdr.HostFunction.fromXDR(func, "base64").switch().name === "hostFunctionTypeCreateContractV2";
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
-  if (!perIp.take(clientKey(request, process.env))) return fail("Too many requests. Wait a minute.", 429);
-  if (!perInstance.take("all")) return fail("The fee sponsor is busy. Try again shortly.", 429);
+  if (!perIp.take(clientKey(request, process.env))) return refuse("Too many requests. Wait a minute.", 429);
+  if (!perInstance.take("all")) return refuse("The fee sponsor is busy. Try again shortly.", 429);
 
   let text: string | null;
   try {
     text = await readBounded(request);
   } catch {
     // The client's body stream broke (connection reset, aborted upload).
-    return fail("The request body could not be read", 400);
+    return refuse("The request body could not be read", 400);
   }
-  if (text === null) return fail("Payload too large", 413);
+  if (text === null) return refuse("Payload too large", 413);
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    return fail("Body is not JSON", 400);
+    return refuse("Body is not JSON", 400);
   }
 
   // Setup first: an unusable secret or RPC URL is "not set up" on every path.
   const deps = sponsor();
-  if (!deps) return fail("Fee sponsorship is not set up on this server.", 503);
+  if (!deps) return refuse("Fee sponsorship is not set up on this server.", 503);
 
   const verdict = await checkPayload(body, CARACAL_POLICY, chain.wasm, chain.instance);
-  if (!verdict.ok) return fail(verdict.error, verdict.status);
+  // A refused deployment says "Nothing was sent", which the wallet page needs
+  // to offer creation again; calls keep the policy's own wording.
+  if (!verdict.ok) return deploysContract(body) ? refuse(verdict.error, verdict.status) : fail(verdict.error, verdict.status);
 
   // Only the shared deployer's wallet deployment goes to SDF's proxy as
   // { func, auth }: it names its exact code hash and no existing contract's
@@ -153,23 +168,23 @@ export async function POST(request: Request) {
     });
   const channelsKey = process.env.CHANNELS_API_KEY;
   if (!toProxy && !channelsKey) {
-    return fail("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
+    return refuse("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
   // Sent as an HTTP header: a pasted space, newline or non-ASCII character
   // would make every request fail with an error that does not name the key.
   if (!toProxy && !/^[\x21-\x7e]+$/.test(channelsKey!)) {
     console.error("relay: CHANNELS_API_KEY must be printable ASCII with no spaces or newlines");
-    return fail("Sponsored contract calls are not set up correctly on this server (CHANNELS_API_KEY). Wallet creation works.", 503);
+    return refuse("Sponsored contract calls are not set up correctly on this server (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
   const channelsUrl = toProxy ? undefined : upstreamUrl("CHANNELS_BASE_URL");
   if (channelsUrl === null) {
     console.error("relay: CHANNELS_BASE_URL must be an https URL (http only on this machine)");
-    return fail("Sponsored contract calls are not set up correctly on this server (CHANNELS_BASE_URL). Wallet creation works.", 503);
+    return refuse("Sponsored contract calls are not set up correctly on this server (CHANNELS_BASE_URL). Wallet creation works.", 503);
   }
   const proxyUrl = toProxy ? upstreamUrl("RELAYER_UPSTREAM") : undefined;
   if (proxyUrl === null) {
     console.error("relay: RELAYER_UPSTREAM must be an https URL (http only on this machine)");
-    return fail("Wallet creation is not set up correctly on this server (RELAYER_UPSTREAM). Nothing was sent.", 503);
+    return refuse("Wallet creation is not set up correctly on this server (RELAYER_UPSTREAM). Nothing was sent.", 503);
   }
 
   // One at a time: each transaction takes the source account's next sequence
@@ -186,12 +201,12 @@ export async function POST(request: Request) {
       // stellar-sdk's getAccount reports every failure (unreachable RPC or an
       // account that does not exist) as "Account not found", so both are named.
       if (why.startsWith("Account not found")) {
-        return fail("Caracal could not load its fee account from the network: either the network could not be reached, or the fee account (RELAY_SOURCE_SECRET) is not funded on testnet. Nothing was sent.", 503);
+        return refuse("Caracal could not load its fee account from the network: either the network could not be reached, or the fee account (RELAY_SOURCE_SECRET) is not funded on testnet. Nothing was sent.", 503);
       }
-      return fail("The network could not be reached to check this call. Try again.", 503);
+      return refuse("The network could not be reached to check this call. Try again.", 503);
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
-    if (!built.ok) return fail(built.error, built.status);
+    if (!built.ok) return toProxy ? refuse(built.error, built.status) : fail(built.error, built.status);
 
     if (!toProxy) {
       const sent = await submitToChannels(channels(channelsKey!, channelsUrl), built.xdr, channelsTimeout());
