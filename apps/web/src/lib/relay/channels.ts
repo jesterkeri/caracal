@@ -25,8 +25,21 @@ export function channelsClient(apiKey: string, baseUrl = DEFAULT_CHANNELS, timeo
   return new ChannelsClient({ baseUrl, apiKey, timeout: timeoutMs });
 }
 
+/**
+ * Channels codes (plugin 0.21.1) raised by checks that run before the
+ * transaction is sent, so nothing reached the network. Any other code,
+ * including WAIT_TIMEOUT, may come after sending, so the user is told to
+ * check before retrying. Re-check this list when upgrading the plugin.
+ */
+const REFUSED_BEFORE_SUBMIT: ReadonlySet<string> = new Set([
+  "API_KEY_REQUIRED", "UNAUTHORIZED", "UNSUPPORTED_NETWORK", "INVALID_PARAMS", "INVALID_PAYLOAD",
+  "INVALID_ENVELOPE_TYPE", "INVALID_UNSIGNED_XDR", "INVALID_SIGNATURE", "TIMEBOUNDS_EXPIRED", "TIMEBOUNDS_TOO_FAR",
+  "FEE_LIMIT_EXCEEDED", "FEE_MISMATCH", "AUTH_EXPIRY_TOO_SHORT", "SIMULATION_FAILED",
+  "SIMULATION_SIGNED_AUTH_VALIDATION_FAILED", "ASSEMBLY_FAILED", "NO_CHANNELS_CONFIGURED", "POOL_CAPACITY",
+]);
+
 /** An error code Channels sends (e.g. ONCHAIN_FAILED), if it looks like one. Never free text. */
-function codeOf(details: unknown): string | null {
+export function codeOf(details: unknown): string | null {
   const code = (details as { code?: unknown } | undefined)?.code;
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,40}$/.test(code) ? code : null;
 }
@@ -42,8 +55,16 @@ export async function submitToChannels(client: Submitter, xdr: string): Promise<
   } catch (e) {
     if (e instanceof PluginExecutionError) {
       const code = codeOf(e.errorDetails);
-      console.error("channels refused the transaction:", code ?? e.message.slice(0, 200));
-      return { ok: false, status: 502, error: `The fee relayer refused this transaction${code ? ` (${code})` : ""}.` };
+      console.error("channels did not complete the transaction:", code ?? "", e.message.slice(0, 200));
+      if (code === "ONCHAIN_FAILED") {
+        // It reached the ledger and failed, so it changed nothing.
+        return { ok: false, status: 502, error: "This transaction failed on the network (ONCHAIN_FAILED), so nothing changed." };
+      }
+      if (code && REFUSED_BEFORE_SUBMIT.has(code)) {
+        return { ok: false, status: 502, error: `The fee relayer refused this transaction (${code}). Nothing was sent.` };
+      }
+      // WAIT_TIMEOUT ("it may still submit"), an unknown code or none: it may have been sent.
+      return { ok: false, status: 502, error: `The fee relayer could not confirm this transaction${code ? ` (${code})` : ""}. Check your activity before trying again.` };
     }
     if (e instanceof PluginTransportError) {
       console.error("channels transport error:", e.statusCode ?? "", e.message.slice(0, 200));

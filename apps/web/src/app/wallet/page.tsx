@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { bindWallet, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import { SIGN_OUT_FAILED, bindWallet, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { getKit } from "@/lib/stellar/kit";
@@ -42,7 +42,14 @@ export default function WalletPage() {
   }
 
   async function signOut() {
-    await signOutEverywhere(window.localStorage, getKit(), () => supabaseBrowser().auth.signOut());
+    try {
+      await signOutEverywhere(window.localStorage, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      // The wallet is already disconnected and unbound; only the session survived.
+      setState({ kind: "error", message: SIGN_OUT_FAILED });
+      return;
+    }
     window.location.replace("/signin");
   }
 

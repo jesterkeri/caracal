@@ -31,7 +31,7 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
-import { channelsClient, submitToChannels, type Submitter } from "@/lib/relay/channels";
+import { channelsClient, codeOf, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
 
@@ -165,19 +165,27 @@ export async function POST(request: Request) {
   if (NULL_BODY_STATUSES.has(res.status)) return new Response(null, { status: res.status });
   // The wallet kit reads `success` from the answer. Anything that is not the
   // relayer's JSON (a CDN error page, an empty body) becomes our own 502.
-  if (!isRelayerAnswer(out)) {
+  const parsed = relayerAnswer(out);
+  if (!parsed) {
     console.error("relay upstream answered", res.status, "with an unreadable body");
     return fail("The fee relayer gave an answer Caracal could not read. Try again.", 502);
+  }
+  // A refusal's wording is the upstream's, so it never reaches the user: only
+  // a fixed message and, if it looks like one, the upstream's error code.
+  if (!parsed.success) {
+    console.error("relay upstream refused:", res.status, out.slice(0, 300));
+    const code = codeOf(parsed.data);
+    return fail(`The fee relayer refused to create this wallet${code ? ` (${code})` : ""}. Try again.`, res.status >= 400 ? res.status : 502);
   }
   return new Response(out, { status: res.status, headers: { "Content-Type": "application/json" } });
 }
 
-function isRelayerAnswer(text: string): boolean {
+function relayerAnswer(text: string): { success: boolean; data?: unknown } | null {
   try {
     const v: unknown = JSON.parse(text);
-    return typeof v === "object" && v !== null && typeof (v as { success?: unknown }).success === "boolean";
+    return typeof v === "object" && v !== null && typeof (v as { success?: unknown }).success === "boolean" ? (v as { success: boolean; data?: unknown }) : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

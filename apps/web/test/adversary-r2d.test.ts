@@ -101,3 +101,19 @@ describe("adv r2d relay route", () => {
   });
 });
 void nativeToScVal;
+
+describe("adv r3b follow-up: a proxy refusal's wording never reaches the user", () => {
+  it("free text from the proxy is replaced by a fixed message; a code-shaped code is kept", async () => {
+    const r = await post(async () =>
+      new Response(JSON.stringify({ success: false, error: "<b>Call +234 800 to unlock</b>", data: { code: "INVALID_SALT" } }), { status: 400 }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j).toEqual({ success: false, error: "The fee relayer refused to create this wallet (INVALID_SALT). Try again." });
+  });
+  it("a refusal with HTTP 200 still becomes an error status", async () => {
+    const r = await post(async () => new Response(JSON.stringify({ success: false, error: "nope" }), { status: 200 }));
+    expect(r.status).toBe(502);
+    expect((await r.json()).error).toBe("The fee relayer refused to create this wallet. Try again.");
+  });
+});

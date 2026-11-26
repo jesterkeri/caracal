@@ -120,16 +120,17 @@ describe("every Channels answer without a transaction hash becomes a controlled,
   });
 
   it("a refusal names only Channels' error code, never its free text", async () => {
-    answer(400, JSON.stringify({ success: false, error: "<script>steal()</script> visit evil.example", data: { code: "ONCHAIN_FAILED" } }));
+    answer(400, JSON.stringify({ success: false, error: "<script>steal()</script> visit evil.example", data: { code: "INVALID_PARAMS" } }));
     const { r, body } = await pay();
     expect(r.status).toBe(502);
-    expect(body.error).toBe("The fee relayer refused this transaction (ONCHAIN_FAILED).");
+    expect(body.error).toBe("The fee relayer refused this transaction (INVALID_PARAMS). Nothing was sent.");
   });
 
-  it("a refusal with a code that is not a code shape drops it", async () => {
+  it("a refusal with a code that is not a code shape drops it (and is treated as possibly sent)", async () => {
     answer(400, JSON.stringify({ success: false, error: "x", data: { code: "go to evil.example" } }));
     const { body } = await pay();
-    expect(body.error).toBe("The fee relayer refused this transaction.");
+    expect(body.error).toBe("The fee relayer could not confirm this transaction. Check your activity before trying again.");
+    expect(body.error).not.toMatch(/evil/);
   });
 
   it("Channels does not answer in time: 502 within the configured timeout", async () => {
@@ -147,5 +148,31 @@ describe("every Channels answer without a transaction hash becomes a controlled,
     const { r, body } = await pay();
     expect(r.status).toBe(502);
     controlled(body);
+  });
+});
+
+describe("Channels error codes: refused before sending vs. outcome unknown (adversary r3b)", () => {
+  it("a check that runs before sending (TIMEBOUNDS_EXPIRED) says nothing was sent", async () => {
+    answer(400, JSON.stringify({ success: false, error: "x", data: { code: "TIMEBOUNDS_EXPIRED" } }));
+    const { body } = await pay();
+    expect(body.error).toBe("The fee relayer refused this transaction (TIMEBOUNDS_EXPIRED). Nothing was sent.");
+  });
+
+  it("a transaction that landed and failed (ONCHAIN_FAILED) says nothing changed", async () => {
+    answer(400, JSON.stringify({ success: false, error: "x", data: { code: "ONCHAIN_FAILED" } }));
+    const { body } = await pay();
+    expect(body.error).toBe("This transaction failed on the network (ONCHAIN_FAILED), so nothing changed.");
+  });
+
+  it("an unknown code is treated as possibly sent", async () => {
+    answer(500, JSON.stringify({ success: false, error: "x", data: { code: "KV_ERROR" } }));
+    const { body } = await pay();
+    expect(body.error).toBe("The fee relayer could not confirm this transaction (KV_ERROR). Check your activity before trying again.");
+  });
+
+  it("a refusal with no code is treated as possibly sent", async () => {
+    answer(500, JSON.stringify({ success: false, error: "x" }));
+    const { body } = await pay();
+    expect(body.error).toBe("The fee relayer could not confirm this transaction. Check your activity before trying again.");
   });
 });
