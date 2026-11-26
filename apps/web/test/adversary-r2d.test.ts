@@ -78,7 +78,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules()
 
 describe("adv r2d relay route", () => {
   it("baseline: genuine wallet creation is forwarded to the proxy and its answer returned", async () => {
-    const r = await post(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
+    // The shape SDF's proxy answered live on 2026-11-26.
+    const r = await post(async () => new Response(JSON.stringify({ success: true, data: { transactionId: "bec66e49-36ef-4d68-8249-8e214fc6fb7b", hash: "a486e639538a16820417ecf3b4208e6cb17e09eeee2f79c9f93dea6a96d5e87f", status: "confirmed" } }), { status: 200 }));
     expect(r.status).toBe(200);
   });
   it("baseline: genuine transfer is submitted through Channels and its answer returned", async () => {

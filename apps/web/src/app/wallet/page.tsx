@@ -33,11 +33,17 @@ export default function WalletPage() {
       if (!(await mayRestoreWallet(window.localStorage, kit, me.id))) return setState({ kind: "idle" });
       const r = await kit.connectWallet();
       setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle" });
-    })().catch(() => setState({ kind: "idle" }));
+    })().catch((e: unknown) => {
+      console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
+      // Without a known account a new wallet could not be bound to its owner,
+      // so creating or connecting is offered only after a successful check.
+      setState({ kind: "error", message: "Caracal could not check your sign-in. Check your connection and reload the page." });
+    });
   }, []);
 
   function connected(contractId: string, txHash?: string) {
-    if (account) bindWallet(window.localStorage, account.id);
+    if (!account) return;
+    bindWallet(window.localStorage, account.id);
     setState({ kind: "connected", contractId, txHash });
   }
 
@@ -54,6 +60,7 @@ export default function WalletPage() {
   }
 
   async function create() {
+    if (!account) return; // a wallet is always bound to its signed-in owner
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
     try {
       const kit = await getKit();
@@ -69,6 +76,7 @@ export default function WalletPage() {
   }
 
   async function connect() {
+    if (!account) return; // a wallet is always bound to its signed-in owner
     setState({ kind: "busy", label: "Waiting for your passkey" });
     try {
       const kit = await getKit();
@@ -104,7 +112,7 @@ export default function WalletPage() {
 
       {state.kind === "busy" && <p className="text-sm">{state.label}...</p>}
 
-      {(state.kind === "idle" || state.kind === "error") && (
+      {account && (state.kind === "idle" || state.kind === "error") && (
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-sm">
             Your name (shown in the passkey prompt)

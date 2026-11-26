@@ -64,19 +64,18 @@ export async function signOutEverywhere(
   kit: Disconnectable | Promise<Disconnectable>,
   endSession: () => Promise<Ended>,
 ): Promise<void> {
-  let ended: Ended;
+  // If storage refuses, the binding stays; the next account still never
+  // gets this wallet, because mayRestoreWallet compares it to their id.
   try {
-    // If storage refuses, the binding stays; the next account still never
-    // gets this wallet, because mayRestoreWallet compares it to their id.
-    try {
-      store.removeItem(WALLET_OWNER_KEY);
-    } catch (e) {
-      console.error("could not forget the wallet's owner:", errorText(e));
-    }
-    await disconnectQuietly(kit);
-  } finally {
-    ended = await endSession();
+    store.removeItem(WALLET_OWNER_KEY);
+  } catch (e) {
+    console.error("could not forget the wallet's owner:", errorText(e));
   }
+  // The session ends at once, alongside the (time-bounded) wallet disconnect,
+  // so a wallet kit that is slow or stuck never delays or blocks it.
+  const [, session] = await Promise.allSettled([disconnectQuietly(kit), endSession()]);
+  if (session.status === "rejected") throw session.reason;
+  const ended = session.value;
   if (ended && ended.error) {
     throw new Error(`Sign-out did not finish: ${errorText(ended.error)}`);
   }
@@ -89,10 +88,19 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Longest wait for the wallet kit to load and disconnect before the session is ended anyway. */
+export const DISCONNECT_TIMEOUT_MS = 5_000;
+
 async function disconnectQuietly(kit: Disconnectable | Promise<Disconnectable>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the wallet kit did not finish within ${DISCONNECT_TIMEOUT_MS} ms`)), DISCONNECT_TIMEOUT_MS);
+  });
   try {
-    await (await kit).disconnect();
+    await Promise.race([Promise.resolve(kit).then((k) => k.disconnect()), stalled]);
   } catch (e) {
     console.error("could not disconnect the wallet:", errorText(e));
+  } finally {
+    clearTimeout(timer);
   }
 }

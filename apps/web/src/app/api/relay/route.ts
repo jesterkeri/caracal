@@ -46,10 +46,10 @@ const chain = rpcContractLookup(NETWORK.rpcUrl);
 const oneAtATime = serial();
 let channelsFor: { key: string; client: Submitter } | null = null;
 /** One Channels client per key, built on first use. */
+const channelsTimeout = () => Number(process.env.CHANNELS_TIMEOUT_MS) || 60_000;
 function channels(apiKey: string): Submitter {
   if (channelsFor?.key !== apiKey) {
-    const timeout = Number(process.env.CHANNELS_TIMEOUT_MS) || 60_000;
-    channelsFor = { key: apiKey, client: channelsClient(apiKey, process.env.CHANNELS_BASE_URL || undefined, timeout) };
+    channelsFor = { key: apiKey, client: channelsClient(apiKey, process.env.CHANNELS_BASE_URL || undefined, channelsTimeout()) };
   }
   return channelsFor.client;
 }
@@ -148,7 +148,7 @@ export async function POST(request: Request) {
     if (!built.ok) return fail(built.error, built.status);
 
     if (!toProxy) {
-      const sent = await submitToChannels(channels(channelsKey!), built.xdr);
+      const sent = await submitToChannels(channels(channelsKey!), built.xdr, channelsTimeout());
       return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
     }
     try {
@@ -184,7 +184,16 @@ export async function POST(request: Request) {
     const code = codeOf(parsed.data);
     return fail(`The fee relayer refused to create this wallet${code ? ` (${code})` : ""}. Try again.`, res.status >= 400 ? res.status : 502);
   }
-  return new Response(out, { status: res.status, headers: { "Content-Type": "application/json" } });
+  // As on the Channels path, only a confirmed transaction with a hash is a
+  // created wallet; the answer is rebuilt from those fields, not passed on.
+  const d = (parsed.data ?? {}) as { transactionId?: unknown; hash?: unknown; status?: unknown };
+  if (typeof d.hash !== "string" || !/^[0-9a-f]{64}$/i.test(d.hash) || d.status !== "confirmed") {
+    const status = typeof d.status === "string" && /^[a-z_]{1,20}$/.test(d.status) ? d.status : null;
+    console.error("relay upstream answered success without a confirmed transaction:", out.slice(0, 300));
+    return fail(`The fee relayer did not confirm this wallet's creation${status ? ` (status: ${status})` : ""}. Check your wallet before trying again.`, 502);
+  }
+  const transactionId = typeof d.transactionId === "string" ? d.transactionId : null;
+  return Response.json({ success: true, data: { transactionId, hash: d.hash, status: "confirmed" } }, { status: 200 });
 }
 
 function relayerAnswer(text: string): { success: boolean; data?: unknown } | null {

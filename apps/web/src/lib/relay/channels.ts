@@ -14,6 +14,7 @@ import {
   PluginTransportError,
   PluginUnexpectedError,
 } from "@openzeppelin/relayer-plugin-channels/dist/client";
+import { within } from "./sponsor";
 
 export const DEFAULT_CHANNELS = "https://channels.openzeppelin.com/testnet";
 
@@ -45,9 +46,18 @@ export function codeOf(details: unknown): string | null {
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,40}$/.test(code) ? code : null;
 }
 
-export async function submitToChannels(client: Submitter, xdr: string): Promise<Submitted> {
+/**
+ * `deadlineMs` bounds the whole call. The client's own timeout only fires when
+ * the connection goes idle, so an answer that trickles in forever would
+ * otherwise hold the relay's one-at-a-time queue. The default (60 s) is above
+ * the transaction's validity (TX_TIMEOUT_S, 25 s), so a call abandoned here can
+ * no longer land on chain. With a shorter CHANNELS_TIMEOUT_MS it might, and the
+ * next transaction can then be refused for a stale sequence number (the user
+ * is told to check and retry; nothing is paid twice).
+ */
+export async function submitToChannels(client: Submitter, xdr: string, deadlineMs = 60_000): Promise<Submitted> {
   try {
-    const r = await client.submitTransaction({ xdr });
+    const r = await within(client.submitTransaction({ xdr }), deadlineMs, "channels submitTransaction");
     if (typeof r?.hash !== "string" || r.hash === "") {
       console.error("channels answered without a transaction hash:", JSON.stringify(r).slice(0, 200));
       return { ok: false, status: 502, error: "The fee relayer gave no transaction result. Check your activity before trying again." };

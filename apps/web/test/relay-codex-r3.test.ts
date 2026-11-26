@@ -57,7 +57,8 @@ function walletOnChain() {
   vi.spyOn(rpc.Server.prototype, "getLedgerEntries").mockImplementation((async () => ({ entries: [{ val: xdr.LedgerEntryData.contractData(data) }] })) as never);
 }
 
-const ok = () => new Response(JSON.stringify({ success: true, data: { transactionId: "t", hash: "h", status: "confirmed" } }), { headers: { "Content-Type": "application/json" } });
+// The shape SDF's proxy answered live on 2026-11-26.
+const ok = () => new Response(JSON.stringify({ success: true, data: { transactionId: "bec66e49-36ef-4d68-8249-8e214fc6fb7b", hash: "a486e639538a16820417ecf3b4208e6cb17e09eeee2f79c9f93dea6a96d5e87f", status: "confirmed" } }), { headers: { "Content-Type": "application/json" } });
 async function post(body: unknown) {
   walletOnChain();
   const upstream = vi.fn(async (_url: string, _init: RequestInit) => ok());
