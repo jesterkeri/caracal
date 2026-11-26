@@ -8,12 +8,21 @@ let kitPromise: Promise<SmartAccountKit> | null = null;
 export const HTTPS_RPC_REQUIRED =
   "The wallet needs an https Stellar RPC. Set NEXT_PUBLIC_STELLAR_RPC_URL to an https address, or leave it unset for the testnet default.";
 
+/** An https URL, the scheme in any case (as URL parsing and the kit accept it). */
+function isHttps(url: string): boolean {
+  try {
+    return new URL(url.trim()).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** One passkey smart-account kit per browser tab, created on first use. */
 export function getKit(): Promise<SmartAccountKit> {
   if (!kitPromise) {
     // smart-account-kit 0.10.0 refuses an http RPC and offers no way to allow
     // one, so say which setting is wrong instead of passing on its error.
-    if (!NETWORK.rpcUrl.startsWith("https://")) {
+    if (!isHttps(NETWORK.rpcUrl)) {
       return Promise.reject(new Error(HTTPS_RPC_REQUIRED));
     }
     kitPromise = import("smart-account-kit").then(
