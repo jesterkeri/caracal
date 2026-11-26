@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { SIGN_OUT_FAILED, bindWallet, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
-import { getKit } from "@/lib/stellar/kit";
+import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
@@ -37,7 +37,9 @@ export default function WalletPage() {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
-      setState({ kind: "error", message: "Caracal could not check your sign-in. Check your connection and reload the page." });
+      // A wrong RPC setting is named as such, not mistaken for a sign-in problem.
+      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : "Caracal could not check your sign-in. Check your connection and reload the page.";
+      setState({ kind: "error", message });
     });
   }, []);
 

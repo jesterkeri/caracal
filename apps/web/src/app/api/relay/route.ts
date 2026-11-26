@@ -180,7 +180,13 @@ export async function POST(request: Request) {
   if (answer instanceof Response) return answer;
   const { res, out } = answer;
   // 204, 205 and 304 may not carry a body; Response throws if given one.
-  if (NULL_BODY_STATUSES.has(res.status)) return new Response(null, { status: res.status });
+  // An empty answer (204, 205, 304) says nothing about whether the wallet was
+  // created; the kit would show "Relayer request failed with status 204" and
+  // invite a retry. Joshua's decision on r3h: treat it like any unclear answer.
+  if (NULL_BODY_STATUSES.has(res.status) || out.trim() === "") {
+    console.error("relay upstream answered", res.status, "with no body");
+    return fail(walletUnconfirmed(null), 502);
+  }
   // The wallet kit reads `success` from the answer. Anything that is not the
   // relayer's JSON (a CDN error page, an empty body) becomes our own 502.
   const parsed = relayerAnswer(out);

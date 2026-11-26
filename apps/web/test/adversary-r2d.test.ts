@@ -96,9 +96,14 @@ describe("adv r2d relay route", () => {
     expect(r.status).toBe(502);
     expect((await r.json()).success).toBe(false);
   });
-  it("upstream 204/304 answer on the wallet-creation path is passed on instead of crashing the route", async () => {
+  // Changed expectation (Joshua, after adversary r3h): the 204 is no longer
+  // passed on, because the wallet kit then shows "Relayer request failed with
+  // status 204" and invites a retry that can orphan a wallet. It is still
+  // handled without crashing the route, as this test first required.
+  it("upstream 204/304 answer on the wallet-creation path gives a controlled answer instead of crashing the route", async () => {
     const r = await post(async () => new Response(null, { status: 204 }));
-    expect(r.status).toBe(204);
+    expect(r.status).toBe(502);
+    expect((await r.json()).error).toMatch(/check with Connect/);
   });
 });
 void nativeToScVal;
