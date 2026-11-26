@@ -4,11 +4,15 @@
 // goal, and spending. Nothing here is computed from percentages.
 //
 // Anyone can deploy a contract that emits an event named "split", so an event
-// counts only if the contract that emitted it runs Caracal's split wasm. The
-// split contract has no upgrade function, so its wasm today is its wasm then.
+// counts only if the contract that emitted it ran Caracal's split wasm in that
+// same transaction. That is read from the transaction's own ledger changes,
+// not from the contract's wasm today: an upgradeable look-alike could forge
+// an event and switch to Caracal's wasm afterwards. A genuine deposit always
+// rewrites the split contract's instance (its pots live there), so the
+// instance appears in the changes, before and after; every state of it there
+// must carry Caracal's wasm.
 
 import { Address, StrKey, TransactionBuilder, rpc, scValToNative, xdr, type FeeBumpTransaction, type Transaction } from "@stellar/stellar-sdk";
-import { ContractNotFound, type WasmLookup } from "../relay/policy";
 import { SPLIT, TOKENS } from "./config";
 
 /** One payment into a split contract, as the contract recorded it. Amounts in USDC's smallest unit (7 decimals). */
@@ -29,7 +33,7 @@ export type ReceiptRead =
       hash: string;
       ledger: number;
       closedAt: Date;
-      /** The account that paid the network fee, and how much (stroops). */
+      /** The account (G..., muxed ids removed) that paid the network fee, and how much (stroops). */
       feePayer: string;
       feeCharged: bigint;
       receipts: SplitReceipt[];
@@ -39,13 +43,14 @@ export type ReceiptRead =
   | { kind: "failed" }
   /** The transaction recorded no split by a confirmed Caracal split contract. */
   | { kind: "no-split" }
-  | { kind: "unreachable" };
+  | { kind: "unreachable" }
+  /** The RPC answered, but with data Caracal could not read. */
+  | { kind: "unreadable" };
 
 export const isTxHash = (s: string) => /^[0-9a-f]{64}$/.test(s);
 
 export type ReceiptDeps = {
   getTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse>;
-  lookupWasm: WasmLookup;
   networkPassphrase: string;
 };
 
@@ -60,34 +65,68 @@ export async function readSplitReceipt(hash: string, deps: ReceiptDeps): Promise
   if (tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND) return { kind: "not-found" };
   if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS) return { kind: "failed" };
 
-  const candidates = (tx.events?.contractEventsXdr ?? []).flat().map(decodeSplitEvent).filter((r): r is SplitReceipt => r !== null);
-  const receipts: SplitReceipt[] = [];
-  for (const r of candidates) {
-    let wasm: string | null;
-    try {
-      wasm = await deps.lookupWasm(r.splitContract);
-    } catch (e) {
-      // A contract the RPC cannot return (or an RPC failure) is not confirmed,
-      // so its event is not shown as a Caracal receipt.
-      console.error("could not confirm the split contract:", e instanceof Error ? e.message : String(e));
-      if (!(e instanceof ContractNotFound)) return { kind: "unreachable" };
-      continue;
-    }
-    if (wasm === SPLIT.wasmHash) receipts.push(r);
-  }
-  if (receipts.length === 0) return { kind: "no-split" };
+  try {
+    const instances = instanceWasms(tx.resultMetaXdr);
+    const receipts = (tx.events?.contractEventsXdr ?? [])
+      .flat()
+      .map(decodeSplitEvent)
+      .filter((r): r is SplitReceipt => r !== null)
+      .filter((r) => {
+        const seen = instances.get(r.splitContract);
+        return seen !== undefined && seen.length > 0 && seen.every((w) => w === SPLIT.wasmHash);
+      });
+    if (receipts.length === 0) return { kind: "no-split" };
 
-  const envelope = TransactionBuilder.fromXDR(tx.envelopeXdr, deps.networkPassphrase) as Transaction | FeeBumpTransaction;
-  const feePayer = "feeSource" in envelope ? envelope.feeSource : envelope.source;
-  return {
-    kind: "found",
-    hash,
-    ledger: tx.ledger,
-    closedAt: new Date(tx.createdAt * 1000),
-    feePayer,
-    feeCharged: BigInt(tx.resultXdr.feeCharged().toString()),
-    receipts,
-  };
+    const envelope = TransactionBuilder.fromXDR(tx.envelopeXdr, deps.networkPassphrase) as Transaction | FeeBumpTransaction;
+    return {
+      kind: "found",
+      hash,
+      ledger: tx.ledger,
+      closedAt: new Date(tx.createdAt * 1000),
+      feePayer: baseAccount("feeSource" in envelope ? envelope.feeSource : envelope.source),
+      feeCharged: BigInt(tx.resultXdr.feeCharged().toString()),
+      receipts,
+    };
+  } catch (e) {
+    console.error("could not read the transaction's details:", e instanceof Error ? e.message : String(e));
+    return { kind: "unreadable" };
+  }
+}
+
+/**
+ * For each contract whose instance entry this transaction touched, the wasm
+ * hash of every state of that entry in the ledger changes (before and after,
+ * at transaction and operation level). A non-wasm executable counts as "".
+ */
+export function instanceWasms(meta: xdr.TransactionMeta): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const changes: xdr.LedgerEntryChange[] = [];
+  const v = meta.switch();
+  if (v === 3 || v === 4) {
+    const m = v === 3 ? meta.v3() : meta.v4();
+    changes.push(...m.txChangesBefore(), ...m.txChangesAfter());
+    for (const op of m.operations()) changes.push(...op.changes());
+  } else {
+    throw new Error(`unsupported transaction meta version ${v}`);
+  }
+  for (const c of changes) {
+    if (c.switch().name === "ledgerEntryRemoved") continue; // a key only, no state
+    const entry = c.value() as xdr.LedgerEntry;
+    const d = entry.data();
+    if (d.switch().name !== "contractData") continue;
+    const cd = d.contractData();
+    if (cd.key().switch().name !== "scvLedgerKeyContractInstance" || cd.val().switch().name !== "scvContractInstance") continue;
+    const exe = cd.val().instance().executable();
+    const wasm = exe.switch().name === "contractExecutableWasm" ? exe.wasmHash().toString("hex") : "";
+    const id = Address.fromScAddress(cd.contract()).toString();
+    out.set(id, [...(out.get(id) ?? []), wasm]);
+  }
+  return out;
+}
+
+/** The G... account behind a muxed M... address; anything else unchanged. */
+export function baseAccount(a: string): string {
+  return StrKey.isValidMed25519PublicKey(a) ? StrKey.encodeEd25519PublicKey(StrKey.decodeMed25519PublicKey(a).subarray(0, 32)) : a;
 }
 
 /** A `split` v1 event with the shape contracts/split emits, or null. */
@@ -123,9 +162,10 @@ export function decodeSplitEvent(e: xdr.ContractEvent): SplitReceipt | null {
 
 const isSym = (v: xdr.ScVal, s: string) => v.switch().name === "scvSymbol" && v.sym().toString() === s;
 
-/** Printable ASCII as text (invoice references are), anything else as hex. */
+/** Printable ASCII as text (invoice references are), anything else as 0x-prefixed hex so the two cannot be confused. */
 function refText(b: Uint8Array): string {
-  return b.length > 0 && b.every((c) => c >= 0x20 && c <= 0x7e) ? Buffer.from(b).toString("latin1") : Buffer.from(b).toString("hex");
+  const printable = b.length > 0 && b.every((c) => c >= 0x20 && c <= 0x7e) && !(b[0] === 0x30 && b[1] === 0x78);
+  return printable ? Buffer.from(b).toString("latin1") : `0x${Buffer.from(b).toString("hex")}`;
 }
 
 /** USDC (7 decimals) as text, exact: 100000 units -> "0.01", 1234567890 -> "123.456789". At least two decimals. */

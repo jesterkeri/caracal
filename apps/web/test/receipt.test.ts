@@ -6,11 +6,10 @@
 // - a186e2af: a wallet deployment through the relay (no split event);
 // - notfound: the RPC's answer for a hash it does not have.
 import { readFileSync } from "node:fs";
-import { rpc } from "@stellar/stellar-sdk";
+import { rpc, xdr } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ContractNotFound } from "../src/lib/relay/policy";
 import { NETWORK, SPLIT } from "../src/lib/stellar/config";
-import { formatUsdc, formatXlm, readSplitReceipt, type ReceiptDeps } from "../src/lib/stellar/receipt";
+import { formatUsdc, formatXlm, instanceWasms, readSplitReceipt, type ReceiptDeps } from "../src/lib/stellar/receipt";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -20,45 +19,64 @@ const SPLIT_CONTRACT = "CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M
 const CLI = "GDO5SPZ7UYT3M6S4WQ4SM5UQ7XGKIKTXWMPG2SONWFD2LULZXBEULKGX";
 const raw = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/testnet/getTransaction-${name}.json`, import.meta.url), "utf8")).result;
 
-/** The SDK's own parsing of a captured RPC answer. */
-function deps(name: string, lookupWasm: ReceiptDeps["lookupWasm"] = async () => SPLIT.wasmHash): ReceiptDeps {
-  vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(raw(name));
+/** The SDK's own parsing of a captured RPC answer, optionally with its ledger changes edited. */
+function deps(name: string, editMeta?: (m: xdr.TransactionMeta) => void): ReceiptDeps {
+  const r = raw(name);
+  if (editMeta && r.resultMetaXdr) {
+    const m = xdr.TransactionMeta.fromXDR(r.resultMetaXdr, "base64");
+    editMeta(m);
+    r.resultMetaXdr = m.toXDR("base64");
+  }
+  vi.spyOn(rpc.Server.prototype, "_getTransaction").mockResolvedValue(r);
   const server = new rpc.Server("https://soroban-testnet.stellar.org");
-  return { getTransaction: (h) => server.getTransaction(h), lookupWasm, networkPassphrase: NETWORK.passphrase };
+  return { getTransaction: (h) => server.getTransaction(h), networkPassphrase: NETWORK.passphrase };
 }
+/** Every contract-instance state in the meta, with a way to change its wasm. */
+function instanceStates(m: xdr.TransactionMeta) {
+  const v4 = m.v4();
+  const all = [...v4.txChangesBefore(), ...v4.txChangesAfter(), ...v4.operations().flatMap((o) => o.changes())];
+  return all.filter((c) => {
+    if (c.switch().name === "ledgerEntryRemoved") return false;
+    const d = (c.value() as xdr.LedgerEntry).data();
+    return d.switch().name === "contractData" && d.contractData().val().switch().name === "scvContractInstance";
+  });
+}
+const setWasm = (c: xdr.LedgerEntryChange, hex: string) =>
+  (c.value() as xdr.LedgerEntry).data().contractData().val().instance().executable(xdr.ContractExecutable.contractExecutableWasm(Buffer.from(hex, "hex")));
 
 describe("split receipt from the chain", () => {
   it("the live deposit: exact amounts as the contract recorded them, invoice, payer, owner, fee payer", async () => {
-    const lookups: string[] = [];
-    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", async (id) => (lookups.push(id), SPLIT.wasmHash)));
+    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da"));
     expect(r.kind).toBe("found");
     if (r.kind !== "found") return;
     expect(r.ledger).toBe(5923564);
     expect(r.receipts).toEqual([
       { splitContract: SPLIT_CONTRACT, invoiceRef: "INV-DAY2-2", from: CLI, owner: CLI, amount: BigInt(100000), tax: BigInt(10000), goal: BigInt(15000), spend: BigInt(75000) },
     ]);
-    expect(lookups).toEqual([SPLIT_CONTRACT]);
     expect(r.feePayer).toBe(CLI); // not sponsored: the CLI account paid its own fee
-    expect(r.feeCharged > BigInt(0)).toBe(true);
+    expect(r.feeCharged).toBe(BigInt(138034)); // Horizon fee_charged for this transaction
   });
 
-  it("an event named split from a contract running other code is not a receipt", async () => {
-    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", async () => "aa".repeat(32)));
+  it("the real meta shows the split contract's instance before and after, both on Caracal's wasm", () => {
+    const m = xdr.TransactionMeta.fromXDR(raw("7b4c51da").resultMetaXdr, "base64");
+    const seen = instanceWasms(m).get(SPLIT_CONTRACT);
+    expect(seen?.length).toBeGreaterThanOrEqual(2);
+    expect(seen?.every((w) => w === SPLIT.wasmHash)).toBe(true);
+  });
+
+  it("a contract that switched to Caracal's wasm during the transaction (before: other code) is not a receipt", async () => {
+    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", (m) => setWasm(instanceStates(m)[0]!, "ee".repeat(32))));
     expect(r.kind).toBe("no-split");
   });
 
-  it("a split contract the RPC cannot return is not confirmed, so no receipt", async () => {
-    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", async (id) => {
-      throw new ContractNotFound(id);
+  it("an event whose contract instance does not appear in the transaction's changes is not a receipt", async () => {
+    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", (m) => {
+      const v4 = m.v4();
+      for (const op of v4.operations()) op.changes(op.changes().filter((c) => !instanceStates(m).includes(c)));
+      v4.txChangesBefore(v4.txChangesBefore().filter((c) => !instanceStates(m).includes(c)));
+      v4.txChangesAfter(v4.txChangesAfter().filter((c) => !instanceStates(m).includes(c)));
     }));
     expect(r.kind).toBe("no-split");
-  });
-
-  it("an RPC failure while confirming the contract is 'unreachable', not 'no split'", async () => {
-    const r = await readSplitReceipt(PAYMENT, deps("7b4c51da", async () => {
-      throw new Error("getLedgerEntries did not answer within 20000 ms");
-    }));
-    expect(r.kind).toBe("unreachable");
   });
 
   it("a transaction with no split event (a wallet deployment)", async () => {
@@ -74,10 +92,19 @@ describe("split receipt from the chain", () => {
       getTransaction: async () => {
         throw new TypeError("fetch failed");
       },
-      lookupWasm: async () => SPLIT.wasmHash,
       networkPassphrase: NETWORK.passphrase,
     });
     expect(r.kind).toBe("unreachable");
+  });
+
+  it("a meta version this reader does not know is 'unreadable', not a crash or a receipt", async () => {
+    const d = deps("7b4c51da");
+    const parsed = await d.getTransaction(PAYMENT);
+    const r = await readSplitReceipt(PAYMENT, {
+      getTransaction: async () => ({ ...parsed, resultMetaXdr: new (xdr.TransactionMeta as unknown as new (s: number, v: unknown) => xdr.TransactionMeta)(0, []) }) as never,
+      networkPassphrase: NETWORK.passphrase,
+    });
+    expect(r.kind).toBe("unreadable");
   });
 });
 
@@ -103,9 +130,8 @@ describe("amounts", () => {
 // expects the honest "not-found".
 describe.runIf(process.env.CARACAL_NETWORK_TESTS === "1")("split receipt on testnet", () => {
   it("reads the live deposit, or says the RPC no longer has it", async () => {
-    const { rpcContractLookup } = await import("../src/lib/relay/wasm-lookup");
     const server = new rpc.Server(NETWORK.rpcUrl);
-    const r = await readSplitReceipt(PAYMENT, { getTransaction: (h) => server.getTransaction(h), lookupWasm: rpcContractLookup(NETWORK.rpcUrl).wasm, networkPassphrase: NETWORK.passphrase });
+    const r = await readSplitReceipt(PAYMENT, { getTransaction: (h) => server.getTransaction(h), networkPassphrase: NETWORK.passphrase });
     expect(["found", "not-found"]).toContain(r.kind);
     if (r.kind === "found") expect(r.receipts[0]!.spend).toBe(BigInt(75000));
   }, 30_000);
