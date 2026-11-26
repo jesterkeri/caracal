@@ -31,7 +31,7 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
-import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, submitToChannels, type Submitter } from "@/lib/relay/channels";
+import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, isTxHash, safeTransactionId, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
 
@@ -200,13 +200,12 @@ export async function POST(request: Request) {
   // As on the Channels path, only a confirmed transaction with a hash is a
   // created wallet; the answer is rebuilt from those fields, not passed on.
   const d = (parsed.data ?? {}) as { transactionId?: unknown; hash?: unknown; status?: unknown };
-  if (typeof d.hash !== "string" || !/^[0-9a-f]{64}$/i.test(d.hash) || d.status !== "confirmed") {
+  if (!isTxHash(d.hash) || d.status !== "confirmed") {
     const status = typeof d.status === "string" && /^[a-z_]{1,20}$/.test(d.status) ? d.status : null;
     console.error("relay upstream answered success without a confirmed transaction:", out.slice(0, 300));
     return fail(walletUnconfirmed(status ? `status: ${status}` : null), 502);
   }
-  const transactionId = typeof d.transactionId === "string" ? d.transactionId : null;
-  return Response.json({ success: true, data: { transactionId, hash: d.hash, status: "confirmed" } }, { status: 200 });
+  return Response.json({ success: true, data: { transactionId: safeTransactionId(d.transactionId), hash: d.hash, status: "confirmed" } }, { status: 200 });
 }
 
 /**

@@ -101,7 +101,12 @@ export async function buildSponsoredTx(body: { func: string; auth: string[] }, d
   return { ok: true, xdr: assembled.toXDR() };
 }
 
-/** Runs one task at a time, so two transactions never use the same sequence number. */
+/**
+ * Runs one task at a time, so this process never builds two transactions on
+ * the same sequence number. The next one reads its sequence from the RPC; if
+ * that RPC lags behind the last confirmed transaction, the next one fails with
+ * a bad sequence and the user is asked to retry. It is never run twice.
+ */
 export function serial() {
   let tail: Promise<unknown> = Promise.resolve();
   return <T>(task: () => Promise<T>): Promise<T> => {

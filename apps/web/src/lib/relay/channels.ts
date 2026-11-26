@@ -40,6 +40,16 @@ export const REFUSED_BEFORE_SUBMIT: ReadonlySet<string> = new Set([
   "SIMULATION_SIGNED_AUTH_VALIDATION_FAILED", "ASSEMBLY_FAILED", "NO_CHANNELS_CONFIGURED", "POOL_CAPACITY",
 ]);
 
+/** A Stellar transaction hash: 64 hex characters. Anything else is not passed on as one. */
+export function isTxHash(v: unknown): v is string {
+  return typeof v === "string" && /^[0-9a-f]{64}$/i.test(v);
+}
+
+/** The relayer's own id for a submission (a UUID in practice), or null. Never free text. */
+export function safeTransactionId(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null;
+}
+
 /** An error code Channels sends (e.g. ONCHAIN_FAILED), if it looks like one. Never free text. */
 export function codeOf(details: unknown): string | null {
   const code = (details as { code?: unknown } | undefined)?.code;
@@ -58,7 +68,7 @@ export function codeOf(details: unknown): string | null {
 export async function submitToChannels(client: Submitter, xdr: string, deadlineMs = 60_000): Promise<Submitted> {
   try {
     const r = await within(client.submitTransaction({ xdr }), deadlineMs, "channels submitTransaction");
-    if (typeof r?.hash !== "string" || r.hash === "") {
+    if (!isTxHash(r?.hash)) {
       console.error("channels answered without a transaction hash:", JSON.stringify(r).slice(0, 200));
       return { ok: false, status: 502, error: "The fee relayer gave no transaction result. Check your activity before trying again." };
     }
@@ -74,7 +84,7 @@ export async function submitToChannels(client: Submitter, xdr: string, deadlineM
         error: `The fee relayer did not confirm this transaction${status ? ` (status: ${status})` : ""}. Check your activity before trying again.`,
       };
     }
-    return { ok: true, data: { transactionId: r.transactionId ?? null, hash: r.hash, status: r.status } };
+    return { ok: true, data: { transactionId: safeTransactionId(r.transactionId), hash: r.hash, status: r.status } };
   } catch (e) {
     if (e instanceof PluginExecutionError) {
       const code = codeOf(e.errorDetails);
