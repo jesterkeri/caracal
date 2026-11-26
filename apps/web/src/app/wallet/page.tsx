@@ -11,7 +11,12 @@ import { explorerLink } from "@/lib/stellar/config";
 type Account = { id: string; email: string | null };
 
 const ACCOUNT_CHANGED = "The signed-in account changed in another tab. Reloading";
-const SIGN_IN_UNCHECKED = "Caracal could not check your sign-in. Check your connection and reload the page.";
+const SIGN_IN_UNCHECKED = "Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.";
+const WALLET_UNCHECKED = "Caracal could not load your saved wallet. Check your connection and reload the page.";
+
+// True while this tab signs out. Its own sign-out event is then not taken for
+// a change made in another tab, and does not reload the page mid sign-out.
+let signingOutHere = false;
 
 const WALLET_MAYBE_CREATED =
   "Caracal could not confirm whether your wallet was created. Before creating another, reload the page and check with Connect, using your passkey.";
@@ -41,6 +46,7 @@ export default function WalletPage() {
     // restored only for the account that created or connected it.
     let unfollow: (() => void) | undefined;
     let gone = false;
+    let verified = false;
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
@@ -48,12 +54,18 @@ export default function WalletPage() {
       if (now.kind === "signed-out") return window.location.replace("/signin");
       if (now.kind === "unverified") throw new Error("the sign-in could not be verified");
       if (gone) return;
+      verified = true;
       const me = { id: now.id, email: now.email };
-      unfollow = followAccount(auth, me.id, () => {
-        setAccount(null);
-        setState({ kind: "busy", label: ACCOUNT_CHANGED });
-        window.location.reload();
-      });
+      unfollow = followAccount(
+        auth,
+        me.id,
+        () => {
+          setAccount(null);
+          setState({ kind: "busy", label: ACCOUNT_CHANGED });
+          window.location.reload();
+        },
+        () => signingOutHere,
+      );
       setAccount(me);
       const kit = await getKit();
       if (!(await mayRestoreWallet(browserStore, kit, me.id))) return setState({ kind: "idle" });
@@ -63,8 +75,9 @@ export default function WalletPage() {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
-      // A wrong RPC setting is named as such, not mistaken for a sign-in problem.
-      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : SIGN_IN_UNCHECKED;
+      // Each failure is named for what failed: a wrong RPC setting, the wallet
+      // after a verified sign-in, or the sign-in check itself.
+      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : verified ? WALLET_UNCHECKED : SIGN_IN_UNCHECKED;
       setState({ kind: "error", message });
     });
     return () => {
@@ -85,9 +98,11 @@ export default function WalletPage() {
   }
 
   async function signOut() {
+    signingOutHere = true;
     try {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
     } catch (e) {
+      signingOutHere = false;
       console.error(e instanceof Error ? e.message : String(e));
       // The wallet is already disconnected and unbound; only the session survived.
       setState({ kind: "error", message: SIGN_OUT_FAILED });

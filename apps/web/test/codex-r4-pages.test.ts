@@ -172,3 +172,26 @@ describe("codex r4 #2: wallet page", () => {
     expect(store.get(WALLET_OWNER_KEY)).toBe("A");
   });
 });
+
+describe("r4a follow-up: sign-in page, signing out from this tab", () => {
+  it("its own sign-out event does not reload the page mid sign-out", async () => {
+    const { auth } = browserAuth({ id: "A", email: "a@x.ng" });
+    auth.signOut.mockImplementation(async () => {
+      // supabase-js emits SIGNED_OUT to this tab's subscribers too.
+      emitted?.("SIGNED_OUT", null);
+      return { error: null };
+    });
+    let emitted: ((e: string, s: null) => void) | undefined;
+    const sub = auth.onAuthStateChange;
+    auth.onAuthStateChange = (cb) => {
+      emitted = cb as never;
+      return sub(cb);
+    };
+    const { tree, effects, win } = await renderPage("signin", [null, { kind: "verified", id: "A", email: "a@x.ng" }, false], auth);
+    effects.forEach((f) => f());
+    await settle();
+    await clickHandlerFor(tree, "Sign out")!();
+    expect(auth.signOut).toHaveBeenCalled();
+    expect(win.location.reload).not.toHaveBeenCalled();
+  });
+});

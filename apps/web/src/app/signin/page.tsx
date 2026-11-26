@@ -8,6 +8,10 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { getKit } from "@/lib/stellar/kit";
 
+// True while this tab signs out, so its own sign-out event does not reload the
+// page before the wallet disconnect has finished.
+let signingOutHere = false;
+
 export default function SignIn() {
   const configured = supabaseEnvOrNull() !== null;
   const [error, setError] = useState<string | null>(configured ? null : SIGNIN_ERRORS.config);
@@ -28,7 +32,9 @@ export default function SignIn() {
         if (gone) return;
         setSignIn(now);
         // A sign-in or sign-out in another tab: show the page for the new state.
-        if (now.kind !== "unverified") unfollow = followAccount(auth, now.kind === "verified" ? now.id : null, () => window.location.reload());
+        if (now.kind !== "unverified") {
+          unfollow = followAccount(auth, now.kind === "verified" ? now.id : null, () => window.location.reload(), () => signingOutHere);
+        }
       })
       .finally(() => setError(signinErrorMessage(code)));
     return () => {
@@ -54,12 +60,15 @@ export default function SignIn() {
   async function signOut() {
     // Also disconnects the passkey wallet, so the next person to sign in on
     // this browser never sees this account's wallet.
+    signingOutHere = true;
     try {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
       setSignIn({ kind: "signed-out" });
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
       setError(SIGN_OUT_FAILED);
+    } finally {
+      signingOutHere = false;
     }
   }
 
@@ -85,7 +94,7 @@ export default function SignIn() {
         // Not shown as signed in, and no way into the wallet: the session could
         // not be confirmed. Signing out works without reaching Supabase.
         <div className="flex flex-col gap-3">
-          <p>Caracal could not verify your sign-in. Check your connection and reload the page.</p>
+          <p>Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.</p>
           <button className="text-sm underline" onClick={signOut}>
             Sign out of this browser
           </button>

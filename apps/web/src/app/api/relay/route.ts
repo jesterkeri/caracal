@@ -54,12 +54,13 @@ function channelsTimeout(): number {
   return 60_000;
 }
 /**
- * CHANNELS_BASE_URL: unset means the default; otherwise an https URL (plain
- * http only on this machine). Null when it is set to anything else, so the
- * relay says so instead of passing on the client's own unclear error.
+ * An upstream URL setting (CHANNELS_BASE_URL, RELAYER_UPSTREAM): unset means
+ * the default; otherwise an https URL (plain http only on this machine). Null
+ * when it is set to anything else, so the relay names the setting instead of
+ * passing on an unclear error, or one that suggests something was sent.
  */
-function channelsBaseUrl(): string | undefined | null {
-  const raw = process.env.CHANNELS_BASE_URL?.trim();
+function upstreamUrl(name: "CHANNELS_BASE_URL" | "RELAYER_UPSTREAM"): string | undefined | null {
+  const raw = process.env[name]?.trim();
   if (!raw) return undefined;
   try {
     const u = new URL(raw);
@@ -154,10 +155,15 @@ export async function POST(request: Request) {
   if (!toProxy && !channelsKey) {
     return fail("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
-  const channelsUrl = toProxy ? undefined : channelsBaseUrl();
+  const channelsUrl = toProxy ? undefined : upstreamUrl("CHANNELS_BASE_URL");
   if (channelsUrl === null) {
     console.error("relay: CHANNELS_BASE_URL must be an https URL (http only on this machine)");
     return fail("Sponsored contract calls are not set up correctly on this server (CHANNELS_BASE_URL). Wallet creation works.", 503);
+  }
+  const proxyUrl = toProxy ? upstreamUrl("RELAYER_UPSTREAM") : undefined;
+  if (proxyUrl === null) {
+    console.error("relay: RELAYER_UPSTREAM must be an https URL (http only on this machine)");
+    return fail("Wallet creation is not set up correctly on this server (RELAYER_UPSTREAM). Nothing was sent.", 503);
   }
 
   // One at a time: each transaction takes the source account's next sequence
@@ -169,7 +175,13 @@ export async function POST(request: Request) {
     try {
       built = await buildSponsoredTx(verdict.body, deps);
     } catch (e) {
-      console.error("relay could not build the transaction:", e instanceof Error ? e.message : String(e));
+      const why = e instanceof Error ? e.message : String(e);
+      console.error("relay could not build the transaction:", why);
+      // stellar-sdk's getAccount reports every failure (unreachable RPC or an
+      // account that does not exist) as "Account not found", so both are named.
+      if (why.startsWith("Account not found")) {
+        return fail("Caracal could not load its fee account from the network: either the network could not be reached, or the fee account (RELAY_SOURCE_SECRET) is not funded on testnet. Nothing was sent.", 503);
+      }
       return fail("The network could not be reached to check this call. Try again.", 503);
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
@@ -181,7 +193,7 @@ export async function POST(request: Request) {
     }
     try {
       // The timeout covers both the request and reading the answer.
-      const res = await fetch(process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM, {
+      const res = await fetch(proxyUrl ?? DEFAULT_UPSTREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(verdict.body),

@@ -45,12 +45,13 @@ export async function readSignInState(auth: AccountAuth): Promise<SignInState> {
  * Calls `onChange` once the account signed in to this browser is no longer
  * `expectedId` (null: no account): a sign-out, or another account signing in,
  * here or in another tab (supabase-js relays auth events between tabs).
- * Returns the unsubscribe function.
+ * Events that arrive while `ownChange()` is true (this tab is signing out
+ * itself) are not reported. Returns the unsubscribe function.
  */
-export function followAccount(auth: AccountAuth, expectedId: string | null, onChange: () => void): () => void {
+export function followAccount(auth: AccountAuth, expectedId: string | null, onChange: () => void, ownChange: () => boolean = () => false): () => void {
   let fired = false;
   const { data } = auth.onAuthStateChange((_event, session) => {
-    if (fired || (session?.user?.id ?? null) === expectedId) return;
+    if (fired || ownChange() || (session?.user?.id ?? null) === expectedId) return;
     fired = true;
     onChange();
   });
