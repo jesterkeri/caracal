@@ -62,6 +62,31 @@ const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousE
 
 const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(browserStore);
 
+/** How smart-account-kit 0.10.0 begins its error for a passkey whose contract lookup failed (missing, or unreachable). */
+const KIT_NOT_FOUND = "Smart account contract not found on-chain";
+const NO_WALLET_FOR_PASSKEY =
+  "No wallet was found on Stellar testnet for this passkey. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
+const CONNECT_UNREACHABLE = "Caracal could not reach the Stellar network to look up your wallet. Check your connection and try again.";
+
+/** Whether the kit's Stellar RPC answers now (within 10 s). */
+async function networkAnswers(kit: { rpc?: { getLatestLedger(): Promise<unknown> } } | undefined): Promise<boolean> {
+  if (!kit?.rpc) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      kit.rpc.getLatestLedger(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("no answer")), 10_000);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const WALLET_RECORDED_ELSEWHERE =
   "This account already has a wallet on this browser, created or connected in another tab. Reload the page to open it.";
 
@@ -291,8 +316,9 @@ export default function WalletPage() {
     if (!account) return; // a wallet is always bound to its signed-in owner
     const couldCreate = createOffered(state);
     setState({ kind: "busy", label: "Waiting for your passkey" });
+    let kit: Awaited<ReturnType<typeof getKit>> | undefined;
     try {
-      const kit = await getKit();
+      kit = await getKit();
       // fresh: always ask for this person's passkey. { prompt: true } would
       // first reuse a stored session, which could be the previous person's if
       // their disconnect failed, and then bind it to this account.
@@ -310,7 +336,12 @@ export default function WalletPage() {
       // this passkey's address, a closed prompt) leaves it for an unconfirmed
       // creation.
       const proven = e instanceof Error && WALLET_PROVEN_ERRORS.has(e.name);
-      setState({ kind: "error", message: failureText(e), checkFirst: !proven && creationUnconfirmedFor(account.id) });
+      // The kit says "not found on-chain" for any failed lookup, a network
+      // failure included, so the page asks the network itself before saying
+      // anything about the wallet.
+      const notFound = e instanceof Error && e.message.startsWith(KIT_NOT_FOUND);
+      const message = notFound ? ((await networkAnswers(kit)) ? NO_WALLET_FOR_PASSKEY : CONNECT_UNREACHABLE) : failureText(e);
+      setState({ kind: "error", message, checkFirst: !proven && creationUnconfirmedFor(account.id) });
     }
   }
 

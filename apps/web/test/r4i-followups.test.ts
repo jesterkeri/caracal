@@ -314,3 +314,26 @@ describe("r4o follow-up: sign-in codes from the URL in logs", () => {
     expect(logSafe("a".repeat(500))).toHaveLength(80);
   });
 });
+
+describe("r4p follow-up: 'not found on-chain' is checked against the network", () => {
+  async function connectFails(rpc: unknown) {
+    const b = browser(() => null);
+    Object.assign(b.kit, { rpc });
+    b.kit.connectWallet = async () => {
+      throw new Error("Smart account contract not found on-chain for credential AQID. The wallet may not have been deployed yet.");
+    };
+    const page = await render(b, A, [{ kind: "idle" }, "", A]);
+    await click(page.tree, "I already have a wallet")!();
+    await settle();
+    return (page.setters.filter((s) => s.i === 0).at(-1)!.v as { message: string }).message;
+  }
+  it("the network answers: no wallet for this passkey", async () => {
+    const m = await connectFails({ getLatestLedger: async () => ({ sequence: 1 }) });
+    expect(m).toMatch(/No wallet was found on Stellar testnet for this passkey/);
+  });
+  it("the network does not answer: says so, not that the wallet is missing", async () => {
+    const m = await connectFails({ getLatestLedger: async () => { throw new TypeError("fetch failed"); } });
+    expect(m).toMatch(/could not reach the Stellar network/);
+    expect(m).not.toMatch(/No wallet was found|not been deployed/);
+  });
+});

@@ -144,7 +144,10 @@ describe("adversary r4k: Connect found nothing after an unknown creation", () =>
 
   it("after Connect finds nothing, the escape is still offered (or the page says to reload)", async () => {
     const { after } = await connectFindsNothing();
-    expect(after).toContain(KIT_NOT_FOUND); // harness: the failure is shown
+    // harness: the failure is shown. Changed after adversary r4p proved the
+    // kit's own text names a wrong cause (it says "not deployed" when the
+    // network is down); the page now shows its own wording for that failure.
+    expect(after).toMatch(/No wallet was found on Stellar testnet|could not reach the Stellar network/);
     expect(after, "what the person sees after Connect found nothing").toContain(ESCAPE);
   });
 });

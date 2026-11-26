@@ -26,6 +26,7 @@ when they are found, not saved for this day.
 | Day 1 adversary r4l (suspicion) | `/api/relay` queue | The relay queue has no per-request deadline; a backlog longer than the 3-minute wait could let a creation land after "Start a new one anyway" is allowed. Decide on a queue deadline before the deploy | Not proven; related to the r4b deploy note |
 | Day 1 adversary r4n (suspicion) | `apps/web/src/app/wallet/page.tsx` | During the first sign-in check (up to about 60 s when Supabase is unreachable) the wallet page shows no Sign out; the sign-in page does | Not proven |
 | Day 1 adversary r4n (suspicion) | `apps/web/src/lib/supabase/server.ts` | The callback's `setAll` ignores the `Cache-Control: no-store` that @supabase/ssr passes with auth cookies | Not proven; check before the deploy |
+| Day 1 adversary r4p (suspicion) | `/api/relay` policy lookups | One request can make up to about 80 sequential RPC lookups (20 s each) before the queue, and unknown contract ids are not cached; the per-IP limit bounds it. Part of the queue-deadline decision before the deploy | Not proven |
 
 ## User pipeline testing
 
