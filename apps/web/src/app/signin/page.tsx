@@ -16,10 +16,12 @@ export default function SignIn() {
   useEffect(() => {
     if (!configured) return;
     // Only fixed messages are shown; the URL carries a code, never wording.
-    setError(signinErrorMessage(new URLSearchParams(window.location.search).get("error")));
+    const code = new URLSearchParams(window.location.search).get("error");
     supabaseBrowser()
       .auth.getUser()
-      .then(({ data }) => setEmail(data.user?.email ?? null));
+      .then(({ data }) => setEmail(data.user?.email ?? null))
+      .catch((e: unknown) => console.error("could not read the session:", e instanceof Error ? e.message : String(e)))
+      .finally(() => setError(signinErrorMessage(code)));
   }, [configured]);
 
   async function google() {
@@ -39,7 +41,7 @@ export default function SignIn() {
   async function signOut() {
     // Also disconnects the passkey wallet, so the next person to sign in on
     // this browser never sees this account's wallet.
-    await signOutEverywhere(window.localStorage, await getKit(), () => supabaseBrowser().auth.signOut());
+    await signOutEverywhere(window.localStorage, getKit(), () => supabaseBrowser().auth.signOut());
     setEmail(null);
   }
 

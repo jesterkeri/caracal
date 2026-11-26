@@ -6,7 +6,7 @@ import { Address, Keypair, Networks, TransactionBuilder, rpc, xdr, type FeeBumpT
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { footprintCode, serial } from "../src/lib/relay/sponsor";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
-import { simulated } from "./setup-relay-server";
+import { fakeChannels, simulated } from "./setup-relay-server";
 import { SHARED_DEPLOYER, SPLIT_ID, WALLET, transferArgs, walletCtorArgs } from "./relay-fixtures";
 
 afterEach(() => {
@@ -66,8 +66,9 @@ async function post(body: unknown) {
   const r = await POST(new Request("http://x/api/relay", { method: "POST", body: JSON.stringify(body) }));
   return { r, upstream };
 }
-const sentXdr = (upstream: ReturnType<typeof vi.fn>) =>
-  TransactionBuilder.fromXDR(JSON.parse(upstream.mock.calls[0][1].body).params.xdr, Networks.TESTNET) as Transaction | FeeBumpTransaction;
+/** The signed transaction the relay handed to the (fake, local) Channels service through the official client. */
+const sentXdr = () =>
+  TransactionBuilder.fromXDR((fakeChannels.requests[0]!.body as { params: { xdr: string } }).params.xdr, Networks.TESTNET) as Transaction | FeeBumpTransaction;
 
 describe("code identity is decided on what the transaction loads (Codex r3 #1)", () => {
   it("a wallet upgraded after the cached lookup is refused, and nothing is forwarded", async () => {
@@ -76,6 +77,7 @@ describe("code identity is decided on what the transaction loads (Codex r3 #1)",
     expect(r.status).toBe(403);
     expect((await r.json()).error).toMatch(/not Caracal's/);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 
   it("a deployment whose simulation would load foreign code is refused too", async () => {
@@ -83,15 +85,17 @@ describe("code identity is decided on what the transaction loads (Codex r3 #1)",
     const { r, upstream } = await post(walletDeploy());
     expect(r.status).toBe(403);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 
   it("the transaction sent for fee bumping is pinned to the checked footprint and auth, signed by the relay's own account", async () => {
     const { r, upstream } = await post(transfer());
     expect(r.status).toBe(200);
-    const [url, init] = upstream.mock.calls[0];
-    expect(url).toBe("https://channels.openzeppelin.com/testnet/");
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer test-channels-key");
-    const tx = sentXdr(upstream) as Transaction;
+    // Payments go through the official Channels client, never the proxy.
+    expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(1);
+    expect(fakeChannels.requests[0]!.authorization).toBe("Bearer test-channels-key");
+    const tx = sentXdr() as Transaction;
     expect("innerTransaction" in tx).toBe(false); // a plain signed tx; Channels adds the fee bump
     // Pinned code: only Caracal's wasm, exactly as simulated. An upgrade after
     // this point needs a code entry the footprint does not have, so it fails.
@@ -124,6 +128,7 @@ describe("the simulation is enforced before anything is forwarded", () => {
     const { r, upstream } = await post(transfer());
     expect(r.status).toBe(400);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 
   it("a call needing more resources than Caracal sponsors is refused", async () => {
@@ -133,6 +138,7 @@ describe("the simulation is enforced before anything is forwarded", () => {
     const { r, upstream } = await post(transfer());
     expect(r.status).toBe(403);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 
   it("archived contract data asks for a restore instead of forwarding", async () => {
@@ -143,6 +149,7 @@ describe("the simulation is enforced before anything is forwarded", () => {
     const { r, upstream } = await post(transfer());
     expect(r.status).toBe(409);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 
   it("the split contract's wasm is also Caracal's", async () => {
@@ -168,6 +175,7 @@ describe("fails closed when not set up", () => {
     const { r, upstream } = await post(transfer());
     expect(r.status).toBe(503);
     expect(upstream).not.toHaveBeenCalled();
+    expect(fakeChannels.requests).toHaveLength(0);
   });
 });
 

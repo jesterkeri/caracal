@@ -19,16 +19,36 @@ export function bindWallet(store: KeyValue, userId: string): void {
  * Before restoring a saved wallet session: true only if it was bound to this
  * same account. Otherwise the saved session is disconnected and forgotten.
  */
-export async function mayRestoreWallet(store: KeyValue, kit: Disconnectable, userId: string): Promise<boolean> {
+export async function mayRestoreWallet(store: KeyValue, kit: Disconnectable | Promise<Disconnectable>, userId: string): Promise<boolean> {
   if (store.getItem(WALLET_OWNER_KEY) === userId) return true;
-  await kit.disconnect();
   store.removeItem(WALLET_OWNER_KEY);
+  await disconnectQuietly(kit);
   return false;
 }
 
-/** Sign out of the app: disconnect the wallet and forget its owner, then end the session. */
-export async function signOutEverywhere(store: KeyValue, kit: Disconnectable, endSession: () => Promise<unknown>): Promise<void> {
-  await kit.disconnect();
+/**
+ * Sign out of the app: forget the wallet's owner, disconnect the wallet, and
+ * end the session. The session always ends, even if the wallet cannot be
+ * disconnected (the kit failed to load, or its storage is blocked); the next
+ * account still never gets this wallet, because the owner binding is gone.
+ */
+export async function signOutEverywhere(
+  store: KeyValue,
+  kit: Disconnectable | Promise<Disconnectable>,
+  endSession: () => Promise<unknown>,
+): Promise<void> {
   store.removeItem(WALLET_OWNER_KEY);
-  await endSession();
+  try {
+    await disconnectQuietly(kit);
+  } finally {
+    await endSession();
+  }
+}
+
+async function disconnectQuietly(kit: Disconnectable | Promise<Disconnectable>): Promise<void> {
+  try {
+    await (await kit).disconnect();
+  } catch (e) {
+    console.error("could not disconnect the wallet:", e instanceof Error ? e.message : String(e));
+  }
 }

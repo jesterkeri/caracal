@@ -8,6 +8,7 @@
 
 import { Address, rpc, xdr } from "@stellar/stellar-sdk";
 import type { InstanceLookup, WasmLookup } from "./policy";
+import { RPC_TIMEOUT_MS, within } from "./sponsor";
 
 const TTL_MS = 10 * 60 * 1000;
 const MAX_ENTRIES = 5_000;
@@ -32,7 +33,7 @@ export function rpcContractLookup(rpcUrl: string): { wasm: WasmLookup; instance:
         durability: xdr.ContractDataDurability.persistent(),
       }),
     );
-    const res = await rpcServer().getLedgerEntries(key);
+    const res = await within(rpcServer().getLedgerEntries(key), RPC_TIMEOUT_MS, "getLedgerEntries");
     const result: Info = { hash: null, storage: null };
     const entry = res.entries[0];
     if (entry) {

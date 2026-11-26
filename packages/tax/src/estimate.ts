@@ -381,7 +381,7 @@ function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateR
     if (e.kind !== "income") continue;
     // Compare the amount as a number (10000 = 10000.0) and the hash ignoring
     // hex case, so formatting cannot hide a duplicate.
-    const k = JSON.stringify([e.accountId, String(e.txHash).toLowerCase(), e.asset, canonicalAmount(e.amount)]);
+    const k = JSON.stringify([e.accountId, String(e.txHash).trim().toLowerCase().replace(/^0x/, ""), e.asset, canonicalAmount(e.amount)]);
     const first = paymentKeys.get(k);
     if (first !== undefined) {
       reasons.push(`Entries ${first} and ${e.id} have the same transaction (${e.txHash}), account, asset and amount, so they look like the same payment listed twice.`);
@@ -541,10 +541,16 @@ function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateR
         const econ = mulToKobo(amt, parseDec(ecq.ngnPerUnit));
         line.economicNgnValue = formatKobo(econ);
         line.economicQuote = { provider: ecq.provider, pair: `${ecq.base}/${ecq.quote}`, date: ecq.date, sourceUrl: ecq.sourceUrl };
-        if (value > 0n) {
-          const diff = econ - value;
+        // The gap is a property of the two rates, not of the kobo-rounded line
+        // values: on a tiny amount, rounding would distort it.
+        const m = parseDec(ecq.ngnPerUnit);
+        const scale = Math.max(rate.scale, m.scale);
+        const sN = rate.n * 10n ** BigInt(scale - rate.scale);
+        const mN = m.n * 10n ** BigInt(scale - m.scale);
+        if (sN > 0n) {
+          const diff = mN - sN;
           const abs = diff < 0n ? -diff : diff;
-          const pct = formatRatio(abs * 100n, value, 2);
+          const pct = formatRatio(abs * 100n, sN, 2);
           line.fxGapPct = diff < 0n && pct !== "0.00" ? `-${pct}` : pct;
         }
       } catch {

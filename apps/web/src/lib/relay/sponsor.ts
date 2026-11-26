@@ -36,6 +36,18 @@ export type SponsorDeps = {
 
 export type Sponsored = { ok: true; xdr: string } | { ok: false; status: number; error: string };
 
+/** Longest wait for one RPC answer. The SDK has no timeout by default. */
+export const RPC_TIMEOUT_MS = 20_000;
+
+/** Rejects if `p` has not settled within `ms`, so a hung call cannot hold the relay's queue. */
+export function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 const refuse = (status: number, error: string): Sponsored => ({ ok: false, status, error });
 
 /** Every wasm hash a transaction's footprint would load. */
@@ -50,13 +62,13 @@ export async function buildSponsoredTx(body: { func: string; auth: string[] }, d
   const func = xdr.HostFunction.fromXDR(body.func, "base64");
   const auth = body.auth.map((a) => xdr.SorobanAuthorizationEntry.fromXDR(a, "base64"));
 
-  const account = await deps.loadAccount(deps.source.publicKey());
+  const account = await within(deps.loadAccount(deps.source.publicKey()), RPC_TIMEOUT_MS, "getAccount");
   const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: deps.networkPassphrase })
     .addOperation(Operation.invokeHostFunction({ func, auth }))
     .setTimeout(TX_TIMEOUT_S)
     .build();
 
-  const sim = await deps.simulate(tx);
+  const sim = await within(deps.simulate(tx), RPC_TIMEOUT_MS, "simulateTransaction");
   if (rpc.Api.isSimulationError(sim)) {
     console.error("relay simulation refused:", sim.error.slice(0, 300));
     return refuse(400, "The network refused this call in simulation (a signature or contract check failed).");

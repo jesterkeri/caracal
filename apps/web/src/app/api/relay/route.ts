@@ -14,11 +14,13 @@
 //
 // The route then builds the transaction itself with a relay-only testnet
 // account and simulates it with every signature enforced, refusing junk auth
-// and any wasm that is not Caracal's (src/lib/relay/sponsor.ts). Deployments
-// are then forwarded as { func, auth }: their code hash is in the request.
-// Calls to existing contracts are submitted as that pinned, signed
-// transaction to OpenZeppelin Channels (CHANNELS_API_KEY), which only adds a
-// fee bump; without the key they are refused (fail closed).
+// and any wasm that is not Caracal's (src/lib/relay/sponsor.ts). The shared
+// deployer's wallet deployment is then forwarded as { func, auth }: its code
+// hash is in the request and no existing contract's code runs.
+// Everything except the shared deployer's wallet deployment is submitted as
+// that pinned, signed transaction to OpenZeppelin Channels (CHANNELS_API_KEY,
+// official client), which only adds a fee bump; without the key it is refused
+// (fail closed).
 //
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
@@ -29,11 +31,11 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
+import { channelsClient, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
-const DEFAULT_CHANNELS = "https://channels.openzeppelin.com/testnet";
 
 /** The only wasm a sponsored transaction may run. USDC is a built-in asset contract with no wasm. */
 const ALLOWED_CODE = new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash, SMART_ACCOUNT.webauthnVerifierWasmHash]);
@@ -42,6 +44,15 @@ const MAX_RESOURCE_FEE = BigInt(5_000_000);
 
 const chain = rpcContractLookup(NETWORK.rpcUrl);
 const oneAtATime = serial();
+let channelsFor: { key: string; client: Submitter } | null = null;
+/** One Channels client per key, built on first use. */
+function channels(apiKey: string): Submitter {
+  if (channelsFor?.key !== apiKey) {
+    const timeout = Number(process.env.CHANNELS_TIMEOUT_MS) || 60_000;
+    channelsFor = { key: apiKey, client: channelsClient(apiKey, process.env.CHANNELS_BASE_URL || undefined, timeout) };
+  }
+  return channelsFor.client;
+}
 let sponsorDeps: SponsorDeps | null | undefined;
 
 /** Built on first use. Null when RELAY_SOURCE_SECRET is not set or not valid. */
@@ -94,19 +105,30 @@ export async function POST(request: Request) {
 
   const deps = sponsor();
   if (!deps) return fail("Fee sponsorship is not set up on this server.", 503);
-  // A deployment names its exact code hash in the request, so the code that
-  // runs cannot change after the check, and the proxy may build it from
-  // { func, auth }. A call to an existing contract must run as the transaction
-  // built, pinned and signed here; SDF's proxy refuses those, so they go to
-  // OpenZeppelin Channels with Caracal's own key, which only adds the fee bump.
-  const isDeploy = xdr.HostFunction.fromXDR(verdict.body.func, "base64").switch().name === "hostFunctionTypeCreateContractV2";
+  // Only the shared deployer's wallet deployment goes to SDF's proxy as
+  // { func, auth }: it names its exact code hash and no existing contract's
+  // code runs, so nothing can change after the check. Everything else (calls,
+  // and deployments a passkey wallet authorises, which run that wallet's
+  // __check_auth) must run as the transaction built, pinned and signed here.
+  // SDF's proxy refuses those, so they go to OpenZeppelin Channels with
+  // Caracal's own key, which only adds the fee bump.
+  const fn = xdr.HostFunction.fromXDR(verdict.body.func, "base64");
+  const toProxy =
+    fn.switch().name === "hostFunctionTypeCreateContractV2" &&
+    verdict.body.auth.every((a) => {
+      const cr = xdr.SorobanAuthorizationEntry.fromXDR(a, "base64").credentials();
+      const addr = cr.switch().name === "sorobanCredentialsAddressV2" ? cr.addressV2().address() : cr.address().address();
+      return addr.switch().name === "scAddressTypeAccount";
+    });
   const channelsKey = process.env.CHANNELS_API_KEY;
-  if (!isDeploy && !channelsKey) {
+  if (!toProxy && !channelsKey) {
     return fail("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
 
   // One at a time: each transaction takes the source account's next sequence
-  // number, and the upstream answers only once it is on chain.
+  // number, and the upstream answers only once it is on chain. Every chain
+  // and relayer call inside is time-bounded, so one hung call cannot hold the
+  // queue (sponsor.ts and the 60 s relayer timeouts).
   const answer = await oneAtATime(async (): Promise<Response | { res: Response; out: string }> => {
     let built;
     try {
@@ -117,23 +139,17 @@ export async function POST(request: Request) {
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
     if (!built.ok) return fail(built.error, built.status);
+
+    if (!toProxy) {
+      const sent = await submitToChannels(channels(channelsKey!), built.xdr);
+      return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
+    }
     try {
-      // Request shapes: SDF proxy takes { func, auth }. Channels' direct HTTP
-      // API (as its official client, @openzeppelin/relayer-plugin-channels
-      // 0.21.1, sends it) is POST <base>/ with { params: { xdr } } and a Bearer
-      // key. Both answer { success, data: { transactionId, hash, status } }.
-      const req: { url: string; headers: Record<string, string>; body: unknown } = isDeploy
-        ? { url: process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM, headers: {}, body: verdict.body }
-        : {
-            url: `${(process.env.CHANNELS_BASE_URL || DEFAULT_CHANNELS).replace(/\/+$/, "")}/`,
-            headers: { Authorization: `Bearer ${channelsKey}` },
-            body: { params: { xdr: built.xdr } },
-          };
       // The timeout covers both the request and reading the answer.
-      const res = await fetch(req.url, {
+      const res = await fetch(process.env.RELAYER_UPSTREAM || DEFAULT_UPSTREAM, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...req.headers },
-        body: JSON.stringify(req.body),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(verdict.body),
         signal: AbortSignal.timeout(60_000),
       });
       return { res, out: await res.text() };

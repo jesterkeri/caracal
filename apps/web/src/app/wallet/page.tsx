@@ -42,7 +42,7 @@ export default function WalletPage() {
   }
 
   async function signOut() {
-    await signOutEverywhere(window.localStorage, await getKit(), () => supabaseBrowser().auth.signOut());
+    await signOutEverywhere(window.localStorage, getKit(), () => supabaseBrowser().auth.signOut());
     window.location.replace("/signin");
   }
 

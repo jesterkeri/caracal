@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@openzeppelin/relayer-plugin-channels": "0.21.1",
     "@stellar/stellar-sdk": "^16.4.1",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.119.2",

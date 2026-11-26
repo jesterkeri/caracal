@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@openzeppelin/relayer-plugin-channels':
+        specifier: 0.21.1
+        version: 0.21.1
       '@stellar/stellar-sdk':
         specifier: ^16.4.1
         version: 16.4.1
@@ -70,6 +73,12 @@ importers:
         version: 2.1.9(@types/node@20.19.43)(lightningcss@1.32.0)
 
 packages:
+
+  '@actions/exec@1.1.1':
+    resolution: {integrity: sha512-+sCcHHbVdk93a0XT19ECtO/gIXoxvdsgQLzb2fE2/5sIZmWQuluYyjPQtrtTHdU1YzTZ7bAPN4sITq2xi1679w==}
+
+  '@actions/io@1.1.3':
+    resolution: {integrity: sha512-wi9JjgKLYS7U/z8PPbco+PvTb/nRWjeoFlJ1Qer83k/3C5PHQi28hiVdeE2kHXmIL99mQFawx8qt/JPjZilJ8Q==}
 
   '@alloc/quick-lru@5.3.0':
     resolution: {integrity: sha512-U4+70Pc5ZS9osnCBCE5Jha/ciHM+Yp+CNMNC/7HvYbNRk1Ldd+f7qO65W5qfhu/TCv+/ozljlXXe9Nj8419DMA==}
@@ -326,6 +335,15 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@exodus/bytes@1.16.0':
+    resolution: {integrity: sha512-IcpW84uEn3N7ETtNZMlxKhfl6Pec8rUNGOTBtWbK1FKhJxIFAptZyVrvVRVBimAJxJCgc3PxepxkdWWG4DVzfA==}
+    engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
+    peerDependencies:
+      '@noble/hashes': ^1.8.0 || ^2.0.0
+    peerDependenciesMeta:
+      '@noble/hashes':
+        optional: true
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -609,6 +627,14 @@ packages:
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
 
+  '@openzeppelin/relayer-plugin-channels@0.21.1':
+    resolution: {integrity: sha512-nCRPwLXlLcp6Z/quCpgpjz5PVARCPRiZatiECvhJqOebEV3fyDeS0aYiATjWxFUwuM69jKC0UzsXqJ00rkPK7w==}
+    engines: {node: '>=22.18.0', npm: use pnpm, pnpm: '>=9', yarn: use pnpm}
+
+  '@openzeppelin/relayer-sdk@1.11.0':
+    resolution: {integrity: sha512-kei/DgrWEFUl54xV1zcK5GlpuldEl1QQAoXe8XTD3ouSKKkby2Gb62gMUzzxVr/WuLMbLh3CXCWEDGeG6teFEQ==}
+    engines: {node: '>=22.14.0', npm: use pnpm, pnpm: '>=9', yarn: use pnpm}
+
   '@rollup/rollup-android-arm-eabi@4.68.8':
     resolution: {integrity: sha512-7l9FdeCGjhmMTVePgndK4t9u5tLR+VuTTMoyc0PscqZDdYjS07ZsQ0vQYsWsODu/ZZYPG7WVJwbUZ77n1hVT+w==}
     cpu: [arm]
@@ -762,9 +788,18 @@ packages:
     resolution: {integrity: sha512-+NmNa7Tk5BI5XFdy/6xGTqAN4J9a9KgCrCGhj2uEUTCBhLkch0M+QbKzNH8zEnejWe0p8w+0q5hUVX6L3OzoVA==}
     engines: {node: '>=20.0.0', pnpm: '>=9.0.0'}
 
+  '@stellar/js-xdr@5.0.0':
+    resolution: {integrity: sha512-HBDNKnxr+ecdaEmbZ0mcKkirOF8tXXEbWSw34P3wT40Tn3g+u+cCH17xAWZymzscq8cojHB8340pR8QNVaD32w==}
+    engines: {node: '>=22.0.0', pnpm: '>=10.0.0'}
+
   '@stellar/stellar-sdk@16.4.1':
     resolution: {integrity: sha512-0kT+ShOUE6dc0smLEsajuizss1hvlGDsCooM88FqgxNOCKpY8IuQPzCs75RNKMSMITz+dX7KZ5qGhQ2EWGMTTg==}
     engines: {node: '>=22.0.0'}
+    hasBin: true
+
+  '@stellar/stellar-sdk@17.4.0':
+    resolution: {integrity: sha512-IX6gi62yWQ+6Oz56LsVEEeSViSOWJL3BkttftwVmVsu+62nLTWNVsCmTWEzwgNLT/q5HGP25OnlU+hhy2E4wwA==}
+    engines: {node: '>=22.12.0'}
     hasBin: true
 
   '@supabase/auth-js@2.119.2':
@@ -2653,6 +2688,12 @@ packages:
 
 snapshots:
 
+  '@actions/exec@1.1.1':
+    dependencies:
+      '@actions/io': 1.1.3
+
+  '@actions/io@1.1.3': {}
+
   '@alloc/quick-lru@5.3.0': {}
 
   '@babel/code-frame@7.29.7':
@@ -2880,6 +2921,10 @@ snapshots:
       '@eslint/core': 0.17.0
       levn: 0.4.1
 
+  '@exodus/bytes@1.16.0(@noble/hashes@2.4.0)':
+    optionalDependencies:
+      '@noble/hashes': 2.4.0
+
   '@humanfs/core@0.19.2':
     dependencies:
       '@humanfs/types': 0.15.0
@@ -3075,6 +3120,23 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
+  '@openzeppelin/relayer-plugin-channels@0.21.1':
+    dependencies:
+      '@actions/exec': 1.1.1
+      '@openzeppelin/relayer-sdk': 1.11.0
+      '@stellar/stellar-sdk': 17.4.0
+      axios: 1.20.0
+    transitivePeerDependencies:
+      - debug
+      - supports-color
+
+  '@openzeppelin/relayer-sdk@1.11.0':
+    dependencies:
+      axios: 1.20.0
+    transitivePeerDependencies:
+      - debug
+      - supports-color
+
   '@rollup/rollup-android-arm-eabi@4.68.8':
     optional: true
 
@@ -3159,6 +3221,8 @@ snapshots:
 
   '@stellar/js-xdr@4.0.0': {}
 
+  '@stellar/js-xdr@5.0.0': {}
+
   '@stellar/stellar-sdk@16.4.1':
     dependencies:
       '@noble/ed25519': 3.2.0
@@ -3168,6 +3232,24 @@ snapshots:
       base32.js: 0.1.0
       bignumber.js: 11.1.5
       buffer: 6.0.3
+      commander: 14.0.3
+      eventsource: 4.1.1
+      feaxios: 0.0.23
+      smol-toml: 1.9.1
+      uint8array-extras: 1.6.0
+    transitivePeerDependencies:
+      - debug
+      - supports-color
+
+  '@stellar/stellar-sdk@17.4.0':
+    dependencies:
+      '@exodus/bytes': 1.16.0(@noble/hashes@2.4.0)
+      '@noble/ed25519': 3.2.0
+      '@noble/hashes': 2.4.0
+      '@stellar/js-xdr': 5.0.0
+      '@types/json-schema': 7.0.15
+      axios: 1.20.0
+      bignumber.js: 11.1.5
       commander: 14.0.3
       eventsource: 4.1.1
       feaxios: 0.0.23
