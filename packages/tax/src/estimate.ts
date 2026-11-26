@@ -498,10 +498,22 @@ function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateR
   const informational: Informational[] = [];
   const incomeLines: IncomeLine[] = [];
   let gross = 0n;
+  // The assumptions behind each naira value travel with the result, so a
+  // consumer that shows only the result still shows what qualifies it.
+  const basisId = `${rules.valuation.id}:basis`;
+  const assumed = new Set<string>();
   for (const { e, amt, rate } of parsed) {
     const q = e.fx.statutory!;
     const value = mulToKobo(amt, rate);
     gross += value;
+    const assetId = `${rules.valuation.id}:assetBase:${e.asset}`;
+    if (!assumed.has(assetId)) {
+      if (assumed.size === 0) {
+        informational.push({ kind: "valuation_basis", id: basisId, message: `Valuation basis (${rules.valuation.basis}): ${rules.valuation.note}` });
+      }
+      assumed.add(assetId);
+      informational.push({ kind: "asset_assumption", id: assetId, message: rules.valuation.assetBaseNote });
+    }
     const line: IncomeLine = {
       entryId: e.id,
       txHash: e.txHash,
@@ -514,6 +526,8 @@ function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateR
       rateSourceUrl: q.sourceUrl,
       ruleId: rules.valuation.id,
       ngnValue: formatKobo(value),
+      valuationBasis: rules.valuation.basis,
+      assumptionIds: [basisId, assetId],
     };
     const ecq = e.fx.economic;
     if (ecq && ecq.date !== localDate(ms(e.occurredAt), rules.timezoneOffset)) {

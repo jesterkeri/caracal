@@ -1,10 +1,10 @@
-// Supabase sends sign-in errors to the site root. Pass them to /signin, which
-// shows them; otherwise start there.
+// Supabase sends some sign-in errors to the site root. Pass them on to /signin
+// as a known code (never the upstream text); otherwise start there.
+import { signinUrl, upstreamErrorCode } from "@/lib/auth/signin-errors";
+
 export function GET(request: Request) {
   const url = new URL(request.url);
-  // `||`, not `??`: an empty error_description must fall back to the error code.
-  const msg = url.searchParams.get("error_description") || url.searchParams.get("error");
-  const to = new URL("/signin", url.origin);
-  if (msg) to.searchParams.set("error", msg);
-  return Response.redirect(to, 307);
+  const code = upstreamErrorCode(url.searchParams);
+  if (code) console.error("sign-in error at root:", url.searchParams.get("error_code") ?? url.searchParams.get("error"));
+  return Response.redirect(signinUrl(url.origin, code), 307);
 }

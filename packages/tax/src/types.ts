@@ -105,6 +105,10 @@ export type IncomeLine = {
   rateSourceUrl: string;
   ruleId: string;
   ngnValue: string;
+  /** How the valuation rule applies to this income (e.g. "analogy"); explained in `informational`. */
+  valuationBasis: string;
+  /** Ids of the `informational` notes that qualify this line's naira value. */
+  assumptionIds: string[];
   economicNgnValue?: string;
   economicQuote?: { provider: string; pair: string; date: string; sourceUrl: string };
   fxGapPct?: string;
@@ -126,7 +130,7 @@ export type BandResult = {
 };
 
 export type Informational = {
-  kind: "stamp_duty" | "not_modelled" | "declared_income" | "fx_gap_omitted";
+  kind: "stamp_duty" | "not_modelled" | "declared_income" | "fx_gap_omitted" | "valuation_basis" | "asset_assumption";
   id: string;
   message: string;
 };

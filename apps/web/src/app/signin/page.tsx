@@ -1,20 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { SIGNIN_ERRORS, signinErrorMessage } from "@/lib/auth/signin-errors";
+import { signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { supabaseEnvOrNull } from "@/lib/supabase/env";
+import { getKit } from "@/lib/stellar/kit";
 
 export default function SignIn() {
-  const [error, setError] = useState<string | null>(null);
+  const configured = supabaseEnvOrNull() !== null;
+  const [error, setError] = useState<string | null>(configured ? null : SIGNIN_ERRORS.config);
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    setError(p.get("error"));
+    if (!configured) return;
+    // Only fixed messages are shown; the URL carries a code, never wording.
+    setError(signinErrorMessage(new URLSearchParams(window.location.search).get("error")));
     supabaseBrowser()
       .auth.getUser()
       .then(({ data }) => setEmail(data.user?.email ?? null));
-  }, []);
+  }, [configured]);
 
   async function google() {
     setBusy(true);
@@ -24,13 +30,16 @@ export default function SignIn() {
       options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
     if (error) {
-      setError(error.message);
+      console.error("sign-in could not start:", error.message);
+      setError(SIGNIN_ERRORS.failed);
       setBusy(false);
     }
   }
 
   async function signOut() {
-    await supabaseBrowser().auth.signOut();
+    // Also disconnects the passkey wallet, so the next person to sign in on
+    // this browser never sees this account's wallet.
+    await signOutEverywhere(window.localStorage, await getKit(), () => supabaseBrowser().auth.signOut());
     setEmail(null);
   }
 
@@ -56,7 +65,7 @@ export default function SignIn() {
         <button
           className="rounded-lg bg-black px-4 py-3 text-white disabled:opacity-50 dark:bg-white dark:text-black"
           onClick={google}
-          disabled={busy}
+          disabled={busy || !configured}
         >
           {busy ? "Opening Google..." : "Continue with Google"}
         </button>
