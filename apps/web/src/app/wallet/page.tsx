@@ -38,31 +38,46 @@ const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
  */
 const CREATION_SETTLE_MS = 3 * 60_000;
 
+/** The accounts with an unconfirmed creation on this browser (comma-separated ids; Supabase ids are UUIDs). */
+function unconfirmedIds(): string[] {
+  const v = browserStore.getItem(CREATION_UNCONFIRMED_KEY);
+  return v ? v.split(",").filter(Boolean) : [];
+}
 function creationUnconfirmedFor(id: string): boolean {
   try {
-    return browserStore.getItem(CREATION_UNCONFIRMED_KEY) === id;
+    return unconfirmedIds().includes(id);
   } catch {
     return false; // storage blocked: nothing could have been recorded either
   }
 }
-/** Milliseconds since the unconfirmed creation started, or Infinity when unknown. */
+/**
+ * Milliseconds since the latest unconfirmed creation on this browser started
+ * (one start time for all accounts, so the wait is never shorter than any
+ * attempt's). With no start time recorded, it is recorded now: an unknown age
+ * waits the full time rather than none.
+ */
 function creationAge(): number {
   try {
     const at = Number(browserStore.getItem(CREATION_STARTED_AT_KEY));
-    return at > 0 ? Date.now() - at : Infinity;
+    if (at > 0) return Date.now() - at;
+    browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
+    return 0;
   } catch {
-    return Infinity;
+    return 0;
   }
 }
-function markCreation(id: string | null) {
+/** Records (unconfirmed true) or clears this account's creation attempt; other accounts' are kept. */
+function markCreation(id: string, unconfirmed: boolean) {
   try {
-    if (id === null) {
+    const others = unconfirmedIds().filter((x) => x !== id);
+    const ids = unconfirmed ? [...others, id] : others;
+    if (ids.length === 0) {
       browserStore.removeItem(CREATION_UNCONFIRMED_KEY);
       browserStore.removeItem(CREATION_STARTED_AT_KEY);
-    } else {
-      browserStore.setItem(CREATION_UNCONFIRMED_KEY, id);
-      browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
+      return;
     }
+    browserStore.setItem(CREATION_UNCONFIRMED_KEY, ids.join(","));
+    if (unconfirmed) browserStore.setItem(CREATION_STARTED_AT_KEY, String(Date.now()));
   } catch (e) {
     console.error("could not record the wallet creation attempt:", e instanceof Error ? e.message : String(e));
   }
@@ -79,6 +94,9 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
   });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
+
+/** smart-account-kit 0.10.0 errors raised only after it found a contract at the passkey's address. */
+const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousError", "WalletOwnershipError", "WalletCodeNotAcceptedError"]);
 
 const CREATION_TOO_RECENT =
   "The last attempt started less than 3 minutes ago and may still finish. Wait a few minutes, then check with \"I already have a wallet\" first.";
@@ -192,7 +210,7 @@ export default function WalletPage() {
     // is confirmed again before this wallet is recorded as its.
     const bound = await bindIfStillSignedIn(browserStore, supabaseBrowser().auth, getKit(), account.id);
     if (bound === "account-changed") return accountChanged();
-    markCreation(null); // this account's wallet is known now
+    markCreation(account.id, false); // this account's wallet is known now
     // "not-saved": the wallet is this person's for this visit, but it will not
     // be restored on a later visit (mayRestoreWallet fails closed).
     setState({ kind: "connected", contractId, txHash });
@@ -240,12 +258,12 @@ export default function WalletPage() {
       passkeyMade = true;
     });
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
-    markCreation(account.id);
+    markCreation(account.id, true);
     try {
       r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (!passkeyMade) markCreation(null);
+      if (!passkeyMade) markCreation(account.id, false);
       setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
       return;
     } finally {
@@ -259,7 +277,7 @@ export default function WalletPage() {
       const detail = r.submitResult.error.message;
       const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
       if (!sent && detail.includes("Nothing was sent")) {
-        markCreation(null);
+        markCreation(account.id, false);
         return setState({ kind: "error", message: detail, createAllowed: true });
       }
       setState({ kind: "error", message: detail, checkFirst: true });
@@ -280,7 +298,7 @@ export default function WalletPage() {
       setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
       return;
     }
-    markCreation(null);
+    markCreation(account.id, false);
     await create();
   }
 
@@ -294,13 +312,20 @@ export default function WalletPage() {
       // first reuse a stored session, which could be the previous person's if
       // their disconnect failed, and then bind it to this account.
       const r = await kit.connectWallet({ fresh: true });
+      // An unconfirmed creation of this account keeps its hint and its way
+      // out ("Start a new one anyway") after a Connect that found nothing.
+      const unconfirmed = creationUnconfirmedFor(account.id);
       if (r) await connected(r.contractId);
-      else setState({ kind: "idle", knownWallet: !couldCreate });
+      else setState({ kind: "idle", knownWallet: !couldCreate, checkFirst: unconfirmed });
     } catch (e) {
       // Not createAllowed: the kit's checks that fail after it found a contract
       // at this passkey's address (provenance, ownership, wallet code) prove a
       // wallet exists. Reloading offers Create again when none is recorded.
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      // Only those keep the way out hidden: any other failure (no contract at
+      // this passkey's address, a closed prompt) leaves it for an unconfirmed
+      // creation.
+      const proven = e instanceof Error && WALLET_PROVEN_ERRORS.has(e.name);
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: !proven && creationUnconfirmedFor(account.id) });
     }
   }
 

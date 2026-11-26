@@ -192,3 +192,51 @@ describe("r4j follow-up: starting a new wallet after an unknown outcome", () => 
     expect(shown).not.toMatch(/Start a new one anyway/);
   });
 });
+
+describe("r4k follow-up: the marker per account, and its start time", () => {
+  it("A and B both unconfirmed: clearing B keeps A", async () => {
+    const b = browser(() => ({ contractId: "CX", submitResult: { success: false, error: new Error("Relayer request failed with status 504") } }));
+    const pa = await render(b, A, [{ kind: "idle" }, "Ada", A]);
+    await click(pa.tree, "Create wallet")!();
+    await settle();
+    vi.resetModules();
+    const pb = await render(b, B, [{ kind: "idle" }, "Bola", B]);
+    await click(pb.tree, "Create wallet")!();
+    await settle();
+    expect(b.local.get(KEY)!.split(",").sort()).toEqual(["A", "B"]);
+    vi.resetModules();
+    // B's next creation is refused before sending: B is cleared, A kept.
+    b.kit.createWallet = async () => ({ contractId: "CX", submitResult: { success: false, error: new Error("Too many requests. Wait a minute. Nothing was sent.") } });
+    b.local.delete(KEY);
+    b.local.set(KEY, "A,B");
+    const pb2 = await render(b, B, [{ kind: "idle", knownWallet: true, checkFirst: true }, "Bola", B]);
+    b.local.set("caracal.creationStartedAt", String(Date.now() - 4 * 60_000));
+    await click(pb2.tree, "Start a new one anyway")!();
+    await settle();
+    expect(b.local.get(KEY)).toBe("A");
+  });
+  it("a marker with no start time recorded waits the full time", async () => {
+    const b = browser(() => null);
+    b.local.set(KEY, "A");
+    const create = vi.spyOn(b.kit, "createWallet");
+    const page = await render(b, A, [{ kind: "idle", knownWallet: true, checkFirst: true }, "Ada", A]);
+    await click(page.tree, "Start a new one anyway")!();
+    expect(create).not.toHaveBeenCalled();
+    expect(Number(b.local.get("caracal.creationStartedAt"))).toBeGreaterThan(0);
+  });
+  it("after an unknown creation, a Connect error that proves a wallet keeps the way out hidden", async () => {
+    const b = browser(() => null);
+    b.local.set(KEY, "A");
+    b.kit.connectWallet = async () => {
+      throw Object.assign(new Error("The indexer did not return one complete schema-2 birth claim."), { name: "WalletProvenanceError" });
+    };
+    const page = await render(b, A, [{ kind: "idle", knownWallet: true, checkFirst: true }, "Ada", A]);
+    await click(page.tree, "I already have a wallet")!();
+    await settle();
+    const state = page.setters.filter((s) => s.i === 0).at(-1)!.v;
+    vi.resetModules();
+    const shown = texts((await render(b, A, [state, "", A])).tree).join(" | ");
+    expect(shown).not.toMatch(/Start a new one anyway/);
+    expect(shown).not.toMatch(/Create wallet with a passkey/);
+  });
+});
