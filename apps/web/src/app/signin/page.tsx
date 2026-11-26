@@ -11,8 +11,10 @@ import { getKit } from "@/lib/stellar/kit";
 // True while this tab signs out, so its own sign-out event does not reload the
 // page before the wallet disconnect has finished.
 let signingOutHere = false;
-// Counts sign-outs started here. A sign-in check that began before one is out
-// of date when it ends, and does not overwrite the signed-out state.
+// Counts sign-outs that succeeded here. A sign-in check that began before one
+// is out of date when it ends, and does not overwrite the signed-out state.
+// A sign-out that failed leaves the session as it was, so the check's result
+// still applies.
 let signOutsHere = 0;
 
 export default function SignIn() {
@@ -67,9 +69,9 @@ export default function SignIn() {
     // Also disconnects the passkey wallet, so the next person to sign in on
     // this browser never sees this account's wallet.
     signingOutHere = true;
-    signOutsHere += 1;
     try {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
+      signOutsHere += 1;
       setSignIn({ kind: "signed-out" });
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));

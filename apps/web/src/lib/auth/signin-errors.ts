@@ -57,7 +57,10 @@ export function upstreamErrorCode(params: URLSearchParams): SigninErrorCode | nu
   const errorCode = params.get("error_code");
   const description = params.get("error_description");
   if (!error && !errorCode && !description) return null;
-  if (error === "access_denied") return "cancelled";
+  // "Cancelled" only when nothing more specific came with it: access_denied
+  // with its own error code (a disabled sign-up, a banned user) is not a
+  // cancellation, and is not claimed to be one.
+  if (error === "access_denied" && (!errorCode || errorCode === "access_denied")) return "cancelled";
   if (errorCode === "bad_oauth_state" || errorCode === "bad_oauth_callback" || errorCode === "flow_state_expired") {
     return "expired";
   }

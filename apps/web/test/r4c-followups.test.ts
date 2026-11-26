@@ -169,3 +169,14 @@ describe("r4c follow-up: CHANNELS_API_KEY checked locally", () => {
     expect(fakeChannels.requests.length).toBe(before);
   });
 });
+
+describe("r4d follow-up: what an upstream access_denied tells the person", () => {
+  it("access_denied alone is a cancelled sign-in", async () => {
+    const { upstreamErrorCode } = await import("../src/lib/auth/signin-errors");
+    expect(upstreamErrorCode(new URLSearchParams("error=access_denied&error_description=user+cancelled"))).toBe("cancelled");
+  });
+  it.each(["signup_disabled", "user_banned"])("access_denied with error_code=%s is not called a cancellation", async (code) => {
+    const { upstreamErrorCode } = await import("../src/lib/auth/signin-errors");
+    expect(upstreamErrorCode(new URLSearchParams(`error=access_denied&error_code=${code}`))).toBe("failed");
+  });
+});
