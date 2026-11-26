@@ -19,6 +19,7 @@ when they are found, not saved for this day.
 | Day 1 adversary r4d (suspicion) | `apps/web/src/app/wallet/page.tsx` | After "not-saved" (the session could not be confirmed when binding), the page still says "Signed in as ..." | Not proven |
 | Day 1 adversary r4h (suspicion) | `apps/web/src/app/wallet/page.tsx` | After signing out and back in, or after an unbound saved session is disconnected, Create and Connect are offered with no hint that this browser already held a wallet | Not proven; a copy question |
 | Day 1 adversary r4h (suspicion) | `apps/web/src/app/signin/page.tsx` | After a successful Sign out here, the account follower still expects the old account, so signing in again as the same account in another tab is not picked up until a reload | Not proven |
+| Day 1 adversary r4i (suspicion) | `apps/web/src/lib/supabase/deadline.ts` | The 10 s deadline could abort a token refresh whose answer (a rotated refresh token) was already on its way. Supabase allows reuse of the parent token for a short interval, so a retry should recover; check against the project's settings | Not proven |
 
 ## User pipeline testing
 
