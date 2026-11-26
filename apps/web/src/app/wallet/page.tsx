@@ -66,6 +66,8 @@ const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(bro
 const KIT_NOT_FOUND = "Smart account contract not found on-chain";
 const NO_WALLET_FOR_PASSKEY =
   "No wallet was found on Stellar testnet for this passkey. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
+const SAVED_WALLET_GONE =
+  "Your saved wallet was not found on Stellar testnet (the test network may have been reset). Sign out and sign in again to start over on this browser.";
 const CONNECT_UNREACHABLE = "Caracal could not reach the Stellar network to look up your wallet. Check your connection and try again.";
 
 /** Whether the kit's Stellar RPC answers now (within 10 s). */
@@ -141,6 +143,7 @@ export default function WalletPage() {
     let unfollow: (() => void) | undefined;
     let gone = false;
     let verified = false;
+    let loadedKit: Awaited<ReturnType<typeof getKit>> | undefined;
     // Set once the account changed (here or in another tab). Restoring takes
     // seconds; whatever it finds after that is no longer this account's to show.
     let accountMoved = false;
@@ -168,6 +171,7 @@ export default function WalletPage() {
       );
       setAccount(me);
       const kit = await restoreWithin(getKit(), "loading the wallet kit");
+      loadedKit = kit;
       if (stale()) return;
       const mayRestore = await mayRestoreWallet(browserStore, kit, me.id);
       if (stale()) return;
@@ -178,9 +182,17 @@ export default function WalletPage() {
       const r = await restoreWithin(kit.connectWallet(), "restoring the saved wallet");
       if (stale()) return;
       setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle", knownWallet: true });
-    })().catch((e: unknown) => {
+    })().catch(async (e: unknown) => {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
       if (stale()) return;
+      // The kit says "not found on-chain" for any failed lookup. With the
+      // network answering, the saved wallet is gone from the chain (a testnet
+      // reset, say): reloading would fail the same way, so the way forward is
+      // named (signing out forgets it on this browser).
+      if (verified && e instanceof Error && e.message.startsWith(KIT_NOT_FOUND) && (await networkAnswers(loadedKit))) {
+        if (stale()) return;
+        return setState({ kind: "error", message: SAVED_WALLET_GONE });
+      }
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
       // Each failure is named for what failed: a wrong RPC setting, the wallet
