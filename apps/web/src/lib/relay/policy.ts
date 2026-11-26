@@ -50,10 +50,41 @@ export type Policy = {
   storageRules: ReadonlyMap<string, StorageRule>;
 };
 
-/** Returns the wasm hash (lower-case hex) of a deployed contract, or null if it has none. */
+/**
+ * Returns the wasm hash (lower-case hex) of a deployed contract, or null if it
+ * runs no wasm (a Stellar asset contract). Throws ContractNotFound when the
+ * network has no instance entry for it.
+ */
 export type WasmLookup = (contractId: string) => Promise<string | null>;
-/** Returns a deployed contract's instance storage, or null if it has none. */
+/** Returns a deployed contract's instance storage, or null if it has none. Throws ContractNotFound like WasmLookup. */
 export type InstanceLookup = (contractId: string) => Promise<xdr.ScMapEntry[] | null>;
+
+/**
+ * The RPC found no instance entry for a contract. That does not say why: the
+ * address may be wrong or on another network, or the entry may have been
+ * archived. So it is not proof that the contract runs some other code.
+ */
+export class ContractNotFound extends Error {
+  constructor(readonly contractId: string) {
+    super(`no instance entry on the network for ${contractId}`);
+    this.name = "ContractNotFound";
+  }
+}
+
+export const WALLET_NOT_FOUND =
+  "Caracal could not find this wallet on the Stellar network. Check that it is a testnet wallet. A wallet that has not been used for a long time may need restoring before it can be used again.";
+export const CONTRACT_NOT_FOUND =
+  "Caracal could not find this contract on the Stellar network. Check that it is a testnet contract. One that has not been used for a long time may need restoring before it can be used again.";
+
+/** Runs a lookup, turning a missing contract into a 409 that names no cause, and any other failure into a 503. */
+async function lookup<T>(what: "wallet" | "contract", run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof ContractNotFound) throw new Denied(what === "wallet" ? WALLET_NOT_FOUND : CONTRACT_NOT_FOUND, 409);
+    throw new Denied(what === "wallet" ? "Could not check a wallet. Try again." : "Could not check the target contract. Try again.", 503);
+  }
+}
 
 /** The address inside an ScVal, or null when it is not an address. */
 export function scAddress(v: xdr.ScVal | undefined): string | null {
@@ -145,24 +176,14 @@ async function checkCall(target: string, fn: string, args: xdr.ScVal[], d: Deps,
     return;
   }
   if (!target.startsWith("C")) throw new Denied("Calls must target a contract");
-  let hash: string | null;
-  try {
-    hash = await lookupWasm(target);
-  } catch {
-    throw new Denied("Could not check the target contract. Try again.", 503);
-  }
+  const hash = await lookup("contract", () => lookupWasm(target));
   const fns = hash === null ? undefined : policy.wasmFunctions.get(hash);
   if (!fns) throw new Denied("This contract is not on the sponsorship allowlist");
   if (!fns.has(fn)) throw new Denied(`${fn} is not sponsored on this contract`);
 
   const storageRule = policy.storageRules.get(hash!);
   if (storageRule) {
-    let storage: xdr.ScMapEntry[] | null;
-    try {
-      storage = await d.lookupInstance(target);
-    } catch {
-      throw new Denied("Could not check the target contract. Try again.", 503);
-    }
+    const storage = await lookup("contract", () => d.lookupInstance(target));
     const bad = await storageRule(storage ?? [], d.ctx);
     if (bad) throw new Denied(bad);
   }
@@ -229,12 +250,9 @@ export async function checkPayload(
   const ctx: Ctx = {
     async isWallet(address) {
       if (!address.startsWith("C")) return false;
-      let h: string | null;
-      try {
-        h = await lookupWasm(address);
-      } catch {
-        throw new Denied("Could not check a wallet. Try again.", 503);
-      }
+      // A missing instance entry is not a wrong wasm: the wallet may only be
+      // archived, so it is refused with a message that names no cause.
+      const h = await lookup("wallet", () => lookupWasm(address));
       return h !== null && policy.executors.has(h);
     },
   };

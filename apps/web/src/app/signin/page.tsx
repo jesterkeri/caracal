@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { followAccount, readSignInState, type SignInState } from "@/lib/auth/account";
 import { SIGNIN_ERRORS, signinErrorMessage } from "@/lib/auth/signin-errors";
 import { SIGN_OUT_FAILED, browserStore, endSupabaseSession, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -10,7 +11,7 @@ import { getKit } from "@/lib/stellar/kit";
 export default function SignIn() {
   const configured = supabaseEnvOrNull() !== null;
   const [error, setError] = useState<string | null>(configured ? null : SIGNIN_ERRORS.config);
-  const [email, setEmail] = useState<string | null>(null);
+  const [signIn, setSignIn] = useState<SignInState | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -18,21 +19,22 @@ export default function SignIn() {
     // Only fixed messages are shown; the URL carries a code, never wording.
     const code = new URLSearchParams(window.location.search).get("error");
     const auth = supabaseBrowser().auth;
-    // If the session cannot be verified (Supabase unreachable), a session still
-    // stored in this browser keeps its Sign out control.
-    const storedSession = async () => {
-      const { data } = await auth.getSession();
-      if (data.session) setEmail(data.session.user.email ?? "your Google account");
-    };
-    auth
-      .getUser()
-      .then(({ data, error }) => (data.user ? setEmail(data.user.email ?? "your Google account") : error ? storedSession() : undefined))
-      .catch((e: unknown) => {
-        console.error("could not read the session:", e instanceof Error ? e.message : String(e));
-        return storedSession();
+    let unfollow: (() => void) | undefined;
+    let gone = false;
+    // Only a session Supabase confirmed is shown as signed in. One that is
+    // stored here but could not be confirmed keeps its Sign out control.
+    readSignInState(auth)
+      .then((now) => {
+        if (gone) return;
+        setSignIn(now);
+        // A sign-in or sign-out in another tab: show the page for the new state.
+        if (now.kind !== "unverified") unfollow = followAccount(auth, now.kind === "verified" ? now.id : null, () => window.location.reload());
       })
-      .catch(() => undefined)
       .finally(() => setError(signinErrorMessage(code)));
+    return () => {
+      gone = true;
+      unfollow?.();
+    };
   }, [configured]);
 
   async function google() {
@@ -54,7 +56,7 @@ export default function SignIn() {
     // this browser never sees this account's wallet.
     try {
       await signOutEverywhere(browserStore, getKit(), () => endSupabaseSession(supabaseBrowser().auth));
-      setEmail(null);
+      setSignIn({ kind: "signed-out" });
     } catch (e) {
       console.error(e instanceof Error ? e.message : String(e));
       setError(SIGN_OUT_FAILED);
@@ -67,16 +69,25 @@ export default function SignIn() {
       <p className="text-zinc-600 dark:text-zinc-400">
         Google identifies your account in the app. It cannot sign transactions or move money: only your passkey can.
       </p>
-      {email ? (
+      {signIn?.kind === "verified" ? (
         <div className="flex flex-col gap-3">
           <p>
-            Signed in as <strong>{email}</strong>.
+            Signed in as <strong>{signIn.email ?? "your Google account"}</strong>.
           </p>
           <a className="rounded-lg bg-black px-4 py-3 text-center text-white dark:bg-white dark:text-black" href="/wallet">
             Go to your wallet
           </a>
           <button className="text-sm underline" onClick={signOut}>
             Sign out
+          </button>
+        </div>
+      ) : signIn?.kind === "unverified" ? (
+        // Not shown as signed in, and no way into the wallet: the session could
+        // not be confirmed. Signing out works without reaching Supabase.
+        <div className="flex flex-col gap-3">
+          <p>Caracal could not verify your sign-in. Check your connection and reload the page.</p>
+          <button className="text-sm underline" onClick={signOut}>
+            Sign out of this browser
           </button>
         </div>
       ) : (

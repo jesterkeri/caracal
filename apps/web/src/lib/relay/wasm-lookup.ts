@@ -7,7 +7,7 @@
 // the signed transaction (sponsor.ts).
 
 import { Address, rpc, xdr } from "@stellar/stellar-sdk";
-import type { InstanceLookup, WasmLookup } from "./policy";
+import { ContractNotFound, type InstanceLookup, type WasmLookup } from "./policy";
 import { RPC_TIMEOUT_MS, within } from "./sponsor";
 
 const TTL_MS = 10 * 60 * 1000;
@@ -34,21 +34,22 @@ export function rpcContractLookup(rpcUrl: string): { wasm: WasmLookup; instance:
       }),
     );
     const res = await within(rpcServer().getLedgerEntries(key), RPC_TIMEOUT_MS, "getLedgerEntries");
-    const result: Info = { hash: null, storage: null };
     const entry = res.entries[0];
-    if (entry) {
-      const instance = entry.val.contractData().val().instance();
-      const exe = instance.executable();
-      if (exe.switch().name === "contractExecutableWasm") result.hash = exe.wasmHash().toString("hex");
-      result.storage = instance.storage() ?? [];
-    }
-    // Only cache contracts that exist. A wallet or split looked up a moment
-    // before its deploy lands must be found on the next request, not refused
-    // for the rest of the TTL.
-    if (result.hash !== null || result.storage !== null) {
-      if (cache.size >= MAX_ENTRIES) cache.clear();
-      cache.set(contractId, { info: result, at: Date.now() });
-    }
+    // No entry: a wrong address, another network, or an archived entry the RPC
+    // does not return. Not cached, so a wallet or split looked up a moment
+    // before its deploy lands is found on the next request.
+    if (!entry) throw new ContractNotFound(contractId);
+    // An entry past its live-until ledger (archived but still returned) keeps
+    // its wasm: the policy checks it as usual, and the simulation then asks for
+    // the restore (sponsor.ts answers 409 for that).
+    const instance = entry.val.contractData().val().instance();
+    const exe = instance.executable();
+    const result: Info = {
+      hash: exe.switch().name === "contractExecutableWasm" ? exe.wasmHash().toString("hex") : null,
+      storage: instance.storage() ?? [],
+    };
+    if (cache.size >= MAX_ENTRIES) cache.clear();
+    cache.set(contractId, { info: result, at: Date.now() });
     return result;
   }
 

@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { SIGN_OUT_FAILED, bindWallet, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import { bindIfStillSignedIn, followAccount, readSignInState } from "@/lib/auth/account";
+import { SIGN_OUT_FAILED, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
+
+const ACCOUNT_CHANGED = "The signed-in account changed in another tab. Reloading";
+const SIGN_IN_UNCHECKED = "Caracal could not check your sign-in. Check your connection and reload the page.";
 
 const WALLET_MAYBE_CREATED =
   "Caracal could not confirm whether your wallet was created. Before creating another, reload the page and check with Connect, using your passkey.";
@@ -23,14 +27,33 @@ export default function WalletPage() {
   const [name, setName] = useState("");
   const [account, setAccount] = useState<Account | null>(null);
 
+  // The account changed (signed out, or another account signed in, maybe in
+  // another tab): nothing of the old account stays on screen, and the page
+  // starts again for whoever is signed in now.
+  function accountChanged() {
+    setAccount(null);
+    setState({ kind: "busy", label: ACCOUNT_CHANGED });
+    window.location.reload();
+  }
+
   useEffect(() => {
     // The wallet belongs to a signed-in account. A saved wallet session is
     // restored only for the account that created or connected it.
+    let unfollow: (() => void) | undefined;
+    let gone = false;
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
-      const { data } = await supabaseBrowser().auth.getUser();
-      if (!data.user) return window.location.replace("/signin");
-      const me = { id: data.user.id, email: data.user.email ?? null };
+      const auth = supabaseBrowser().auth;
+      const now = await readSignInState(auth);
+      if (now.kind === "signed-out") return window.location.replace("/signin");
+      if (now.kind === "unverified") throw new Error("the sign-in could not be verified");
+      if (gone) return;
+      const me = { id: now.id, email: now.email };
+      unfollow = followAccount(auth, me.id, () => {
+        setAccount(null);
+        setState({ kind: "busy", label: ACCOUNT_CHANGED });
+        window.location.reload();
+      });
       setAccount(me);
       const kit = await getKit();
       if (!(await mayRestoreWallet(browserStore, kit, me.id))) return setState({ kind: "idle" });
@@ -41,20 +64,23 @@ export default function WalletPage() {
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
       // A wrong RPC setting is named as such, not mistaken for a sign-in problem.
-      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : "Caracal could not check your sign-in. Check your connection and reload the page.";
+      const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : SIGN_IN_UNCHECKED;
       setState({ kind: "error", message });
     });
+    return () => {
+      gone = true;
+      unfollow?.();
+    };
   }, []);
 
-  function connected(contractId: string, txHash?: string) {
+  async function connected(contractId: string, txHash?: string) {
     if (!account) return;
-    try {
-      bindWallet(browserStore, account.id);
-    } catch (e) {
-      // Storage is blocked: the wallet is this person's for this visit, but it
-      // will not be restored on a later visit (mayRestoreWallet fails closed).
-      console.error("could not record the wallet's owner:", e instanceof Error ? e.message : String(e));
-    }
+    // The account may have changed since the page loaded (another tab), so it
+    // is confirmed again before this wallet is recorded as its.
+    const bound = await bindIfStillSignedIn(browserStore, supabaseBrowser().auth, getKit(), account.id);
+    if (bound === "account-changed") return accountChanged();
+    // "not-saved": the wallet is this person's for this visit, but it will not
+    // be restored on a later visit (mayRestoreWallet fails closed).
     setState({ kind: "connected", contractId, txHash });
   }
 
@@ -83,7 +109,7 @@ export default function WalletPage() {
         setState({ kind: "error", message: sent ? WALLET_MAYBE_CREATED : r.submitResult.error.message });
         return;
       }
-      connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
+      await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
     } catch (e) {
       setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
     }
@@ -98,7 +124,7 @@ export default function WalletPage() {
       // first reuse a stored session, which could be the previous person's if
       // their disconnect failed, and then bind it to this account.
       const r = await kit.connectWallet({ fresh: true });
-      if (r) connected(r.contractId);
+      if (r) await connected(r.contractId);
       else setState({ kind: "idle" });
     } catch (e) {
       setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Address, rpc, xdr } from "@stellar/stellar-sdk";
+import { ContractNotFound } from "../src/lib/relay/policy";
 import { rpcContractLookup } from "../src/lib/relay/wasm-lookup";
 import { checkPayload } from "../src/lib/relay/policy";
 import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
@@ -29,7 +30,8 @@ describe("adv r2c relay", () => {
       entries: deployed ? [instanceEntry(WALLET, SMART_ACCOUNT.accountWasmHash)] : [],
     })) as never);
     const { wasm } = rpcContractLookup("https://rpc.invalid");
-    expect(await wasm(WALLET)).toBeNull(); // not deployed yet
+    // Not deployed yet. Since Codex R4 #4 a missing entry is ContractNotFound, not a null wasm.
+    await expect(wasm(WALLET)).rejects.toBeInstanceOf(ContractNotFound);
     deployed = true; // the genuine wallet deploy lands
     expect(await wasm(WALLET)).toBe(SMART_ACCOUNT.accountWasmHash);
     spy.mockRestore();

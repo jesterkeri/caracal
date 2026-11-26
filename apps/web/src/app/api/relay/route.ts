@@ -45,7 +45,6 @@ const MAX_RESOURCE_FEE = BigInt(5_000_000);
 const chain = rpcContractLookup(NETWORK.rpcUrl);
 const oneAtATime = serial();
 let channelsFor: { key: string; client: Submitter } | null = null;
-/** One Channels client per key, built on first use. */
 /** CHANNELS_TIMEOUT_MS: a whole number of milliseconds up to 10 minutes; anything else means the 60 s default. */
 function channelsTimeout(): number {
   const raw = process.env.CHANNELS_TIMEOUT_MS;
@@ -54,9 +53,24 @@ function channelsTimeout(): number {
   if (raw) console.error("relay: CHANNELS_TIMEOUT_MS must be 1 to 600000 ms; using 60000");
   return 60_000;
 }
-function channels(apiKey: string): Submitter {
-  if (channelsFor?.key !== apiKey) {
-    channelsFor = { key: apiKey, client: channelsClient(apiKey, process.env.CHANNELS_BASE_URL || undefined, channelsTimeout()) };
+/**
+ * CHANNELS_BASE_URL: unset means the default; otherwise an https URL (plain
+ * http only on this machine). Null when it is set to anything else, so the
+ * relay says so instead of passing on the client's own unclear error.
+ */
+function channelsBaseUrl(): string | undefined | null {
+  const raw = process.env.CHANNELS_BASE_URL?.trim();
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    if (u.protocol === "https:" || (u.protocol === "http:" && isLoopback(raw))) return raw;
+  } catch {}
+  return null;
+}
+/** One Channels client per key and URL, built on first use. */
+function channels(apiKey: string, baseUrl: string | undefined): Submitter {
+  if (channelsFor?.key !== `${apiKey} ${baseUrl}`) {
+    channelsFor = { key: `${apiKey} ${baseUrl}`, client: channelsClient(apiKey, baseUrl, channelsTimeout()) };
   }
   return channelsFor.client;
 }
@@ -140,6 +154,11 @@ export async function POST(request: Request) {
   if (!toProxy && !channelsKey) {
     return fail("Sponsored contract calls are not set up on this server yet (CHANNELS_API_KEY). Wallet creation works.", 503);
   }
+  const channelsUrl = toProxy ? undefined : channelsBaseUrl();
+  if (channelsUrl === null) {
+    console.error("relay: CHANNELS_BASE_URL must be an https URL (http only on this machine)");
+    return fail("Sponsored contract calls are not set up correctly on this server (CHANNELS_BASE_URL). Wallet creation works.", 503);
+  }
 
   // One at a time: each transaction takes the source account's next sequence
   // number, and the upstream answers only once it is on chain. Every chain
@@ -157,7 +176,7 @@ export async function POST(request: Request) {
     if (!built.ok) return fail(built.error, built.status);
 
     if (!toProxy) {
-      const sent = await submitToChannels(channels(channelsKey!), built.xdr, channelsTimeout());
+      const sent = await submitToChannels(channels(channelsKey!, channelsUrl), built.xdr, channelsTimeout());
       return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
     }
     try {

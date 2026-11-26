@@ -137,7 +137,7 @@ function errorText(e: unknown): string {
 /** Longest wait for the wallet kit to load and disconnect before the session is ended anyway. */
 export const DISCONNECT_TIMEOUT_MS = 5_000;
 
-async function disconnectQuietly(kit: Disconnectable | Promise<Disconnectable>): Promise<void> {
+export async function disconnectQuietly(kit: Disconnectable | Promise<Disconnectable>): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const stalled = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`the wallet kit did not finish within ${DISCONNECT_TIMEOUT_MS} ms`)), DISCONNECT_TIMEOUT_MS);

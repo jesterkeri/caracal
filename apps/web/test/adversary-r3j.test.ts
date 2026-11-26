@@ -108,8 +108,8 @@ describe("adv r3j: sign-out when window.localStorage itself throws", () => {
   });
 
   it("sign-in page: the Supabase session is still ended", async () => {
-    // state order in SignIn: error, email, busy
-    const { tree, signOut } = await renderPage("signin", [null, "a@example.com", false]);
+    // state order in SignIn: error, signIn, busy (signIn replaced the email string in Codex R4 #3)
+    const { tree, signOut } = await renderPage("signin", [null, { kind: "verified", id: "u", email: "a@example.com" }, false]);
     const click = clickHandlerFor(tree, "Sign out");
     expect(click, "the Sign out button must be rendered for a signed-in email").not.toBeNull();
     await click!();
