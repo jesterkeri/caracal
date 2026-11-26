@@ -21,7 +21,12 @@ export function bindWallet(store: KeyValue, userId: string): void {
  */
 export async function mayRestoreWallet(store: KeyValue, kit: Disconnectable | Promise<Disconnectable>, userId: string): Promise<boolean> {
   if (store.getItem(WALLET_OWNER_KEY) === userId) return true;
-  store.removeItem(WALLET_OWNER_KEY);
+  try {
+    store.removeItem(WALLET_OWNER_KEY);
+  } catch (e) {
+    // The saved session is still disconnected below, and it is not restored.
+    console.error("could not forget the wallet's owner:", errorText(e));
+  }
   await disconnectQuietly(kit);
   return false;
 }
@@ -43,12 +48,35 @@ export type SessionAuth = {
  * session is still there afterwards.
  */
 export async function endSupabaseSession(auth: SessionAuth): Promise<Ended> {
-  const global = await auth.signOut();
+  // A revoke that never answers counts as failed, so the fallback still runs.
+  const global = await settleWithin(auth.signOut(), SESSION_STEP_TIMEOUT_MS, "revoking the session");
   if (!global.error) return;
   console.error("could not revoke the session everywhere:", errorText(global.error));
-  await auth.signOut({ scope: "local" });
-  const { data } = await auth.getSession();
-  if (data.session) return { error: new Error("the session is still stored in this browser") };
+  // Each step is bounded, so the caller always hears back instead of waiting forever.
+  const local = await settleWithin(auth.signOut({ scope: "local" }), SESSION_STEP_TIMEOUT_MS, "signing out this browser");
+  if (local.error) console.error("could not sign out this browser:", errorText(local.error));
+  const stored = await settleWithin(
+    auth.getSession().then(({ data }) => ({ error: data.session ? new Error("the session is still stored in this browser") : null })),
+    SESSION_STEP_TIMEOUT_MS,
+    "checking the session",
+  );
+  if (stored.error) return { error: stored.error };
+}
+
+/** Longest wait for each step of ending a session. */
+export const SESSION_STEP_TIMEOUT_MS = 10_000;
+
+/** Resolves with the step's { error }, or an error if it threw or did not settle in time. */
+async function settleWithin(p: Promise<{ error: unknown }>, ms: number, what: string): Promise<{ error: unknown }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<{ error: unknown }>((resolve) => {
+    timer = setTimeout(() => resolve({ error: new Error(`${what} did not finish within ${ms} ms`) }), ms);
+  });
+  try {
+    return await Promise.race([p.catch((e: unknown) => ({ error: e })), late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

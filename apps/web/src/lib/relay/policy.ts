@@ -379,7 +379,9 @@ export class WindowLimiter {
   /** Records a hit for `key`; returns false when the key is over its limit. */
   take(key: string, now = Date.now()): boolean {
     const h = this.hits.get(key);
-    if (!h || now - h.start >= this.windowMs) {
+    // A window also ends if the clock stepped back past its start (NTP, a
+    // resumed VM); otherwise a full window would stay blocked for the step.
+    if (!h || now - h.start >= this.windowMs || now < h.start) {
       if (!h && this.hits.size >= this.maxKeys) this.sweep(now);
       if (!h && this.hits.size >= this.maxKeys) return false;
       this.hits.set(key, { start: now, n: 1 });

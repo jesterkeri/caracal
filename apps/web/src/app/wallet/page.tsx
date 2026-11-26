@@ -9,6 +9,9 @@ import { explorerLink } from "@/lib/stellar/config";
 
 type Account = { id: string; email: string | null };
 
+const WALLET_MAYBE_CREATED =
+  "Caracal could not confirm whether your wallet was created. Before creating another, reload the page and check with Connect, using your passkey.";
+
 type State =
   | { kind: "idle" }
   | { kind: "busy"; label: string }
@@ -68,7 +71,10 @@ export default function WalletPage() {
       const kit = await getKit();
       const r = await kit.createWallet("Caracal", name.trim() || "Caracal user", { autoSubmit: true });
       if (r.submitResult && !r.submitResult.success) {
-        setState({ kind: "error", message: r.submitResult.error.message });
+        // With a hash the transaction was sent; the kit only failed to see it
+        // confirmed, so the wallet may exist. A second try would make another.
+        const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
+        setState({ kind: "error", message: sent ? WALLET_MAYBE_CREATED : r.submitResult.error.message });
         return;
       }
       connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
