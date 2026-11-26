@@ -35,14 +35,27 @@ const WALLET_MAYBE_EXISTS =
   "Your wallet may already exist. Before creating another, reload the page and check with \"I already have a wallet\", using your passkey.";
 
 type State =
-  | { kind: "idle" }
+  // knownWallet: this account has, or may have, a wallet already (one was
+  // restored and then disconnected, or one is recorded as its own here).
+  | { kind: "idle"; knownWallet?: boolean }
   | { kind: "busy"; label: string }
   | { kind: "connected"; contractId: string; txHash?: string }
-  // walletMayExist: a wallet may already exist for this person (a creation
-  // whose outcome is unknown, or a known saved wallet that could not be
-  // loaded). Create is then not offered, only Connect: a second try would make
-  // a second passkey and an orphan wallet.
-  | { kind: "error"; message: string; walletMayExist?: boolean };
+  // Create is offered after an error only with createAllowed: when the page
+  // knows that no wallet was made (the passkey step failed, or the relay said
+  // nothing was sent) and none was known before. Otherwise only Connect is
+  // offered: a second try could make a second passkey and an orphan wallet.
+  // checkFirst: a creation whose outcome is unknown; the page says to check
+  // with Connect before creating another.
+  | { kind: "error"; message: string; createAllowed?: boolean; checkFirst?: boolean };
+
+/** Create is offered only where the page knows this account has no wallet yet. */
+function createOffered(state: State): boolean {
+  if (state.kind === "idle") return !state.knownWallet;
+  return state.kind === "error" && state.createAllowed === true;
+}
+
+/** Errors from the passkey prompt itself (closed, timed out, refused): nothing was sent. SimpleWebAuthn keeps the browser's error name. */
+const PASSKEY_STEP_ERRORS = new Set(["NotAllowedError", "AbortError", "InvalidStateError", "NotSupportedError", "SecurityError", "ConstraintError"]);
 
 export default function WalletPage() {
   const [state, setState] = useState<State>({ kind: "busy", label: "Checking for a saved wallet" });
@@ -64,7 +77,6 @@ export default function WalletPage() {
     let unfollow: (() => void) | undefined;
     let gone = false;
     let verified = false;
-    let savedWallet = false; // this account has a saved wallet here
     // Set once the account changed (here or in another tab). Restoring takes
     // seconds; whatever it finds after that is no longer this account's to show.
     let accountMoved = false;
@@ -95,10 +107,9 @@ export default function WalletPage() {
       const mayRestore = await mayRestoreWallet(browserStore, kit, me.id);
       if (stale()) return;
       if (!mayRestore) return setState({ kind: "idle" });
-      savedWallet = true;
       const r = await restoreWithin(kit.connectWallet(), "restoring the saved wallet");
       if (stale()) return;
-      setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle" });
+      setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle", knownWallet: true });
     })().catch((e: unknown) => {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
       if (stale()) return;
@@ -107,7 +118,9 @@ export default function WalletPage() {
       // Each failure is named for what failed: a wrong RPC setting, the wallet
       // after a verified sign-in, or the sign-in check itself.
       const message = e instanceof Error && e.message === HTTPS_RPC_REQUIRED ? HTTPS_RPC_REQUIRED : verified ? WALLET_UNCHECKED : SIGN_IN_UNCHECKED;
-      setState({ kind: "error", message, walletMayExist: savedWallet });
+      // Create is not offered: whether this account has a wallet is unknown
+      // (the kit or the saved wallet could not be loaded). Reloading retries.
+      setState({ kind: "error", message });
     });
     return () => {
       gone = true;
@@ -154,18 +167,24 @@ export default function WalletPage() {
         // have created the wallet, so a second try could make another.
         const detail = r.submitResult.error.message;
         const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
-        if (!sent && detail.includes("Nothing was sent")) return setState({ kind: "error", message: detail });
-        setState({ kind: "error", message: detail, walletMayExist: true });
+        if (!sent && detail.includes("Nothing was sent")) return setState({ kind: "error", message: detail, createAllowed: true });
+        setState({ kind: "error", message: detail, checkFirst: true });
         return;
       }
       await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
     } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      // A failure of the passkey prompt happens before anything is sent. Any
+      // other throw may come after the wallet was deployed (the kit saves its
+      // session after submitting), so the outcome is unknown.
+      const message = e instanceof Error ? e.message : String(e);
+      const passkeyStep = e instanceof Error && PASSKEY_STEP_ERRORS.has(e.name);
+      setState(passkeyStep ? { kind: "error", message, createAllowed: true } : { kind: "error", message, checkFirst: true });
     }
   }
 
   async function connect() {
     if (!account) return; // a wallet is always bound to its signed-in owner
+    const couldCreate = createOffered(state); // a failed Connect tells nothing new about other wallets
     setState({ kind: "busy", label: "Waiting for your passkey" });
     try {
       const kit = await getKit();
@@ -174,9 +193,9 @@ export default function WalletPage() {
       // their disconnect failed, and then bind it to this account.
       const r = await kit.connectWallet({ fresh: true });
       if (r) await connected(r.contractId);
-      else setState({ kind: "idle" });
+      else setState({ kind: "idle", knownWallet: !couldCreate });
     } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), createAllowed: couldCreate });
     }
   }
 
@@ -184,7 +203,7 @@ export default function WalletPage() {
     try {
       const kit = await getKit();
       await kit.disconnect();
-      setState({ kind: "idle" });
+      setState({ kind: "idle", knownWallet: true });
     } catch (e) {
       console.error("could not disconnect the wallet:", e instanceof Error ? e.message : String(e));
       setState({ kind: "error", message: "Caracal could not disconnect this wallet. Reload the page and try again." });
@@ -233,7 +252,7 @@ export default function WalletPage() {
               placeholder="Ada"
             />
           </label>
-          {!(state.kind === "error" && state.walletMayExist) && (
+          {createOffered(state) && (
             // Hidden while a wallet may already exist: a second try would make another.
             <button className="rounded-md bg-black px-4 py-3 text-white" onClick={create}>
               Create wallet with a passkey
@@ -243,7 +262,7 @@ export default function WalletPage() {
             I already have a wallet
           </button>
           {state.kind === "error" && <p className="text-sm text-red-600">{state.message}</p>}
-          {state.kind === "error" && state.walletMayExist && !state.message.includes("check with Connect") && (
+          {state.kind === "error" && state.checkFirst && !state.message.includes("check with Connect") && (
             <p className="text-sm">{WALLET_MAYBE_EXISTS}</p>
           )}
         </div>

@@ -54,12 +54,20 @@ export default function SignIn() {
   async function google() {
     setBusy(true);
     setError(null);
-    const { error } = await supabaseBrowser().auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
-    });
-    if (error) {
-      console.error("sign-in could not start:", error.message);
+    let failure: string | null = null;
+    try {
+      const { error } = await supabaseBrowser().auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) failure = error.message;
+    } catch (e) {
+      // A throw (storage blocked for the sign-in verifier, say) must not leave
+      // the button on "Opening Google..." with nothing shown.
+      failure = e instanceof Error ? e.message : String(e);
+    }
+    if (failure !== null) {
+      console.error("sign-in could not start:", failure);
       setError(SIGNIN_ERRORS.failed);
       setBusy(false);
     }

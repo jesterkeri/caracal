@@ -129,3 +129,52 @@ describe("r4f follow-up: an empty INITIAL_SESSION is checked before it counts as
     expect(changed).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("r4g follow-up: which create failures still offer Create", () => {
+  it("a closed passkey prompt (NotAllowedError, nothing sent) keeps Create", async () => {
+    const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async () => {
+      throw Object.assign(new Error("The operation either timed out or was not allowed."), { name: "NotAllowedError" });
+    });
+    await click(tree, "Create wallet")!();
+    const state = setters.filter((s) => s.i === 0).at(-1)!.v;
+    vi.resetModules();
+    expect(texts((await renderWallet([state, "", A])).tree).join(" | ")).toMatch(/Create wallet with a passkey/);
+  });
+  it("any other throw (it may come after the deploy) offers Connect only", async () => {
+    const { tree, setters } = await renderWallet([{ kind: "idle" }, "", A], async () => {
+      throw new Error("QuotaExceededError: could not save the session");
+    });
+    await click(tree, "Create wallet")!();
+    const state = setters.filter((s) => s.i === 0).at(-1)!.v;
+    vi.resetModules();
+    const shown = texts((await renderWallet([state, "", A])).tree).join(" | ");
+    expect(shown).toMatch(/may already exist/);
+    expect(shown).not.toMatch(/Create wallet with a passkey/);
+  });
+  it("after Disconnect, Create is not offered for the wallet just disconnected", async () => {
+    const shown = texts((await renderWallet([{ kind: "idle", knownWallet: true }, "", A])).tree).join(" | ");
+    expect(shown).toMatch(/I already have a wallet/);
+    expect(shown).not.toMatch(/Create wallet with a passkey/);
+  });
+});
+
+describe("r4g follow-up: the Google button when starting the sign-in throws", () => {
+  it("shows the error and frees the button", async () => {
+    const setters: { i: number; v: unknown }[] = [];
+    vi.doMock("react", async () => {
+      const actual = await vi.importActual<typeof import("react")>("react");
+      let i = 0;
+      return { ...actual, default: actual, useState: (init: unknown) => { const at = i++; return [at === 1 ? { kind: "signed-out" } : init, (v: unknown) => setters.push({ i: at, v })]; }, useEffect: () => {} };
+    });
+    vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: { signInWithOAuth: async () => { throw new DOMException("The operation is insecure.", "SecurityError"); } } }) }));
+    vi.doMock("@/lib/stellar/kit", () => ({ getKit: () => Promise.resolve({}) }));
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
+    vi.stubGlobal("window", { location: { origin: "https://caracal.test", search: "" } });
+    const mod = await import("../src/app/signin/page");
+    await click(mod.default(), "Continue with Google")!();
+    // state order in SignIn: error, signIn, busy
+    expect(setters.filter((s) => s.i === 2).map((s) => s.v).at(-1)).toBe(false);
+    expect(setters.filter((s) => s.i === 0).map((s) => s.v).at(-1)).toMatch(/./);
+  });
+});
