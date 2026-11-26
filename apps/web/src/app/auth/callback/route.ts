@@ -2,6 +2,7 @@
 // one-time `code`. Exchanging it (PKCE) sets the session cookie. Opening this
 // URL by hand has no code, so it shows an error instead of signing anyone in.
 // Errors go to /signin as a known code, never as upstream text.
+import { logSafe } from "@/lib/auth/log-safe";
 import { NextResponse } from "next/server";
 import { exchangeErrorCode, signinUrl, thrownExchangeErrorCode, upstreamErrorCode, type SigninErrorCode } from "@/lib/auth/signin-errors";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
@@ -13,7 +14,7 @@ export async function GET(request: Request) {
 
   const upstream = upstreamErrorCode(url.searchParams);
   if (upstream) {
-    console.error("sign-in error from Supabase:", url.searchParams.get("error_code") ?? url.searchParams.get("error"));
+    console.error("sign-in error from Supabase:", logSafe(url.searchParams.get("error_code") ?? url.searchParams.get("error")));
     return back(upstream);
   }
   const code = url.searchParams.get("code");

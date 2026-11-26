@@ -20,12 +20,15 @@ const STORAGE_BLOCKED =
 
 /**
  * Whether a failure is the browser refusing site storage: the wallet kit reads
- * localStorage when it starts (a SecurityError when site data is blocked) and
- * keeps its passkey records in IndexedDB. A reload cannot fix that.
+ * localStorage when it starts (a SecurityError naming localStorage when site
+ * data is blocked) and keeps its passkey records in IndexedDB. A reload cannot
+ * fix that. The error must name the storage: a passkey prompt also raises
+ * SecurityError (an IP address as the site, passkeys refused in a frame), and
+ * that is not a storage problem.
  */
 function storageBlocked(e: unknown): boolean {
   if (!(e instanceof Error) && !(e instanceof DOMException)) return false;
-  return e.name === "SecurityError" || /IndexedDB|localStorage|site data/i.test(e.message);
+  return /IndexedDB|localStorage|sessionStorage|site data/i.test(e.message);
 }
 
 /** What a failed Create or Connect shows: blocked storage by name, anything else as the kit said it. */
@@ -244,7 +247,7 @@ export default function WalletPage() {
     try {
       r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = failureText(e);
       if (!passkeyMade) markCreation(account.id, false);
       setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
       return;

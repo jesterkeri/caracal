@@ -1,6 +1,7 @@
 // Supabase sends some sign-in errors, and sometimes the sign-in code, to the
 // site root. Errors go on to /signin as a known code (never the upstream text);
 // a code goes on to /auth/callback; otherwise start at /signin.
+import { logSafe } from "@/lib/auth/log-safe";
 import { signinUrl, upstreamErrorCode } from "@/lib/auth/signin-errors";
 
 export function GET(request: Request) {
@@ -15,6 +16,6 @@ export function GET(request: Request) {
     return Response.redirect(next.toString(), 307);
   }
   const code = upstreamErrorCode(url.searchParams);
-  if (code) console.error("sign-in error at root:", url.searchParams.get("error_code") ?? url.searchParams.get("error"));
+  if (code) console.error("sign-in error at root:", logSafe(url.searchParams.get("error_code") ?? url.searchParams.get("error")));
   return Response.redirect(signinUrl(url.origin, code), 307);
 }

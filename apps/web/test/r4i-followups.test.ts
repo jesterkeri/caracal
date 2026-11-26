@@ -299,3 +299,18 @@ describe("r4n follow-up: blocked storage named on Create and Connect too", () =>
     expect(state.message).not.toMatch(/check your connection/i);
   });
 });
+
+describe("r4o follow-up: sign-in codes from the URL in logs", () => {
+  it.each([
+    ["bad_oauth_state", "bad_oauth_state"],
+    ["x\nFAKE LOG LINE", "x?FAKE?LOG?LINE"],
+    [null, "(none)"],
+  ])("%j is logged as %j", async (v, out) => {
+    const { logSafe } = await import("../src/lib/auth/log-safe");
+    expect(logSafe(v)).toBe(out);
+  });
+  it("is cut to 80 characters", async () => {
+    const { logSafe } = await import("../src/lib/auth/log-safe");
+    expect(logSafe("a".repeat(500))).toHaveLength(80);
+  });
+});
