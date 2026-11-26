@@ -80,7 +80,10 @@ export default function WalletPage() {
     setState({ kind: "busy", label: "Waiting for your passkey" });
     try {
       const kit = await getKit();
-      const r = await kit.connectWallet({ prompt: true });
+      // fresh: always ask for this person's passkey. { prompt: true } would
+      // first reuse a stored session, which could be the previous person's if
+      // their disconnect failed, and then bind it to this account.
+      const r = await kit.connectWallet({ fresh: true });
       if (r) connected(r.contractId);
       else setState({ kind: "idle" });
     } catch (e) {

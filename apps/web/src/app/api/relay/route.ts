@@ -114,11 +114,13 @@ export async function POST(request: Request) {
     return fail("Body is not JSON", 400);
   }
 
+  // Setup first: an unusable secret or RPC URL is "not set up" on every path.
+  const deps = sponsor();
+  if (!deps) return fail("Fee sponsorship is not set up on this server.", 503);
+
   const verdict = await checkPayload(body, CARACAL_POLICY, chain.wasm, chain.instance);
   if (!verdict.ok) return fail(verdict.error, verdict.status);
 
-  const deps = sponsor();
-  if (!deps) return fail("Fee sponsorship is not set up on this server.", 503);
   // Only the shared deployer's wallet deployment goes to SDF's proxy as
   // { func, auth }: it names its exact code hash and no existing contract's
   // code runs, so nothing can change after the check. Everything else (calls,
@@ -184,7 +186,8 @@ export async function POST(request: Request) {
   const parsed = relayerAnswer(out);
   if (!parsed) {
     console.error("relay upstream answered", res.status, "with an unreadable body");
-    return fail("The fee relayer gave an answer Caracal could not read. Try again.", 502);
+    // A gateway error page can arrive after the proxy already submitted.
+    return fail(walletUnconfirmed(null), 502);
   }
   // A refusal's wording is the upstream's, so it never reaches the user: only
   // a fixed message and, if it looks like one, the upstream's error code.
