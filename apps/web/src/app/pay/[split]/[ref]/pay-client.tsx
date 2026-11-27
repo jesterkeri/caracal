@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { StrKey, rpc } from "@stellar/stellar-sdk";
 import { getKit } from "@/lib/stellar/kit";
+
+/** The payer's wallet is connected for this page only: it never replaces the session saved for the signed-in person. */
+const PAYER_KIT = { saveSession: false } as const;
 import { NETWORK, explorerLink } from "@/lib/stellar/config";
 import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc } from "@/lib/invoices/amount";
@@ -85,7 +88,7 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     setPay({ kind: "busy", label: "Waiting for your passkey" });
     let kit: Awaited<ReturnType<typeof getKit>> | undefined;
     try {
-      kit = await getKit();
+      kit = await getKit(PAYER_KIT);
       // fresh: always ask for this person's passkey, never reuse what this browser last had.
       const r = await kit.connectWallet({ fresh: true });
       if (!r) return setPay({ kind: "message", text: NO_WALLET_FOR_PASSKEY });
@@ -121,14 +124,17 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     setPay({ kind: "busy", label: "Paying. Approve it with your passkey" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
-      kit = await getKit();
+      kit = await getKit(PAYER_KIT);
     } catch (e) {
       return setPay({ kind: "message", text: `The payment was not made: Caracal could not load the wallet kit. ${errorText(e)}` });
     }
     const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef);
     if (outcome.kind === "done") {
       setPay({ kind: "paid", hash: outcome.hash });
-      return void reload().then(setView);
+      // It landed. A failed read now must not hide that: the invoice already shown stays, marked paid.
+      return void reload().then((v) => {
+        if (v.kind === "invoice") setView(v);
+      });
     }
     if (outcome.kind === "not-sent") return setPay({ kind: "message", text: `The payment was not made. ${outcome.message}` });
     if (outcome.kind === "failed") return setPay({ kind: "message", text: `The payment failed on the network, and no money moved. ${outcome.message}` });
