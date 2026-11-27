@@ -177,7 +177,8 @@ export async function loadTransaction(transferServer: string, token: string, id:
 }
 
 /** What a status means for the person, in plain English. Only "completed" counts as done. */
-export function statusText(t: Pick<AnchorTxn, "status" | "message">): string {
+/** The anchor's status in words. `sent`: this page holds the hash of a USDC payment it made for this withdrawal. */
+export function statusText(t: Pick<AnchorTxn, "status" | "message">, sent = false): string {
   switch (t.status) {
     case "incomplete":
       return "Waiting for you to finish the anchor's form.";
@@ -201,7 +202,9 @@ export function statusText(t: Pick<AnchorTxn, "status" | "message">): string {
     case "no_market":
     case "too_small":
     case "too_large":
-      return "The anchor could not do this withdrawal at this amount. No USDC was sent unless your wallet history says otherwise.";
+      return sent
+        ? "The anchor could not do this withdrawal at this amount. Your USDC payment (below) was sent, so ask the anchor to refund it, with the transaction id."
+        : "The anchor could not do this withdrawal at this amount. No USDC was sent unless your wallet history says otherwise.";
     case "error":
       return `The anchor reported an error${t.message ? `: ${t.message}` : ""}. Check your wallet history to see whether USDC left, and keep the transaction id.`;
     default:

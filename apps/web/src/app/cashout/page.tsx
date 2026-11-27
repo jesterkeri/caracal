@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { buildAnchorTransfer, readUsdcBalance } from "@/lib/anchor/transfer";
+import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
 type Boot =
@@ -62,6 +62,17 @@ function payTo(t: AnchorTxn): string {
     t.feeAsset ?? null,
     t.amountOut ?? null,
   ]);
+}
+
+/** Why Send would refuse this record (paymentFor's own text), or null when it would pay it. */
+function unpayable(t: AnchorTxn, confirmed: bigint | null): string | null {
+  if (confirmed === null) return "Caracal lost the amount you confirmed, so it cannot pay this cash-out, and this page sent nothing. Start again.";
+  try {
+    paymentFor(t, confirmed);
+    return null;
+  } catch (e) {
+    return e instanceof AnchorError ? e.message : "Caracal cannot pay this cash-out as the anchor asks, and this page sent nothing. Start again.";
+  }
 }
 
 /** Statuses whose text tells the person to open the anchor's form. */
@@ -394,6 +405,10 @@ export default function CashoutPage() {
               {phase !== "sending" && !paidInUsdc(txn) ? (
                 // paymentFor refuses any other asset, so no Send is offered for one.
                 <p className="msg msg-bad">The anchor asks to be paid in {txn.amountInAsset}, not Circle testnet USDC, so Caracal cannot pay this cash-out, and this page sent nothing. Start again for a new one.</p>
+              ) : phase !== "sending" && txn.status === "pending_user_transfer_start" && unpayable(txn, confirmed) !== null ? (
+                // The anchor asks for a payment Send would refuse (a memo a smart wallet cannot carry, or another
+                // amount than the one confirmed): no Send is offered, only the reason (adversary c12, as c8 for an asset).
+                <p className="msg msg-bad">{unpayable(txn, confirmed)}</p>
               ) : txn.status === "pending_user_transfer_start" || phase === "sending" ? (
                 <button className="btn btn-primary btn-block" disabled={phase === "sending"} onClick={send}>
                   {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
@@ -423,7 +438,7 @@ export default function CashoutPage() {
 
           {txn && (phase === "watching" || done) && (
             <div className="card">
-              <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn)}</p>
+              <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn, sentHash !== null)}</p>
               {sentHash && (
                 <a className="addr link" href={explorerLink("tx", sentHash)}>
                   USDC payment on Stellar: {sentHash}

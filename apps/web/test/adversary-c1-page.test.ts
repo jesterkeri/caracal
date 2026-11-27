@@ -290,9 +290,11 @@ describe("adversary c1: the cash-out page, end to end with a working hook runtim
     world.txn.status = "pending_user_transfer_start";
     world.txn.amount_in = "5"; // edited in the anchor's popup (docs/research/anchor-spike-2026-11-27.md section 5)
     await tick(3100);
-    expect(buttonLabels(rt.tree)).toContain("Send 5 USDC to the anchor");
-    void clickButton(rt.tree, /Send 5 USDC/);
-    await tick(50);
+    // Changed with adversary c12 (decisions row "Adversary c12"): this test first required an enabled
+    // "Send 5 USDC to the anchor" and clicked it to reach the refusal. c12 proved that offering a Send the
+    // page always refuses is itself a defect (as c8 for another asset), so the refusal's reason is now shown
+    // without it. What this test guards is unchanged: nothing is sent, the reason, and a way to start again.
+    expect(buttonLabels(rt.tree).filter((l) => /^Send/.test(l))).toEqual([]);
     expect(world.kit.signAndSubmit).not.toHaveBeenCalled(); // refused, correctly
     const t = text(rt);
     expect(t).toMatch(/Start again and keep the amount the same/);
