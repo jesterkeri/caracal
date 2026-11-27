@@ -315,13 +315,19 @@ export default function WalletPage() {
       setState({ kind: "error", message: WALLET_RECORDED_ELSEWHERE });
       return;
     }
+    // Nothing was made or sent: what was known before still holds. A wallet
+    // this account had here is named again, and a new one stays an explicit
+    // choice; plain Create only where none was known.
+    const nothingMade = (message: string) => {
+      const remembered = rememberedWallet(browserStore, me.id) ?? undefined;
+      setState(remembered ? { kind: "error", message, remembered } : { kind: "error", message, createAllowed: true });
+    };
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
       kit = await getKit();
     } catch (e) {
-      // Nothing was made or sent; what was known before still holds.
-      setState({ kind: "error", message: failureText(e), createAllowed: true });
+      nothingMade(failureText(e));
       return;
     }
     // The kit announces credentialCreated once the passkey exists, before the
@@ -353,7 +359,8 @@ export default function WalletPage() {
       const message = failureText(e);
       // An unknown outcome: the wait counts from now, when it ended here.
       markCreation(me.id, passkeyMade);
-      setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
+      if (passkeyMade) setState({ kind: "error", message, checkFirst: true });
+      else nothingMade(message);
       return;
     } finally {
       clearInterval(beat);
@@ -369,7 +376,7 @@ export default function WalletPage() {
       const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
       if (!sent && detail.includes("Nothing was sent")) {
         markCreation(me.id, false);
-        return setState({ kind: "error", message: detail, createAllowed: true });
+        return nothingMade(detail);
       }
       markCreation(me.id, true);
       setState({ kind: "error", message: detail, checkFirst: true });
