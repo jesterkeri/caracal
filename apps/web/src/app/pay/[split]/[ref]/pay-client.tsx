@@ -3,9 +3,8 @@
 import { useEffect, useState } from "react";
 import { StrKey, rpc } from "@stellar/stellar-sdk";
 import { getKit } from "@/lib/stellar/kit";
-import { passkeyName } from "@/lib/stellar/passkey-name";
-import { browserLocks, withCreationLock } from "@/lib/auth/creation-lock";
 import { NETWORK, explorerLink } from "@/lib/stellar/config";
+import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc } from "@/lib/invoices/amount";
 import { findPaymentTx, isCaracalSplit, payInvoice, readConfig, readInvoice, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
 import { refBytes } from "@/lib/invoices/ref";
@@ -23,6 +22,24 @@ const NETWORK_DOWN = "Caracal could not reach the Stellar network to read this i
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+const NO_WALLET_FOR_PASSKEY = "No Caracal wallet was found for that passkey. Choose another passkey, or create a wallet first.";
+
+/**
+ * Why Connect failed, in true words. smart-account-kit says "not found
+ * on-chain" for any failed lookup, a network failure included, so the page
+ * looks up that passkey's wallet itself (as the wallet page does) and says "no
+ * wallet" only when the network answers that there is none.
+ */
+async function connectFailure(e: unknown, rpc: LedgerReader | undefined): Promise<string> {
+  const credential = credentialInKitError(e);
+  if (!credential) return `Caracal could not connect your wallet. ${errorText(e)}`;
+  const status = await walletStatus(rpc, walletAddressFor(credential, NETWORK.passphrase));
+  if (status === "absent") return NO_WALLET_FOR_PASSKEY;
+  if (status === "archived") return "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can pay. Caracal cannot restore it yet.";
+  if (status === "present") return "Your wallet exists on Stellar testnet, but Caracal could not open it. Reload the page and try again.";
+  return "Caracal could not reach the Stellar network to check whether a wallet exists for this passkey. Check your connection and try again.";
+}
+
 /** What the page knows about paying, kept apart from what it knows about the invoice. */
 type Pay =
   | { kind: "idle" }
@@ -34,9 +51,6 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
   const [view, setView] = useState<View>({ kind: "loading" });
   const [wallet, setWallet] = useState<string | null>(null);
   const [pay, setPay] = useState<Pay>({ kind: "idle" });
-  const [name, setName] = useState("");
-  // Create is offered until something may have created a wallet; then only Connect.
-  const [createOpen, setCreateOpen] = useState(true);
 
   const linkOk = StrKey.isValidContract(split) && refBytes(invoiceRef) !== null;
 
@@ -69,57 +83,16 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
 
   async function connect() {
     setPay({ kind: "busy", label: "Waiting for your passkey" });
+    let kit: Awaited<ReturnType<typeof getKit>> | undefined;
     try {
-      const kit = await getKit();
+      kit = await getKit();
       // fresh: always ask for this person's passkey, never reuse what this browser last had.
       const r = await kit.connectWallet({ fresh: true });
-      if (!r) return setPay({ kind: "message", text: "No Caracal wallet was found for that passkey. Choose another passkey, or create a wallet." });
+      if (!r) return setPay({ kind: "message", text: NO_WALLET_FOR_PASSKEY });
       setWallet(r.contractId);
       setPay({ kind: "idle" });
     } catch (e) {
-      setPay({ kind: "message", text: `Caracal could not connect your wallet. ${errorText(e)}` });
-    }
-  }
-
-  async function create() {
-    setPay({ kind: "busy", label: "Creating your passkey and wallet" });
-    const out = await withCreationLock(browserLocks(), async () => {
-      const kit = await getKit();
-      // The kit announces credentialCreated once the passkey exists, before the wallet is sent.
-      let passkeyMade = typeof kit.events?.on !== "function";
-      const stop = kit.events?.on?.("credentialCreated", () => {
-        passkeyMade = true;
-      });
-      try {
-        const r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
-        if (r.submitResult && !r.submitResult.success) {
-          const detail = r.submitResult.error.message;
-          const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
-          // Only the relay's own refusal before sending proves nothing was created.
-          if (!sent && detail.includes("Nothing was sent")) return setPay({ kind: "message", text: `Your wallet was not created. ${detail}` });
-          setCreateOpen(false);
-          return setPay({ kind: "message", text: `${detail} Your wallet may have been created. Choose "Use my existing wallet" and your passkey to check, before creating another.`, checkFirst: true });
-        }
-        setWallet(r.contractId);
-        setPay({ kind: "idle" });
-      } catch (e) {
-        if (passkeyMade) setCreateOpen(false);
-        setPay({
-          kind: "message",
-          text: passkeyMade
-            ? `${errorText(e)} Your wallet may have been created. Choose "Use my existing wallet" and your passkey to check, before creating another.`
-            : `Your wallet was not created. ${errorText(e)}`,
-          checkFirst: passkeyMade,
-        });
-      } finally {
-        stop?.();
-      }
-    }).catch((e: unknown) => setPay({ kind: "message", text: `Caracal could not create a wallet. ${errorText(e)}` }));
-    if (out && !out.ran) {
-      setPay({
-        kind: "message",
-        text: out.why === "busy" ? "A wallet is already being created in another tab of this browser. Wait for it to finish, then reload this page." : "This browser cannot make sure only one wallet is created at a time. Use a current version of Chrome, Edge, Safari or Firefox.",
-      });
+      setPay({ kind: "message", text: await connectFailure(e, kit?.rpc as LedgerReader | undefined) });
     }
   }
 
@@ -146,7 +119,12 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
       });
     }
     setPay({ kind: "busy", label: "Paying. Approve it with your passkey." });
-    const kit = await getKit();
+    let kit: Awaited<ReturnType<typeof getKit>>;
+    try {
+      kit = await getKit();
+    } catch (e) {
+      return setPay({ kind: "message", text: `The payment was not made: Caracal could not load the wallet kit. ${errorText(e)}` });
+    }
     const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef);
     if (outcome.kind === "done") {
       setPay({ kind: "paid", hash: outcome.hash });
@@ -210,17 +188,13 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
                   <button className="rounded border px-3 py-2 text-sm" disabled={busy} onClick={() => void connect()}>
                     Use my existing wallet
                   </button>
-                  {createOpen && (
-                    <div className="flex flex-col gap-2">
-                      <label className="flex flex-col gap-1 text-sm">
-                        No wallet yet? Name your passkey
-                        <input className="rounded border px-2 py-1" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} />
-                      </label>
-                      <button className="rounded border px-3 py-2 text-sm" disabled={busy} onClick={() => void create()}>
-                        Create a wallet
-                      </button>
-                    </div>
-                  )}
+                  <p className="text-sm">
+                    No wallet yet?{" "}
+                    <a className="underline" href="/wallet" target="_blank" rel="noopener">
+                      Create one on the Caracal wallet page
+                    </a>{" "}
+                    (it opens in a new tab), then come back here and choose &quot;Use my existing wallet&quot;.
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">

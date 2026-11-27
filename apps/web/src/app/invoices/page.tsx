@@ -8,7 +8,7 @@ import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { splitAddressFor } from "@/lib/stellar/split-address";
 import { formatUsdc, parseUsdc } from "@/lib/invoices/amount";
-import { cancelInvoice, createInvoice, isCaracalSplit, readConfig, type WriteOutcome } from "@/lib/invoices/chain";
+import { bounded, cancelInvoice, createInvoice, isCaracalSplit, readConfig, type WriteOutcome } from "@/lib/invoices/chain";
 import { checkDetails, deleteDetails, listDetails, saveDetails, type Db } from "@/lib/invoices/details";
 import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
 import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
@@ -22,6 +22,9 @@ type Load =
   | ({ kind: "ready" } & Ready);
 
 const db = () => supabaseBrowser() as unknown as Db;
+
+/** Longest wait for loading the wallet kit and restoring the saved wallet: the wallet page's limit (decisions 2026-11-26, r4e). */
+const RESTORE_TIMEOUT_MS = 30_000;
 
 /** What a person is told about a write that did not finish cleanly. */
 function outcomeText(o: Exclude<WriteOutcome, { kind: "done" }>, what: string): string {
@@ -40,8 +43,8 @@ export default function InvoicesPage() {
   const [copied, setCopied] = useState<string | null>(null);
 
   async function refresh(wallet: string, split: string) {
-    const kit = await getKit();
-    const rows = await loadRows(kit.rpc, await listDetails(db()), split);
+    const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
+    const rows = await loadRows(kit.rpc, await bounded(listDetails(db()), "Reading your saved invoices"), split);
     setLoad({ kind: "ready", wallet, split, rows });
   }
 
@@ -53,9 +56,9 @@ export default function InvoicesPage() {
       const me = await readSignInState(auth);
       if (me.kind === "signed-out") return window.location.replace("/signin");
       if (me.kind === "unverified") throw new Error("Caracal could not verify your sign-in. Check your connection and reload the page.");
-      const kit = await getKit();
+      const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
       // Only a wallet this account connected on this browser is used (the same rule as the wallet page).
-      const wallet = (await mayRestoreWallet(browserStore, kit, me.id)) ? await kit.connectWallet() : null;
+      const wallet = (await mayRestoreWallet(browserStore, kit, me.id)) ? await bounded(kit.connectWallet(), "Restoring your saved wallet", RESTORE_TIMEOUT_MS) : null;
       if (gone) return;
       if (!wallet) return setLoad({ kind: "no-wallet" });
       const split = splitAddressFor(wallet.contractId);
@@ -85,6 +88,13 @@ export default function InvoicesPage() {
     if (!details.ok) return setNotice(details.why);
     const ref = newInvoiceRef();
     setBusy("Opening the invoice on Stellar. Approve it with your passkey.");
+    let kit: Awaited<ReturnType<typeof getKit>>;
+    try {
+      kit = await getKit();
+    } catch (e) {
+      setBusy(null);
+      return setNotice(`Caracal could not load the wallet kit, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
+    }
     try {
       // The details are saved first, so an invoice that reached the chain always has its client name here.
       await saveDetails(db(), { invoice_ref: ref, split: ready.split, client_name: details.name, description: details.description });
@@ -92,7 +102,7 @@ export default function InvoicesPage() {
       setBusy(null);
       return setNotice(`Caracal could not save the client's name, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
     }
-    const outcome = await createInvoice(await getKit(), ready.split, ref, stroops);
+    const outcome = await createInvoice(kit, ready.split, ref, stroops);
     if (outcome.kind === "not-sent" || outcome.kind === "failed") {
       // Nothing is on chain: the saved details are removed again.
       try {
@@ -115,7 +125,14 @@ export default function InvoicesPage() {
   async function cancel(ready: Ready, ref: string) {
     setNotice(null);
     setBusy("Cancelling the invoice. Approve it with your passkey.");
-    const outcome = await cancelInvoice(await getKit(), ready.split, ref);
+    let kit: Awaited<ReturnType<typeof getKit>>;
+    try {
+      kit = await getKit();
+    } catch (e) {
+      setBusy(null);
+      return setNotice(`Caracal could not load the wallet kit, so nothing was cancelled. ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const outcome = await cancelInvoice(kit, ready.split, ref);
     setBusy(null);
     setNotice(outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice"));
     await refresh(ready.wallet, ready.split).catch(listFailed);

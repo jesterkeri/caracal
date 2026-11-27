@@ -92,7 +92,9 @@ describe("what the client sees", () => {
     const t = texts(tree);
     expect(t).toMatch(/150.00\s+USDC/);
     expect(t).toContain("Use my existing wallet");
-    expect(t).toContain("Create a wallet");
+    // A wallet is created only on the wallet page, with its one-creation-at-a-time guarantees (adversary i1).
+    expect(t).toContain("Create one on the Caracal wallet page");
+    expect(hrefs(tree)).toContain("/wallet");
     expect(hrefs(tree).join()).not.toContain("?");
   });
   it("loads from the chain on open: a bad link, a foreign contract and an unknown invoice are each named", async () => {

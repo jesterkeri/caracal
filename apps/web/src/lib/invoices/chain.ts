@@ -24,12 +24,24 @@ export class ReadRefused extends Error {}
 // A read-only simulation needs a source account only in name; this is the one smart-account-kit uses.
 const READ_SOURCE = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
 
+/** Longest wait for one network read. The SDK has no timeout of its own, and a browser fetch can wait for ever. */
+export const READ_TIMEOUT_MS = 20_000;
+
+/** `p`, or a rejection once READ_TIMEOUT_MS has passed: a node that never answers ends in an error, not an endless wait. */
+export function bounded<T>(p: Promise<T>, what: string, ms: number = READ_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 async function simulateRead(server: Reader, contractId: string, method: string, args: xdr.ScVal[]): Promise<xdr.ScVal | undefined> {
   const tx = new TransactionBuilder(READ_SOURCE, { fee: BASE_FEE, networkPassphrase: NETWORK.passphrase })
     .addOperation(new Contract(contractId).call(method, ...args))
     .setTimeout(30)
     .build();
-  const sim = await server.simulateTransaction(tx);
+  const sim = await bounded(server.simulateTransaction(tx), "The Stellar network");
   if (rpc.Api.isSimulationError(sim)) throw new ReadRefused(sim.error);
   return sim.result?.retval;
 }
@@ -110,9 +122,9 @@ export async function findPaymentTx(server: EventReader, split: string, ref: str
   const wanted = refBytes(ref);
   if (!wanted) return null;
   try {
-    const latest = await server.getLatestLedger();
+    const latest = await bounded(server.getLatestLedger(), "The Stellar network");
     const filters = [{ type: "contract" as const, contractIds: [split] }];
-    let page = await server.getEvents({ startLedger: Math.max(1, latest.sequence - EVENT_WINDOW_LEDGERS), filters, limit: 200 });
+    let page = await bounded(server.getEvents({ startLedger: Math.max(1, latest.sequence - EVENT_WINDOW_LEDGERS), filters, limit: 200 }), "The Stellar network");
     for (let i = 0; i < MAX_EVENT_PAGES; i++) {
       for (const ev of page.events) {
         const name = ev.topic[0]?.switch().name === "scvSymbol" ? ev.topic[0].sym().toString() : "";
@@ -121,7 +133,7 @@ export async function findPaymentTx(server: EventReader, split: string, ref: str
         if (data?.invoice_ref && Buffer.from(data.invoice_ref).equals(wanted)) return ev.txHash;
       }
       if (page.events.length < 200) return null;
-      page = await server.getEvents({ cursor: page.cursor, filters, limit: 200 });
+      page = await bounded(server.getEvents({ cursor: page.cursor, filters, limit: 200 }), "The Stellar network");
     }
   } catch {
     // no receipt link, that is all
@@ -148,15 +160,19 @@ type Submitter = Pick<SmartAccountKit, "signAndSubmit" | "rpc">;
 export async function sendCall(kit: Submitter, split: string, method: string, args: xdr.ScVal[]): Promise<WriteOutcome> {
   let tx: contract.AssembledTransaction<unknown>;
   try {
-    tx = await contract.AssembledTransaction.build({
-      contractId: split,
-      method,
-      args,
-      networkPassphrase: NETWORK.passphrase,
-      rpcUrl: NETWORK.rpcUrl,
-      server: kit.rpc,
-      parseResultXdr: (v: xdr.ScVal) => v,
-    });
+    // Building simulates on the network; nothing is signed or sent until it returns, so giving up on it sends nothing.
+    tx = await bounded(
+      contract.AssembledTransaction.build({
+        contractId: split,
+        method,
+        args,
+        networkPassphrase: NETWORK.passphrase,
+        rpcUrl: NETWORK.rpcUrl,
+        server: kit.rpc,
+        parseResultXdr: (v: xdr.ScVal) => v,
+      }),
+      "The Stellar network",
+    );
   } catch (e) {
     return { kind: "not-sent", message: (e instanceof Error && splitErrorText(e.message, split)) || `Caracal could not prepare the call. ${msg(e)}` };
   }
