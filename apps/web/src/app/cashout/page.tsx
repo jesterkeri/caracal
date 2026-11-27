@@ -102,7 +102,9 @@ export default function CashoutPage() {
   /** A send whose outcome is unknown and that gave no hash: the anchor's status decides (adversary c13). */
   const [unknownSend, setUnknownSend] = useState(false);
   /** When the kit's signAndSubmit for this page's send settled (resolved or threw), on Date.now(). */
-  const sendSettledAt = useRef<number | null>(null);
+  const [sendSettledAt, setSendSettledAt] = useState<number | null>(null);
+  /** LAND_WINDOW_MS has passed since sendSettledAt (set by a timer, see unknownWaiting). */
+  const [landingOver, setLandingOver] = useState(false);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -266,7 +268,7 @@ export default function CashoutPage() {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
       signAndSubmit: (tx) =>
         kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>).finally(() => {
-          sendSettledAt.current = Date.now();
+          setSendSettledAt(Date.now());
         }),
     };
     const r = await sendToAnchor(latest, confirmed, deps);
@@ -297,7 +299,8 @@ export default function CashoutPage() {
     setConfirmed(null);
     setSentHash(null);
     setUnknownSend(false);
-    sendSettledAt.current = null;
+    setSendSettledAt(null);
+    setLandingOver(false);
     setProblem(null);
     setPollNote(null);
     setPopupNote(null);
@@ -314,7 +317,12 @@ export default function CashoutPage() {
   // transaction it built is valid (25 s), both started before the send settled: LAND_WINDOW_MS after it,
   // a payment the anchor still has not seen did not arrive, and a new cash-out cannot pay this one twice.
   const unknownWaiting = phase === "watching" && unknownSend && sentHash === null && txn?.status === "pending_user_transfer_start";
-  const pastLanding = unknownWaiting && sendSettledAt.current !== null && Date.now() - sendSettledAt.current > LAND_WINDOW_MS;
+  const pastLanding = unknownWaiting && landingOver;
+  useEffect(() => {
+    if (sendSettledAt === null) return;
+    const t = setTimeout(() => setLandingOver(true), Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [sendSettledAt]);
   // Never while the USDC payment is being sent: starting again then would lose track of it.
   const canStartAnother = (done || lostSession || pastLanding) && phase !== "sending";
 
