@@ -13,25 +13,40 @@ export type WithdrawInfo = {
   feeFixed: bigint | null;
   feePercent: number | null;
   feeMinimum: bigint | null;
+  /** The anchor published a fee field Caracal cannot read as USDC with 7 decimals, so no fee is previewed (adversary c25). */
+  feeUnreadable?: true;
 };
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+// A JSON number as stroops. String(n) can carry float noise (0.1 + 0.2 = 0.30000000000000004) or exponent form
+// (1e-7), which toStroops rightly refuses: the number is read at 7 places when that is the same number to within
+// float precision, and refused otherwise (adversary c25).
 const stroopsOf = (v: unknown): bigint | null => {
   const n = num(v);
-  return n === null ? null : toStroops(String(n));
+  if (n === null) return null;
+  const fixed = n.toFixed(7);
+  if (Math.abs(Number(fixed) - n) > Number.EPSILON * 4 * Math.max(1, n)) return null;
+  return toStroops(fixed);
 };
+/** Whether an /info field is present but not one Caracal can read. */
+const unreadable = (v: unknown, read: unknown): boolean => v !== undefined && v !== null && read === null;
 
 /** The USDC withdraw entry of the anchor's GET /info answer. */
 export function parseInfo(json: unknown): WithdrawInfo {
   const w = (json as { withdraw?: Record<string, Record<string, unknown>> } | null)?.withdraw?.[CASHOUT_ASSET.code];
   if (!w || typeof w !== "object") throw new AnchorError("The test anchor does not offer USDC withdrawals right now.", "anchor-info");
+  const feeFixed = stroopsOf(w.fee_fixed);
+  const feePercent = num(w.fee_percent);
+  const feeMinimum = stroopsOf(w.fee_minimum);
   return {
     enabled: w.enabled === true,
     min: stroopsOf(w.min_amount),
     max: stroopsOf(w.max_amount),
-    feeFixed: stroopsOf(w.fee_fixed),
-    feePercent: num(w.fee_percent),
-    feeMinimum: stroopsOf(w.fee_minimum),
+    feeFixed,
+    feePercent,
+    feeMinimum,
+    // A published fee that cannot be read is not silently left out of the preview's sum.
+    ...(unreadable(w.fee_fixed, feeFixed) || unreadable(w.fee_percent, feePercent) || unreadable(w.fee_minimum, feeMinimum) ? { feeUnreadable: true as const } : {}),
   };
 }
 
@@ -69,7 +84,7 @@ export function previewWithdraw(amountText: string, info: WithdrawInfo, balance:
   let fee: bigint | null = null;
   // A published percentage outside 0 to 100 is not a fee Caracal can show (a huge one would not even convert
   // to a whole number and threw in the page's render, adversary c22).
-  if (info.feePercent !== null && !(info.feePercent >= 0 && info.feePercent <= 100)) {
+  if (info.feeUnreadable || (info.feePercent !== null && !(info.feePercent >= 0 && info.feePercent <= 100))) {
     return { ok: false, reason: "The test anchor published a fee Caracal cannot read, so it cannot show what would arrive. Nothing was started." };
   }
   if (info.feeFixed !== null || info.feePercent !== null) {
