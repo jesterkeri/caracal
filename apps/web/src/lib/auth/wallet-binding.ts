@@ -42,14 +42,38 @@ function knownWallets(store: KeyValue): Record<string, string> {
   }
 }
 
-/** The wallet this account last connected on this browser, or null (none, or storage blocked). */
-export function rememberedWallet(store: KeyValue, userId: string): string | null {
+/**
+ * What this browser records of the account's wallet: the one it last connected
+ * here, none (the record was read and names none for this account), or
+ * unreadable (storage blocked, or a record that cannot be parsed), which proves
+ * nothing either way.
+ */
+export type KnownWallet = { kind: "known"; wallet: string } | { kind: "none" } | { kind: "unreadable" };
+
+export function knownWalletFor(store: KeyValue, userId: string): KnownWallet {
+  let raw: string | null;
   try {
-    const w = knownWallets(store)[userId];
-    return typeof w === "string" && /^C[A-Z2-7]{55}$/.test(w) ? w : null;
+    raw = store.getItem(KNOWN_WALLETS_KEY);
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
+  if (!raw) return { kind: "none" };
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return { kind: "unreadable" };
+  const w = (v as Record<string, unknown>)[userId];
+  if (w === undefined) return { kind: "none" };
+  return typeof w === "string" && /^C[A-Z2-7]{55}$/.test(w) ? { kind: "known", wallet: w } : { kind: "unreadable" };
+}
+
+/** The wallet this account last connected on this browser, or null (none recorded, or the record unreadable: see knownWalletFor). */
+export function rememberedWallet(store: KeyValue, userId: string): string | null {
+  const k = knownWalletFor(store, userId);
+  return k.kind === "known" ? k.wallet : null;
 }
 
 /** Remembers this account's wallet on this browser (best effort). */

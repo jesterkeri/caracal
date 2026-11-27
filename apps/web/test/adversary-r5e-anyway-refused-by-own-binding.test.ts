@@ -68,7 +68,8 @@ function browser(local: Map<string, string>) {
     disconnect: async () => {},
     connectWallet: async (): Promise<unknown> => null,
     createWallet,
-    rpc: undefined as unknown,
+    // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+    rpc: { getLatestLedger: async () => ({ sequence: 1000 }) } as unknown,
   };
   async function render(state: S) {
     vi.resetModules();
@@ -125,6 +126,7 @@ async function pressEscape(bound: boolean) {
   local.set(KNOWN_WALLETS_KEY, JSON.stringify({ [A.id]: W1 }));
   local.set(CREATION_UNCONFIRMED_KEY, A.id);
   local.set(CREATION_STARTED_AT_KEY, String(Date.now() - 4 * 60_000));
+  local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
   const b = browser(local);
 
   const first = await b.render({ kind: "idle", knownWallet: true, remembered: W1 });

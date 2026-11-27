@@ -1,6 +1,7 @@
 // Remembers, per account and across reloads, a wallet creation whose outcome
 // is not known yet, so the wallet page does not offer a second one.
 
+import { DEPLOY_AUTH_LEDGERS } from "../relay/deploy-auth";
 import type { KeyValue } from "./wallet-binding";
 
 /**
@@ -20,24 +21,62 @@ export const CREATION_PENDING_WALLET_KEY = "caracal.creationPendingWallet";
 /** The latest attempt's start (ms since epoch), for all accounts. */
 export const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
 /**
- * How long after its last sign of life a creation may still land. Before
- * that, "start a new wallet anyway" waits. The bound, from the relay
- * (apps/web/src/app/api/relay/route.ts): a request is sent upstream within
- * 60 s of arriving or never (SEND_DEADLINE_MS), and a wallet deployment is
- * forwarded with an authorisation that expires 12 ledgers (about 70 s) after
- * the ledger it was checked at (DEPLOY_AUTH_LEDGERS). The page renews the
- * start time every CREATION_HEARTBEAT_MS while an attempt runs, and again when
- * it ends, so 10 + 60 + about 70 s is under these 3 minutes. While a tab is
- * still running an attempt, it also holds the creation lock
- * (creation-lock.ts), so no other tab can start one.
+ * The first of two waits before "start a new wallet anyway": time after the
+ * attempt's last sign of life by which the relay can no longer SEND it. The
+ * relay sends a request within 60 s of arriving or never (SEND_DEADLINE_MS,
+ * on its monotonic clock), and the page renews the start time every
+ * CREATION_HEARTBEAT_MS while an attempt runs and again when it ends, so 3
+ * minutes leaves room for the request's journey. While a tab is still running
+ * an attempt, it also holds the creation lock (creation-lock.ts), so no other
+ * tab can start one.
+ *
+ * Time does not bound when a sent attempt can LAND: its authorisation expires
+ * by ledger (DEPLOY_AUTH_LEDGERS after the ledger the relay checked it at), and
+ * a stalled or slow network closes ledgers late. So the second wait is on the
+ * ledger: see CREATION_CLOSE_LEDGER_KEY.
  */
 export const CREATION_SETTLE_MS = 3 * 60_000;
+/**
+ * The ledger after which the latest attempt can no longer land, recorded once
+ * the first wait is over: the network's latest ledger then (no earlier than any
+ * ledger the relay checked the attempt at, since the relay can no longer send
+ * it) plus CREATION_CLOSE_LEDGERS. Removed whenever an attempt starts or ends.
+ */
+export const CREATION_CLOSE_LEDGER_KEY = "caracal.creationCloseLedger";
+/**
+ * DEPLOY_AUTH_LEDGERS (12, the relay's expiry) plus 12 more in case the page's
+ * RPC reports a latest ledger behind the one the relay's RPC checked against.
+ */
+export const CREATION_CLOSE_LEDGERS = DEPLOY_AUTH_LEDGERS + 12;
 /** How often a running attempt renews its start time. */
 export const CREATION_HEARTBEAT_MS = 10_000;
 
 export function creationMarker(store: KeyValue, now: () => number = () => Date.now()) {
   /** When this page last started a creation (kept in memory too, for browsers that block storage). */
   let startedHere = 0;
+  /** The close ledger this page recorded (kept in memory too, for browsers that block storage). */
+  let closeHere: number | null = null;
+
+  /** The ledger after which the latest attempt can no longer land, if recorded. */
+  function closeLedger(): number | null {
+    try {
+      const v = Number(store.getItem(CREATION_CLOSE_LEDGER_KEY));
+      if (Number.isSafeInteger(v) && v > 0) return v;
+      return null;
+    } catch {
+      return closeHere;
+    }
+  }
+
+  /** Records the close ledger, once the time wait is over (see CREATION_CLOSE_LEDGER_KEY). */
+  function recordCloseLedger(ledger: number) {
+    closeHere = ledger;
+    try {
+      store.setItem(CREATION_CLOSE_LEDGER_KEY, String(ledger));
+    } catch (e) {
+      console.error("could not record the close ledger:", e instanceof Error ? e.message : String(e));
+    }
+  }
 
   function unconfirmedIds(): string[] {
     const v = store.getItem(CREATION_UNCONFIRMED_KEY);
@@ -100,6 +139,13 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
    */
   function markCreation(id: string, unconfirmed: boolean, wallet?: string) {
     if (unconfirmed) startedHere = now();
+    // A new sign of life, or an outcome: any close ledger recorded before no longer applies.
+    closeHere = null;
+    try {
+      store.removeItem(CREATION_CLOSE_LEDGER_KEY);
+    } catch {
+      // storage blocked: nothing was recorded there either
+    }
     try {
       const pending = pendingWallets();
       if (unconfirmed && wallet) pending[id] = wallet;
@@ -124,5 +170,5 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
     }
   }
 
-  return { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor };
+  return { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor, closeLedger, recordCloseLedger };
 }
