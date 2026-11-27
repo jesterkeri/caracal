@@ -13,9 +13,16 @@ const TRANSACTION_TIMEOUT = 5004;
 
 /**
  * Failures the kit raises before it submits anything (the passkey or the
- * signing step): WebAuthn 4001 to 4004, simulation 5001, signing 5002.
+ * signing step): WebAuthn 4001 to 4004, simulation 5001, signing 5002, and a
+ * contract error (10000, CONTRACT_ERROR). The kit makes a ContractError only by
+ * finding "Error(Contract, #N)" in a diagnostic: its own simulations before the
+ * send, or the relay's answer. Caracal's relay never puts that text in an
+ * answer (its refusals are fixed texts and a Channels failure is reduced to its
+ * code, src/lib/relay/channels.ts), and a failure the network confirmed comes
+ * with a hash, which is not treated as unsent. So one with no hash is the
+ * kit's own check before sending.
  */
-const BEFORE_SUBMIT = new Set([4001, 4002, 4003, 4004, 5001, 5002]);
+const BEFORE_SUBMIT = new Set([4001, 4002, 4003, 4004, 5001, 5002, 10000]);
 
 /**
  * Longest wait for the passkey, the relay and the kit's confirmation poll together. The kit polls on an RPC

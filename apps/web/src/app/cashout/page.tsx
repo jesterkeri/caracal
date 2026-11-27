@@ -36,6 +36,11 @@ function within<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
+/** What a payment goes to: the anchor's account and memo. */
+function payTo(t: AnchorTxn): string {
+  return JSON.stringify([t.withdrawAnchorAccount ?? null, t.withdrawMemoType ?? null, t.withdrawMemo ?? null]);
+}
+
 export default function CashoutPage() {
   const [boot, setBoot] = useState<Boot>({ kind: "loading" });
   const [toml, setToml] = useState<AnchorToml | null>(null);
@@ -57,6 +62,8 @@ export default function CashoutPage() {
   const sendingFor = useRef<string | null>(null);
   // The newest record from the anchor, read the moment Send is pressed.
   const txnRef = useRef<AnchorTxn | null>(null);
+  /** The account and memo on screen when the person reached the confirm step (or last confirmed again). */
+  const seenRef = useRef<string | null>(null);
   const walletRef = useRef<string | null>(null);
   const balanceRead = useRef(0);
 
@@ -127,6 +134,7 @@ export default function CashoutPage() {
         // A "may still go through" warning from the send is settled once the anchor says it finished.
         if (t.status === "completed" || t.status === "refunded") setProblem(null);
         if (phase === "form" && t.status === "pending_user_transfer_start") {
+          seenRef.current = payTo(t);
           setPhase("confirm");
           popupRef.current?.close();
         }
@@ -193,8 +201,11 @@ export default function CashoutPage() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !txn || confirmed === null || sendingFor.current === txn.id) return;
     // The account and memo the person was shown must be the ones the anchor still has.
-    const latest = txnRef.current;
-    if (latest && (latest.withdrawAnchorAccount !== txn.withdrawAnchorAccount || latest.withdrawMemo !== txn.withdrawMemo || latest.withdrawMemoType !== txn.withdrawMemoType)) {
+    // The poll keeps the screen on the anchor's latest record, so the comparison is with what was on screen
+    // when the person reached this step, not with the record the poll last wrote.
+    const latest = txnRef.current ?? txn;
+    if (seenRef.current !== payTo(latest)) {
+      seenRef.current = payTo(latest);
       setTxn(latest);
       setProblem("The anchor changed the account or memo to pay after you looked at it. Nothing was sent. Check the details above and confirm again.");
       return;
@@ -206,7 +217,7 @@ export default function CashoutPage() {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
       signAndSubmit: (tx) => kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>),
     };
-    const r = await sendToAnchor(txn, confirmed, deps);
+    const r = await sendToAnchor(latest, confirmed, deps);
     refreshBalance();
     if (r.kind === "sent") {
       setSentHash(r.hash);
@@ -229,6 +240,7 @@ export default function CashoutPage() {
     setSession(null);
     setTxn(null);
     txnRef.current = null;
+    seenRef.current = null;
     setConfirmed(null);
     setSentHash(null);
     setProblem(null);
@@ -329,9 +341,13 @@ export default function CashoutPage() {
                 <dt>Memo ({txn.withdrawMemoType ?? "none"})</dt>
                 <dd className="break-all text-right font-mono">{txn.withdrawMemo ?? "not stated"}</dd>
               </dl>
-              <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={phase === "sending"} onClick={send}>
-                {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
-              </button>
+              {txn.status === "pending_user_transfer_start" || phase === "sending" ? (
+                <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={phase === "sending"} onClick={send}>
+                  {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
+                </button>
+              ) : (
+                <p className="text-sm">The anchor no longer takes a payment for this cash-out, and this page sent none. {statusText(txn)} Start again for a new one.</p>
+              )}
               <p className="text-xs opacity-80">Caracal pays the network fee. Your passkey confirms this one payment.</p>
               {phase === "confirm" && (
                 <button className="rounded-md border px-4 py-3 text-sm" onClick={startAgain}>
