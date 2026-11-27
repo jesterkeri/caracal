@@ -116,11 +116,22 @@ export async function startWithdraw(
     // The anchor may have received it: it is not safe to say nothing was started.
     throw new AnchorError("Caracal lost the connection while starting the cash-out. The anchor may or may not have started it. No USDC has been sent. Check your connection and try again.", "start");
   }
-  if (!res.ok) throw new AnchorError(`The test anchor would not start the withdrawal (it answered ${res.status}). No USDC has been sent.`, "start");
+  if (!res.ok) {
+    // A server error may come after the anchor recorded the withdrawal; a refusal (4xx) did not start one.
+    const maybe = res.status >= 500 ? " The anchor may have started it anyway; an unfinished one is never paid." : "";
+    throw new AnchorError(`The test anchor would not start the withdrawal (it answered ${res.status}).${maybe} No USDC has been sent.`, "start");
+  }
   const body = jsonOf(res.text);
   const o = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   if (typeof o.id !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(o.id)) throw new AnchorError("The test anchor's answer had no transaction id. No USDC has been sent.", "start");
-  return { id: o.id, url: checkInteractiveUrl(o.url) };
+  let url: string;
+  try {
+    url = checkInteractiveUrl(o.url);
+  } catch {
+    // The anchor has already recorded the withdrawal (it gave an id), so "nothing was started" would be false (adversary c24).
+    throw new AnchorError("The test anchor sent a form address Caracal does not trust, so it was not opened. The anchor has started a withdrawal, which stays unfinished and is never paid. No USDC has been sent.", "start");
+  }
+  return { id: o.id, url };
 }
 
 /** SEP-24 statuses that will not change again. */
@@ -134,6 +145,8 @@ export type AnchorTxn = {
   /** The asset amount_in is in (SEP-38 id), when the anchor says; absent means the asset the withdraw was started for. */
   amountInAsset?: string | null;
   amountOut: string | null;
+  /** The asset amount_out is in (SEP-38 id, e.g. iso4217:USD), when the anchor says (adversary c24). */
+  amountOutAsset?: string | null;
   feeTotal: string | null;
   /** The asset fee_details.total is in (SEP-38 id), when the anchor says; absent means the asset paid in. */
   feeAsset?: string | null;
@@ -159,6 +172,7 @@ export function parseTransaction(json: unknown): AnchorTxn {
     amountIn: str(t.amount_in),
     amountInAsset: str(t.amount_in_asset),
     amountOut: str(t.amount_out),
+    amountOutAsset: str(t.amount_out_asset),
     feeTotal: str(fee?.total),
     feeAsset: str(fee?.asset),
     withdrawAnchorAccount: str(t.withdraw_anchor_account),

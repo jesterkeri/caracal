@@ -46,6 +46,14 @@ function assetLabel(asset: string | null | undefined): string {
   return asset == null || asset === CASHOUT_ASSET.id ? "USDC" : `(in ${asset})`;
 }
 
+/** The unit of what arrives: a currency code for an iso4217 id, USDC for the cash-out asset, else the anchor's id (adversary c24). */
+function payoutUnit(asset: string | null | undefined): string {
+  if (asset == null) return "unit not stated";
+  if (asset === CASHOUT_ASSET.id) return "USDC";
+  const iso = /^iso4217:([A-Z]{3})$/.exec(asset);
+  return iso ? iso[1] : `in ${asset}`;
+}
+
 /**
  * What the person confirms on the confirm screen: where the payment goes (the anchor's account and memo) and
  * the anchor's quote (the amount it wants and in what, its fee and in what, and what arrives). Send is refused
@@ -61,6 +69,7 @@ function payTo(t: AnchorTxn): string {
     t.feeTotal ?? null,
     t.feeAsset ?? null,
     t.amountOut ?? null,
+    t.amountOutAsset ?? null,
   ]);
 }
 
@@ -482,7 +491,7 @@ export default function CashoutPage() {
                 <dd className="text-right">{txn.feeTotal === null ? "not stated" : `${txn.feeTotal} ${assetLabel(txn.feeAsset)}`}</dd>
                 </div>
                 <div className="kv-row kv-total [&>dd]:font-semibold">
-                <dt>Arrives</dt>
+                <dt>Arrives ({payoutUnit(txn.amountOutAsset)})</dt>
                 <dd className="text-right">{txn.amountOut ?? "not stated"} (simulated)</dd>
                 </div>
                 <div className="kv-row flex-col items-stretch gap-2">
