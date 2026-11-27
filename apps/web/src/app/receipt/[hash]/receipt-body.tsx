@@ -40,61 +40,86 @@ export async function ReceiptBody({ params }: { params: Promise<{ hash: string }
   return (
     <>
       {r.kind !== "found" ? (
-        <div className="flex flex-col gap-3 text-sm">
-          <p role="alert">{MESSAGES[r.kind]}</p>
+        <div className="flex flex-col gap-3">
+          <p role="alert" className="msg msg-bad">{MESSAGES[r.kind]}</p>
           {isTxHash(hash) && (
-            <a className="underline" href={explorerLink("tx", hash)}>
+            <a className="link small self-start" href={explorerLink("tx", hash)}>
               Look up this transaction on Stellar Expert
             </a>
           )}
         </div>
       ) : (
         <>
+          <div className="flex flex-col gap-8">
           {r.receipts.map((p, i) => (
-            <section key={i} className="flex flex-col gap-4">
-              <div>
-                <p className="text-3xl font-semibold">{formatUsdc(p.amount)} USDC</p>
-                <p className="text-sm opacity-80">
-                  paid for invoice <strong className="whitespace-pre-wrap">{p.invoiceRef}</strong>
+            <section key={i} className="flex flex-col gap-3 [section+&]:border-t [section+&]:border-[var(--c-line)] [section+&]:pt-8">
+              <div className="card card-hero gap-5">
+                <span aria-hidden className="flex size-10 items-center justify-center rounded-full bg-current/15 ring-1 ring-current/25">
+                  <span className="mb-1 block h-4 w-2 rotate-45 border-r-2 border-b-2 border-current" />
+                </span>
+                <div className="flex flex-col gap-1.5">
+                <p className="money-xl num break-words">{formatUsdc(p.amount)} USDC</p>
+                <p className="text-[0.9375rem] leading-snug opacity-85">
+                  paid for invoice <strong className="font-semibold whitespace-pre-wrap [overflow-wrap:anywhere]">{p.invoiceRef}</strong>
                 </p>
+                </div>
               </div>
-              <div className="flex flex-col gap-2 rounded-lg border p-4">
-                <p className="text-sm font-medium">How the freelancer&apos;s Caracal split divided it</p>
-                <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+              <div className="card gap-1">
+                <p className="h3">How the freelancer&apos;s Caracal split divided it</p>
+                <dl className="kv">
+                  <div className="kv-row">
                   <dt>Set aside for tax</dt>
-                  <dd className="text-right font-mono">{formatUsdc(p.tax)} USDC</dd>
+                  <dd className="num whitespace-nowrap">{formatUsdc(p.tax)} USDC</dd>
+                  </div>
+                  <div className="kv-row">
                   <dt>Savings goal</dt>
-                  <dd className="text-right font-mono">{formatUsdc(p.goal)} USDC</dd>
+                  <dd className="num whitespace-nowrap">{formatUsdc(p.goal)} USDC</dd>
+                  </div>
+                  <div className="kv-row">
                   <dt>Available to spend</dt>
-                  <dd className="text-right font-mono">{formatUsdc(p.spend)} USDC</dd>
+                  <dd className="num whitespace-nowrap">{formatUsdc(p.spend)} USDC</dd>
+                  </div>
                 </dl>
-                <p className="text-xs opacity-70">
+                <p className="notice small mt-2">
                   The amount set aside for tax follows the freelancer&apos;s own split setting. It is not a tax calculation, and not tax advice.
                 </p>
               </div>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-                <dt className="opacity-70">From</dt>
-                <dd className="break-all font-mono">{p.from}</dd>
-                <dt className="opacity-70">To</dt>
-                <dd className="break-all font-mono">{p.owner}</dd>
+              <div className="card">
+              <dl className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                <dt className="eyebrow">From</dt>
+                <dd className="addr addr-box">{p.from}</dd>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                <dt className="eyebrow">To</dt>
+                <dd className="addr addr-box">{p.owner}</dd>
+                </div>
               </dl>
-              <a className="text-sm underline" href={explorerLink("contract", p.splitContract)}>
+              <a className="link small self-start" href={explorerLink("contract", p.splitContract)}>
                 View the split contract
               </a>
+              </div>
             </section>
           ))}
+          </div>
           {/* Once per transaction: the fee and time belong to the whole transaction, not to each payment in it. */}
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="opacity-70">Network fee</dt>
+          <div className="card gap-4">
+          <dl className="kv">
+            <div className="kv-row [&>dd]:min-w-0">
+            <dt className="shrink-0">Network fee</dt>
             <dd>{feeText(r)}</dd>
-            <dt className="opacity-70">Recorded</dt>
-            <dd>
+            </div>
+            <div className="kv-row">
+            <dt className="shrink-0">Recorded</dt>
+            <dd className="min-w-0 num">
               {r.closedAt.toISOString().slice(0, 16).replace("T", " ")} UTC, ledger {r.ledger}
             </dd>
+            </div>
           </dl>
-          <a className="text-sm underline" href={explorerLink("tx", r.hash)}>
+          <a className="btn btn-secondary btn-block" href={explorerLink("tx", r.hash)}>
             View the transaction on Stellar Expert
           </a>
+          </div>
         </>
       )}
     </>
