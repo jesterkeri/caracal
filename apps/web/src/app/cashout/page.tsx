@@ -521,7 +521,7 @@ export default function CashoutPage() {
             <div className="card">
               <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn, sendConfirmed)}</p>
               {sentHash && (
-                <a className="addr link" href={explorerLink("tx", sentHash)}>
+                <a className="addr link" href={explorerLink("tx", sentHash)} target="_blank" rel="noopener noreferrer">
                   USDC payment on Stellar: {sentHash}
                 </a>
               )}

@@ -256,7 +256,7 @@ describe("adversary c1: the cash-out page, end to end with a working hook runtim
     void clickButton(rt.tree, /Send 2 USDC/);
     await tick(50);
     expect(world.kit.signAndSubmit).toHaveBeenCalledTimes(1);
-    expect(text(rt)).toContain("The anchor is waiting for your USDC");
+    expect(text(rt)).toContain("was confirmed on Stellar, and the anchor has not recorded it yet"); // c20: a confirmed payment is not one the anchor still waits for
     world.txn.status = "completed";
     await tick(3100);
     expect(text(rt)).toMatch(/marked the withdrawal complete/);

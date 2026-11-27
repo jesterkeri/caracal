@@ -183,7 +183,11 @@ export function statusText(t: Pick<AnchorTxn, "status" | "message">, sent = fals
     case "incomplete":
       return "Waiting for you to finish the anchor's form.";
     case "pending_user_transfer_start":
-      return "The anchor is waiting for your USDC.";
+      // A payment this page saw confirmed on Stellar is not one the anchor is still waiting for: it has not
+      // recorded it yet. Say so, and what to do if it never does (adversary c20).
+      return sent
+        ? "Your USDC payment (below) was confirmed on Stellar, and the anchor has not recorded it yet. That can take a few minutes. Do not send it again. If it stays like this, ask the anchor about it with the transaction id."
+        : "The anchor is waiting for your USDC.";
     case "pending_user_transfer_complete":
     case "pending_anchor":
       return "The anchor received your USDC and is processing the withdrawal.";
