@@ -26,10 +26,12 @@
 // monotonic clock, checked again just before sending), or not at all
 // (refused, "Nothing was sent"), and never once its caller has gone. A wallet
 // deployment is forwarded with its authorisation re-signed to expire
-// DEPLOY_AUTH_LEDGERS after the simulation's ledger (deploy-auth.ts), so it
-// cannot land in a later ledger. That is a bound in ledgers, not in time (a
-// slow network closes them late): the wallet page waits for both before
-// "start a new one anyway" (creation-marker.ts).
+// DEPLOY_AUTH_LEDGERS after the simulation's ledger and never after the
+// ledger the wallet page named in `closeBy` (deploy-auth.ts); one that arrives
+// with the network already at or past `closeBy` is refused before sending.
+// The page records `closeBy` before it sends, so even after a lost answer it
+// knows the attempt cannot land once the network has passed that ledger
+// (creation-marker.ts): a bound shared with the relay, not a guess about lag.
 //
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
@@ -44,7 +46,7 @@ import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay
 import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, isTxHash, safeTransactionId, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
-import { DEPLOY_AUTH_LEDGERS, withShortDeployAuth } from "@/lib/relay/deploy-auth";
+import { closeByOf, deployAuthExpiry, withShortDeployAuth } from "@/lib/relay/deploy-auth";
 import { SEND_DEADLINE_MS } from "@/lib/relay/limits";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
@@ -135,6 +137,8 @@ export async function POST(request: Request) {
         ? refuse("The fee sponsor is busy. Try again in a minute.", 503)
         : null;
   if (!perIp.take(clientKey(request, process.env))) return refuse("Too many requests. Wait a minute.", 429);
+  const closeBy = closeByOf(request.url);
+  if (closeBy === "invalid") return refuse("The wallet creation's last ledger is not a valid ledger number", 400);
   if (!perInstance.take("all")) return refuse("The fee sponsor is busy. Try again shortly.", 429);
 
   let text: string | null;
@@ -229,9 +233,13 @@ export async function POST(request: Request) {
       const sent = await submitToChannels(channels(channelsKey!, channelsUrl), built.xdr, channelsTimeout());
       return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
     }
+    const expiry = deployAuthExpiry(built.latestLedger, closeBy);
+    if (expiry === null) {
+      return refuse("This wallet creation reached the fee sponsor after the last ledger the page allowed for it", 409);
+    }
     let forwarded: { func: string; auth: string[] };
     try {
-      forwarded = await withShortDeployAuth(verdict.body, built.latestLedger + DEPLOY_AUTH_LEDGERS, NETWORK.passphrase);
+      forwarded = await withShortDeployAuth(verdict.body, expiry, NETWORK.passphrase);
     } catch (e) {
       console.error("relay could not re-sign the deployment:", e instanceof Error ? e.message : String(e));
       return refuse("Caracal could not prepare this wallet creation", 400);

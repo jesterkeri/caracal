@@ -24,6 +24,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WALLET_OWNER_KEY, KNOWN_WALLETS_KEY } from "../src/lib/auth/wallet-binding";
 import { CREATION_STARTED_AT_KEY, CREATION_UNCONFIRMED_KEY } from "../src/lib/auth/creation-marker";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function clickFor(node: unknown, text: string): (() => unknown) | null {
@@ -94,7 +95,7 @@ function browser(local: Map<string, string>) {
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
     };
     vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-    vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
+    vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(kit)) }));
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
     vi.stubGlobal("window", {

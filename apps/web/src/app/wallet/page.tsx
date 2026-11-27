@@ -16,6 +16,7 @@ import {
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
+import { withCreationCloseBy } from "@/lib/stellar/creation-close-by";
 import { passkeyName } from "@/lib/stellar/passkey-name";
 import { CREATION_CLOSE_LEDGERS, CREATION_HEARTBEAT_MS, CREATION_SETTLE_MS, creationMarker } from "@/lib/auth/creation-marker";
 import { browserLocks, withCreationLock } from "@/lib/auth/creation-lock";
@@ -72,7 +73,8 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
 /** smart-account-kit 0.10.0 errors raised only after it found a contract at the passkey's address. */
 const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousError", "WalletOwnershipError", "WalletCodeNotAcceptedError"]);
 
-const { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor, closeLedger, recordCloseLedger } = creationMarker(browserStore);
+const { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor, closeLedger, recordCloseLedger, possibleWalletsFor, rememberPossibleWallet } =
+  creationMarker(browserStore);
 
 // An empty answer does not prove there is no wallet: an RPC may leave out a
 // wallet whose data was archived (wallet-lookup.ts). The text says only that.
@@ -112,7 +114,15 @@ const CREATION_TOO_RECENT =
 const LEDGER_UNREAD =
   "Caracal could not read the Stellar network just now, so it cannot tell yet whether the earlier attempt can still finish. Nothing was created. Try again in a minute.";
 const creationClosing = (ledger: number) =>
-  `The earlier attempt can no longer be sent, but it could still land on the network until ledger ${ledger} has closed (usually about 2 minutes, longer if the network is slow). Nothing was created. Try again after that.`;
+  `The earlier attempt could still land on the network until ledger ${ledger} has closed (about 3 minutes after it started, longer if the network is slow). Nothing was created. Try again after that.`;
+const CLOSE_LEDGER_UNKNOWN =
+  "This browser holds an earlier wallet attempt whose last possible ledger was not recorded (it was started by an older version of Caracal, or this browser's storage was cleared or blocked), so Caracal cannot tell whether it can still land and will not start another. Use \"I already have a wallet\" to check. If you are sure no wallet was made, clearing this site's data in your browser removes the record.";
+const NETWORK_UNREAD_BEFORE_CREATE =
+  "Caracal could not read the Stellar network, so nothing was created or sent. Check your connection and try again.";
+const earlierNotFound = (wallet: string) =>
+  `The earlier attempt can no longer land, and its wallet ${wallet} was not found on Stellar testnet. That does not prove it was not made: the network may not show a wallet whose data has expired. Use "I already have a wallet" with that passkey to check. If you make a new wallet anyway and the first one exists, you will have two; Caracal keeps showing the first address here.`;
+const possiblyMade = (wallets: string[]) =>
+  `An earlier attempt may have made ${wallets.length === 1 ? "the wallet" : "the wallets"} ${wallets.join(", ")}. The network did not show ${wallets.length === 1 ? "it" : "them"}, which does not prove ${wallets.length === 1 ? "it does" : "they do"} not exist. If you made ${wallets.length === 1 ? "it" : "one"} with a passkey on this device, "I already have a wallet" opens it.`;
 const attemptLanded = (wallet: string) =>
   `The earlier attempt created your wallet after all: ${wallet}. Use "I already have a wallet" to open it with your passkey.`;
 
@@ -169,7 +179,16 @@ type State =
   // offered: a second try could make a second passkey and an orphan wallet.
   // checkFirst: a creation whose outcome is unknown; the page says to check
   // with Connect before creating another.
-  | { kind: "error"; message: string; createAllowed?: boolean; checkFirst?: boolean; remembered?: string; storageUnread?: boolean };
+  | {
+      kind: "error";
+      message: string;
+      createAllowed?: boolean;
+      checkFirst?: boolean;
+      remembered?: string;
+      storageUnread?: boolean;
+      /** The earlier attempt's wallet, not found: a new wallet only as a choice made knowing it may exist. */
+      notFound?: string;
+    };
 
 /** A state's remembered wallet, or that this browser's record of it could not be read. */
 function recordOf(id: string): { remembered?: string; storageUnread?: true } {
@@ -318,7 +337,7 @@ export default function WalletPage() {
    * anyway: the person chose to start a new wallet after an unknown outcome.
    * secondTo: the person chose a second wallet, having been shown this one.
    */
-  async function create(choice: { anyway?: boolean; secondTo?: string } = {}) {
+  async function create(choice: { anyway?: boolean; secondTo?: string; despiteNotFound?: string } = {}) {
     if (!account) return; // a wallet is always bound to its signed-in owner
     const me = account;
     const out = await withCreationLock(browserLocks(), () => createHoldingLock(me, choice));
@@ -331,11 +350,16 @@ export default function WalletPage() {
   }
 
   /**
-   * True once the latest attempt can no longer land and did not make this
-   * account's wallet; otherwise what to tell the person. Called only after the
-   * time wait, when the relay can no longer send the attempt.
+   * True once the latest attempt can no longer land and the network shows no
+   * wallet of it; { notFound } when its wallet's address is known and the
+   * network did not show it (which does not prove it was not made); otherwise
+   * what to tell the person. Called only after the time wait.
    */
-  async function attemptSettled(me: Account): Promise<true | string> {
+  async function attemptSettled(me: Account): Promise<true | { notFound: string } | string> {
+    // The close ledger was recorded before the attempt was sent, and the relay
+    // let it land no later (creation-marker.ts). Without it nothing bounds it.
+    const close = closeLedger();
+    if (close === null) return CLOSE_LEDGER_UNKNOWN;
     let rpc: unknown;
     try {
       rpc = (await getKit()).rpc;
@@ -344,11 +368,7 @@ export default function WalletPage() {
     }
     const latest = await latestLedger(rpc);
     if (latest === null) return LEDGER_UNREAD;
-    const close = closeLedger();
-    if (close === null) {
-      recordCloseLedger(latest + CREATION_CLOSE_LEDGERS);
-      return creationClosing(latest + CREATION_CLOSE_LEDGERS);
-    }
+    // An RPC can lag the network but never run ahead of it: a later ledger here proves the network passed `close`.
     if (latest <= close) return creationClosing(close);
     // The attempt can no longer land. If it made a wallet, that is the one to use.
     const pending = pendingWalletFor(me.id);
@@ -356,11 +376,15 @@ export default function WalletPage() {
       const status = await walletStatus(rpc as LedgerReader | undefined, pending);
       if (status === "present" || status === "archived") return attemptLanded(pending);
       if (status === "unknown") return LEDGER_UNREAD;
+      return { notFound: pending };
     }
     return true;
   }
 
-  async function createHoldingLock(me: Account, { anyway = false, secondTo }: { anyway?: boolean; secondTo?: string }) {
+  async function createHoldingLock(
+    me: Account,
+    { anyway = false, secondTo, despiteNotFound }: { anyway?: boolean; secondTo?: string; despiteNotFound?: string },
+  ) {
     if (anyway) {
       // Only once the last attempt cannot still finish (creation-marker.ts):
       // first the relay can no longer send it (a wait in time), then its
@@ -371,9 +395,17 @@ export default function WalletPage() {
         return;
       }
       const settled = await attemptSettled(me);
-      if (settled !== true) {
+      if (typeof settled === "string") {
         setState({ kind: "error", message: settled, checkFirst: !settled.startsWith("The earlier attempt created"), remembered: secondTo });
         return;
+      }
+      if (settled !== true) {
+        // Not found is not proof it was not made: the person chooses, told so, and the address is kept.
+        if (despiteNotFound !== settled.notFound) {
+          setState({ kind: "error", message: earlierNotFound(settled.notFound), checkFirst: true, remembered: secondTo, notFound: settled.notFound });
+          return;
+        }
+        rememberPossibleWallet(me.id, settled.notFound);
       }
       markCreation(me.id, false);
     }
@@ -420,6 +452,15 @@ export default function WalletPage() {
       nothingMade(failureText(e));
       return;
     }
+    // The last ledger this attempt may land in, recorded before anything is
+    // sent and sent to the relay, which keeps the attempt within it
+    // (creation-marker.ts CREATION_CLOSE_LEDGER_KEY).
+    const readAt = await latestLedger(kit.rpc);
+    if (readAt === null) {
+      nothingMade(NETWORK_UNREAD_BEFORE_CREATE);
+      return;
+    }
+    const closeBy = readAt + CREATION_CLOSE_LEDGERS;
     // The kit announces credentialCreated once the passkey exists, before the
     // wallet is built or sent. A failure before it sent nothing, whatever its
     // error; one after it may follow a deploy (the kit saves its session after
@@ -435,6 +476,7 @@ export default function WalletPage() {
       markCreation(me.id, true, typeof wallet === "string" ? wallet : undefined);
     });
     markCreation(me.id, true);
+    recordCloseLedger(closeBy);
     // While the attempt runs, its start time is renewed, so if this tab
     // closes mid-attempt the wait counts from its last sign of life.
     const beat = setInterval(() => markCreation(me.id, true), CREATION_HEARTBEAT_MS);
@@ -444,7 +486,7 @@ export default function WalletPage() {
     window.addEventListener?.("pagehide", leaving);
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
     try {
-      r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
+      r = await withCreationCloseBy(kit, closeBy, () => kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true }));
     } catch (e) {
       const message = failureText(e);
       // An unknown outcome: the wait counts from now, when it ended here.
@@ -552,6 +594,9 @@ export default function WalletPage() {
     }
   }
 
+  // Wallets an earlier attempt may have made (not found, which proves nothing), except the one open now.
+  const earlier = account ? possibleWalletsFor(account.id).filter((w) => !(state.kind === "connected" && state.contractId === w)) : [];
+
   return (
     <main className="page">
       <h1 className="h1">Your Caracal wallet</h1>
@@ -582,6 +627,7 @@ export default function WalletPage() {
       </p>
 
       {state.kind === "busy" && <p className="msg msg-info">{state.label}...</p>}
+      {account && earlier.length > 0 && <p className="msg msg-unsure">{possiblyMade(earlier)}</p>}
 
       {account && (state.kind === "idle" || state.kind === "error") && (
         <div className="card">
@@ -629,11 +675,21 @@ export default function WalletPage() {
           {(state.kind === "error" || state.kind === "idle") && state.checkFirst && !(state.kind === "error" && state.message.includes("check with Connect")) && (
             <p className="msg msg-unsure">{WALLET_MAYBE_EXISTS}</p>
           )}
-          {(state.kind === "error" || state.kind === "idle") && state.checkFirst && (
+          {(state.kind === "error" || state.kind === "idle") && state.checkFirst && !(state.kind === "error" && state.notFound) && (
             // The way out when "I already have a wallet" found nothing: the
             // person says so, and only once the last attempt cannot still finish.
             <button className="link small self-start text-left" onClick={createAnyway}>
               No wallet found? Start a new one anyway
+            </button>
+          )}
+          {state.kind === "error" && state.notFound && (
+            // The earlier attempt's wallet was not found, which does not prove
+            // it was not made: a new wallet only as a choice made knowing that.
+            <button
+              className="link small self-start text-left"
+              onClick={() => create({ anyway: true, secondTo: state.remembered, despiteNotFound: state.notFound })}
+            >
+              Make a new wallet anyway (if the earlier one exists, you will have two)
             </button>
           )}
         </div>

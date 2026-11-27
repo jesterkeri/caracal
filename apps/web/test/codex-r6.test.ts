@@ -150,7 +150,7 @@ async function walletPage(getItem: (k: string) => string | null, states: unknown
   };
   const kit = { events: { on: () => () => {} }, disconnect: async () => {}, connectWallet: async () => null, createWallet: vi.fn(async () => { throw new Error("The operation either timed out or was not allowed."); }), rpc: undefined as unknown, ...kitExtra };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {
@@ -200,6 +200,7 @@ describe("Codex R6 #3: the account's wallet record cannot be read", () => {
 
 // ---- Codex R6 #2: an empty getLedgerEntries answer is not proof that a wallet does not exist ----
 import { walletStatus } from "../src/lib/stellar/wallet-lookup";
+import { withLedger } from "./fake-ledger";
 
 describe("Codex R6 #2: an archived wallet the RPC leaves out", () => {
   it("an answer with no entry is 'not-found' (proves neither), not 'absent'", async () => {
@@ -253,12 +254,16 @@ async function escapeAfterFourMinutes(network: { latest: number | Error }, recor
 }
 
 describe("Codex R6 #1: a deployment can land after the 3-minute wait if ledgers are slow", () => {
-  it("after 3 minutes the first press records a close ledger (latest + 24) and creates nothing", async () => {
+  // Superseded by Codex R7 #1 (decisions row "Codex R7"): the close ledger is no longer set on the
+  // escape press from an RPC read (Codex showed an RPC's lag is not a bound). It is recorded BEFORE
+  // sending and enforced by the relay. An attempt with no recorded close ledger therefore has no
+  // proven bound, and the escape refuses it instead of recording one. The R6 promise kept: after 3
+  // minutes with an unknown bound, the press creates nothing.
+  it("after 3 minutes an attempt with no recorded close ledger creates nothing and records none", async () => {
     const r = await escapeAfterFourMinutes({ latest: 1000 });
     expect(r.created).toBe(0);
-    expect(r.local.get("caracal.creationCloseLedger")).toBe("1024");
-    expect(r.last.message).toMatch(/until ledger 1024 has closed/);
-    expect(r.last.message).toMatch(/Nothing was created/);
+    expect(r.local.has("caracal.creationCloseLedger")).toBe(false);
+    expect(r.last.message).toMatch(/last possible ledger was not recorded/);
   });
 
   it("a stalled network (close ledger not yet reached) still creates nothing, however long it has been", async () => {
