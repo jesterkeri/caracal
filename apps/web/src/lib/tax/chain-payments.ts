@@ -13,6 +13,7 @@
 
 import { Account, Address, Contract, StrKey, TransactionBuilder, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { NETWORK } from "../stellar/config";
+import { readLimitedText } from "./read-limited";
 
 /** The chain could not be read, or answered with something that cannot be relied on. */
 export class ChainReadError extends Error {}
@@ -329,6 +330,8 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
 type Fetch = (url: string, init: { method: "POST"; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<Response>;
 
 const RPC_TIMEOUT_MS = 20_000;
+/** Largest RPC answer read (a page of 200 events is well under this). The download stops past it. */
+const MAX_RPC_BODY_BYTES = 10_000_000;
 
 /** A reader over a Soroban JSON-RPC endpoint. */
 export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, passphrase: string = NETWORK.passphrase): ChainReader {
@@ -342,7 +345,9 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
         signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`status ${res.status}`);
-      body = await res.json();
+      const text = await readLimitedText(res, MAX_RPC_BODY_BYTES);
+      if (text === null) throw new Error("answer too large");
+      body = JSON.parse(text);
     } catch {
       throw new ChainReadError("Caracal could not reach the Stellar RPC.");
     }

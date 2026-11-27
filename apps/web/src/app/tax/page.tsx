@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { readSignInState } from "@/lib/auth/account";
+import { followAccount, readSignInState } from "@/lib/auth/account";
 import { browserStore, rememberedWallet } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
@@ -29,12 +29,22 @@ export default function TaxPage() {
 
   useEffect(() => {
     let gone = false;
+    let unfollow = () => {};
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
-      const now = await readSignInState(supabaseBrowser().auth);
+      const auth = supabaseBrowser().auth;
+      const now = await readSignInState(auth);
       if (now.kind === "signed-out") return window.location.replace("/signin");
       if (now.kind === "unverified") throw new Error("the sign-in could not be verified");
       if (gone) return;
+      // Another tab signing out, or signing in as someone else, ends this page's account: nothing of this
+      // account stays on screen (no wallet, no estimate, no answer still on its way) and the page loads again.
+      unfollow = followAccount(auth, now.id, () => {
+        asked++;
+        setRun({ kind: "idle" });
+        setWho({ kind: "checking" });
+        window.location.reload();
+      });
       const wallet = rememberedWallet(browserStore, now.id);
       setWho(wallet ? { kind: "ready", wallet } : { kind: "no-wallet" });
     })().catch((e: unknown) => {
@@ -43,6 +53,7 @@ export default function TaxPage() {
     });
     return () => {
       gone = true;
+      unfollow();
     };
   }, []);
 

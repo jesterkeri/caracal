@@ -15,13 +15,15 @@
 // payment is refused, never valued with a neighbouring day's rate.
 
 import type { FxQuote } from "@caracal/tax";
+import { readLimitedText } from "./read-limited";
 
 export const CBN_NFEM_DATA_URL = "https://www.cbn.gov.ng/api/GetAllNFEM_Rates";
 /** The page a person can open to see the same table. It is the quote's sourceUrl. */
 export const CBN_RATES_PAGE_URL = "https://www.cbn.gov.ng/rates/ExchRateByCurrency.html";
 export const CBN_PROVIDER = "CBN";
 
-const MAX_BODY_CHARS = 5_000_000;
+/** Largest CBN answer read. The download stops past it. */
+const MAX_BODY_BYTES = 5_000_000;
 const FETCH_TIMEOUT_MS = 20_000;
 
 /** The rate source could not be read, or answered with something that cannot be trusted. */
@@ -87,12 +89,13 @@ export async function fetchNfemTable(fetchFn: FetchLike = fetch as FetchLike): P
     const res = await fetchFn(CBN_NFEM_DATA_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { accept: "application/json" } });
     if (!res.ok) throw new RateSourceError(`The CBN rate list answered with status ${res.status}.`);
     if (!(res.headers.get("content-type") ?? "").includes("json")) throw new RateSourceError("The CBN rate list did not answer with JSON.");
-    text = await res.text();
+    const read = await readLimitedText(res, MAX_BODY_BYTES);
+    if (read === null) throw new RateSourceError("The CBN rate list was larger than expected.");
+    text = read;
   } catch (e) {
     if (e instanceof RateSourceError) throw e;
     throw new RateSourceError("Caracal could not reach the CBN rate list.");
   }
-  if (text.length > MAX_BODY_CHARS) throw new RateSourceError("The CBN rate list was larger than expected.");
   let json: unknown;
   try {
     json = JSON.parse(text);
