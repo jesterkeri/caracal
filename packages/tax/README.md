@@ -79,7 +79,7 @@ The result is `{ status: "refused", reasons: [...], disclaimer }` with no number
 - An account's `coverageFrom` is later than the later of the tax year start and its `openedAt`. Being synced today proves nothing about last March.
 - An account's chronology is inconsistent: `openedAt` after `asOf`, `coverageFrom` after `asOf`, `lastSyncedAt` before `openedAt`, or `lastSyncedAt` before `coverageFrom`. Each reason names the account and the field.
 - An account has a gap that overlaps the tax year, or a gap whose `from` is after its `to`. A gap is `[from, to)`: `to` is the instant history resumes, the same meaning as `coverageFrom`, so a gap that only touches the year at one end, or an empty gap (`from` equal to `to`), does not overlap it.
-- Two income entries share the same account, `txHash` (ignoring hex case, surrounding spaces and a `0x` prefix), asset and amount (compared as numbers, so `10000` and `10000.0` match): they look like the same payment listed twice.
+- Two income entries share the same account, `txHash` (ignoring hex case, surrounding spaces and a `0x` prefix), asset and amount (compared as numbers, so `10000` and `10000.0` match), and the same `paymentRef` (or none): they look like the same payment listed twice. Two entries whose `paymentRef` strings differ (two invoices paid in one transaction) are two payments.
 - There are no linked accounts.
 - An entry's `accountId` is not one of the linked accounts, or an entry id appears twice.
 - An in-year incoming entry has `kind: "other"` (not classified yet).

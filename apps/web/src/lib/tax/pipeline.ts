@@ -148,6 +148,8 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     kind: isOwnPayment(p, req.wallet) ? "own_transfer" : "income",
     asset: "USDC",
     amount: unitsToDecimal(p.units),
+    // The invoice id the split event carries: the contract takes one deposit per invoice.
+    paymentRef: p.invoiceRef,
     fx: { statutory: quotes.get(lagosDate(p.occurredAt)) ?? null, economic: null },
   }));
   const account: Account = {

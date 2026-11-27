@@ -375,13 +375,14 @@ function estimateChecked(input: EstimateInput, rulesOverride?: Rules): EstimateR
   }
   // The same on-chain payment listed under two entry ids would be counted
   // twice. One transaction paying the same account the same amount of the same
-  // asset twice is rare, and refusing it is the safe failure.
+  // asset twice is rare, and refusing it is the safe failure, unless the two
+  // carry different on-chain references (two invoices paid in one batch).
   const paymentKeys = new Map<string, string>();
   for (const e of input.entries) {
     if (e.kind !== "income") continue;
     // Compare the amount as a number (10000 = 10000.0) and the hash ignoring
     // hex case, so formatting cannot hide a duplicate.
-    const k = JSON.stringify([e.accountId, String(e.txHash).trim().toLowerCase().replace(/^0x/, ""), e.asset, canonicalAmount(e.amount)]);
+    const k = JSON.stringify([e.accountId, String(e.txHash).trim().toLowerCase().replace(/^0x/, ""), e.asset, canonicalAmount(e.amount), typeof e.paymentRef === "string" ? e.paymentRef : null]);
     const first = paymentKeys.get(k);
     if (first !== undefined) {
       reasons.push(`Entries ${first} and ${e.id} have the same transaction (${e.txHash}), account, asset and amount, so they look like the same payment listed twice.`);

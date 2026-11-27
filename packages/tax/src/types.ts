@@ -18,6 +18,12 @@ export type LedgerEntry = {
   asset: string;
   amount: string; // decimal, up to 7 dp
   fx: { statutory: FxQuote | null; economic: FxQuote | null };
+  /**
+   * A reference the payment itself carries on chain (a Caracal invoice id), if any. Two payments in one
+   * transaction with the same account, asset and amount but different references are two payments; the
+   * same payment listed twice carries the same reference.
+   */
+  paymentRef?: string;
 };
 
 export type Account = {
