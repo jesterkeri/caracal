@@ -51,6 +51,11 @@ function payTo(t: AnchorTxn): string {
   return JSON.stringify([t.withdrawAnchorAccount ?? null, t.withdrawMemoType ?? null, t.withdrawMemo ?? null]);
 }
 
+/** Statuses whose text tells the person to open the anchor's form. */
+const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
+/** Non-final statuses where waiting is the right thing and the status text says so. */
+const WAIT_STATUSES = new Set(["pending_user_transfer_start", "pending_user_transfer_complete", "pending_anchor", "pending_stellar", "pending_external", ...FORM_STATUSES]);
+
 export default function CashoutPage() {
   const [boot, setBoot] = useState<Boot>({ kind: "loading" });
   const [toml, setToml] = useState<AnchorToml | null>(null);
@@ -405,6 +410,23 @@ export default function CashoutPage() {
               <p className="addr muted">Anchor transaction id: {txn.id}</p>
               {txn.status === "completed" && txn.amountOut && <p>The anchor recorded {txn.amountOut} as paid out (simulated).</p>}
             </div>
+          )}
+          {txn && phase === "watching" && !done && session && FORM_STATUSES.has(txn.status) && (
+            <a className="btn btn-secondary btn-block" href={session.url} target="_blank" rel="noopener noreferrer">
+              Open the anchor&apos;s form
+            </a>
+          )}
+          {txn && phase === "watching" && !done && !FORM_STATUSES.has(txn.status) && !WAIT_STATUSES.has(txn.status) && (
+            <p className="msg msg-unsure">
+              {session && txn.status === "incomplete"
+                ? "The anchor still shows its form as unfinished. Open the form to finish it. This page sends no second payment."
+                : "Caracal does not know what to do with this status. Check with the anchor using the transaction id above. This page sends no second payment."}
+            </p>
+          )}
+          {txn && phase === "watching" && !done && session && txn.status === "incomplete" && (
+            <a className="btn btn-secondary btn-block" href={session.url} target="_blank" rel="noopener noreferrer">
+              Open the anchor&apos;s form
+            </a>
           )}
           {pollNote && <p className="msg msg-unsure">{pollNote}</p>}
           {canStartAnother && (

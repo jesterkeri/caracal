@@ -75,6 +75,10 @@ export function checkChallenge(entriesBase64: string, wallet: string, toml: Anch
   }
   const own = entries.map(walletOf).flatMap((w, i) => (w === wallet ? [i] : []));
   if (own.length !== 1) throw new AnchorError("The anchor's sign-in challenge is not addressed to your wallet. Nothing was signed.", "sign-in");
+  // SEP-45: the client's entry is handed over unsigned. One that already carries a signature is the anchor's malformed challenge.
+  if (entries[own[0]!]!.credentials().address().signature().switch().name !== "scvVoid") {
+    throw new AnchorError("The anchor's sign-in challenge arrived with the wallet's entry already signed, which a sign-in challenge must not be. Refused as the anchor's. Nothing was signed or sent.", "sign-in");
+  }
   for (const e of entries) {
     const root = e.rootInvocation();
     const f = root.function();
