@@ -553,12 +553,12 @@ export default function WalletPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Your Caracal wallet</h1>
+    <main className="page">
+      <h1 className="h1">Your Caracal wallet</h1>
       {account && (
-        <p className="text-sm">
+        <p className="small muted -mt-2">
           Signed in as <strong>{account.email ?? "your Google account"}</strong>.{" "}
-          <button className="underline" onClick={signOut}>
+          <button className="link" onClick={signOut}>
             Sign out
           </button>
         </p>
@@ -567,28 +567,28 @@ export default function WalletPage() {
         // Sign-in could not be checked; a session may still be stored here, so
         // signing out stays possible (it works without reaching Supabase).
         // What failed is shown too, including a Sign out that did not finish.
-        <div className="flex flex-col gap-2 text-sm">
-          <p className="text-red-600">{state.message}</p>
-          <p>
-            <button className="underline" onClick={signOut}>
+        <div className="flex flex-col gap-3">
+          <p className="msg msg-bad">{state.message}</p>
+          <p className="small">
+            <button className="link" onClick={signOut}>
               Sign out of this browser
             </button>
           </p>
         </div>
       )}
-      <p className="text-sm opacity-80">
+      <p className="notice">
         Your wallet is a smart contract on Stellar testnet, controlled by a passkey on this device.
         There is no seed phrase. Caracal pays the network fee and can never move your money.
       </p>
 
-      {state.kind === "busy" && <p className="text-sm">{state.label}...</p>}
+      {state.kind === "busy" && <p className="msg msg-info">{state.label}...</p>}
 
       {account && (state.kind === "idle" || state.kind === "error") && (
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm">
+        <div className="card">
+          <label className="field">
             Your name, as the passkey prompt shows it (a short name: longer ones are cut)
             <input
-              className="rounded-md border px-3 py-2 text-base"
+              className="input"
               maxLength={24}
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -597,42 +597,42 @@ export default function WalletPage() {
           </label>
           {createOffered(state) && (
             // Hidden while a wallet may already exist: a second try would make another.
-            <button className="rounded-md bg-black px-4 py-3 text-white" onClick={() => create()}>
+            <button className="btn btn-primary btn-block" onClick={() => create()}>
               Create wallet with a passkey
             </button>
           )}
-          <button className="rounded-md border px-4 py-3" onClick={connect}>
+          <button className="btn btn-secondary btn-block" onClick={connect}>
             I already have a wallet
           </button>
-          {state.kind === "error" && <p className="text-sm text-red-600">{state.message}</p>}
+          {state.kind === "error" && <p className="msg msg-bad">{state.message}</p>}
           {state.remembered && !state.checkFirst && !createOffered(state) && (
             // This account connected a wallet on this browser before: connect
             // that one first; a new wallet only as an explicit choice.
-            <div className="flex flex-col gap-2 text-sm">
+            <div className="msg msg-info flex flex-col gap-2">
               <p>
-                This browser was last connected to your wallet <span className="break-all font-mono">{state.remembered}</span>. Use &quot;I
+                This browser was last connected to your wallet <span className="addr">{state.remembered}</span>. Use &quot;I
                 already have a wallet&quot; to open it with your passkey.
               </p>
-              <button className="text-left underline" onClick={() => create({ secondTo: state.remembered })}>
+              <button className="link self-start text-left" onClick={() => create({ secondTo: state.remembered })}>
                 Make a second, new wallet instead (your first wallet stays as it is)
               </button>
             </div>
           )}
           {state.storageUnread && !state.checkFirst && !createOffered(state) && (
-            <div className="flex flex-col gap-2 text-sm">
-              <p>{KNOWN_WALLETS_UNREAD}</p>
-              <button className="text-left underline" onClick={() => create()}>
+            <div className="flex flex-col gap-2">
+              <p className="msg msg-unsure">{KNOWN_WALLETS_UNREAD}</p>
+              <button className="link self-start text-left" onClick={() => create()}>
                 Make a new wallet anyway (if this account already has one, this makes a second)
               </button>
             </div>
           )}
           {(state.kind === "error" || state.kind === "idle") && state.checkFirst && !(state.kind === "error" && state.message.includes("check with Connect")) && (
-            <p className="text-sm">{WALLET_MAYBE_EXISTS}</p>
+            <p className="msg msg-unsure">{WALLET_MAYBE_EXISTS}</p>
           )}
           {(state.kind === "error" || state.kind === "idle") && state.checkFirst && (
             // The way out when "I already have a wallet" found nothing: the
             // person says so, and only once the last attempt cannot still finish.
-            <button className="text-sm underline" onClick={createAnyway}>
+            <button className="link small self-start text-left" onClick={createAnyway}>
               No wallet found? Start a new one anyway
             </button>
           )}
@@ -640,17 +640,19 @@ export default function WalletPage() {
       )}
 
       {state.kind === "connected" && (
-        <div className="flex flex-col gap-3 text-sm">
+        <div className="card">
+          <div className="eyebrow">
           <p>Wallet address:</p>
-          <a className="break-all font-mono underline" href={explorerLink("contract", state.contractId)}>
+          </div>
+          <a className="addr addr-box block underline underline-offset-4" href={explorerLink("contract", state.contractId)}>
             {state.contractId}
           </a>
           {state.txHash && (
-            <a className="underline" href={explorerLink("tx", state.txHash)}>
+            <a className="link small self-start" href={explorerLink("tx", state.txHash)}>
               Deployment transaction (fee paid by the sponsor)
             </a>
           )}
-          <button className="rounded-md border px-4 py-3" onClick={disconnect}>
+          <button className="btn btn-secondary btn-block" onClick={disconnect}>
             Disconnect
           </button>
         </div>
