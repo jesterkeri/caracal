@@ -11,7 +11,8 @@
 // payments, and the tax engine refuses when it does not cover the tax year.
 // Nothing here pretends the window is longer.
 
-import { Address, StrKey, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Account, Address, Contract, StrKey, TransactionBuilder, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { NETWORK } from "../stellar/config";
 
 /** The chain could not be read, or answered with something that cannot be relied on. */
 export class ChainReadError extends Error {}
@@ -46,6 +47,12 @@ export type ChainReader = {
   instance(contract: string): Promise<InstanceCode>;
   events(contract: string, from: { startLedger: number } | { cursor: string }, limit: number): Promise<EventsPage>;
   transaction(hash: string): Promise<{ status: string; ledger: number; createdAt: string }>;
+  /**
+   * What the split contract holds of the token, and the sum of its three pots
+   * (tax, goal, spend), both read now. A real reader always has it. When it is
+   * absent (a test double that does not model balances) the check is skipped.
+   */
+  holdings?(contract: string, token: string): Promise<{ held: bigint; pots: bigint }>;
 };
 
 /** One payment into the split contract, as it recorded it. */
@@ -175,6 +182,16 @@ export function decodeSplitEvent(e: RawEvent, want: SplitExpectation): Payment |
   return { eventId: e.id, txHash: e.txHash, ledger: e.ledger, occurredAt: e.ledgerClosedAt, units: a!, invoiceRef: refText(invoice_ref), from };
 }
 
+/** True for the contract's `reconciled` event, whatever its version or content. */
+function isReconciledEvent(e: RawEvent): boolean {
+  if (!Array.isArray(e.topic) || e.topic.length === 0) return false;
+  try {
+    return isSym(xdr.ScVal.fromXDR(e.topic[0]!, "base64"), "reconciled");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The contract's `created` v1 event, or null for any other kind of event. A
  * `created` event that cannot be fully read, or that names another owner or
@@ -237,26 +254,55 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     const reached = cursorLedger(page.cursor);
     // A cursor past the newest ledger is not a real scan position; believing it would end the scan early.
     if (reached > page.latestLedger) throw new ChainReadError("The RPC sent a page cursor Caracal cannot read.");
-    if (reached >= page.latestLedger) break;
+    // A full page that stops inside the newest ledger may leave events of that ledger unread: ask again.
+    const full = page.events.length >= PAGE_LIMIT;
+    if (reached >= page.latestLedger && !full) break;
     if (n >= MAX_PAGES) throw new ChainReadError("The RPC needed too many pages to read the payments.");
     const next = await chain.events(want.contract, { cursor: page.cursor }, PAGE_LIMIT);
-    if (next.cursor === page.cursor) throw new ChainReadError("The RPC stopped moving through the payments.");
+    if (next.cursor === page.cursor) {
+      // Nothing after a full page that already reached the newest ledger: the scan is complete.
+      if (reached >= page.latestLedger && next.events.length === 0) {
+        checkRetention(next);
+        if (next.oldestLedger > startLedger) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
+        last = next;
+        break;
+      }
+      throw new ChainReadError("The RPC stopped moving through the payments.");
+    }
     page = next;
   }
 
   const seen = new Set<string>();
   const payments: Payment[] = [];
   const createdEvents: CreatedEvent[] = [];
+  let reconciledId: string | null = null;
   for (const e of events) {
     if (e.type !== "contract" || e.contractId !== want.contract) throw new ChainReadError("The RPC returned an event from another contract.");
     if (!Number.isSafeInteger(e.ledger) || e.ledger < startLedger || e.ledger > last.latestLedger) throw new ChainReadError("The RPC returned an event outside the ledgers asked for.");
     if (typeof e.id !== "string" || seen.has(e.id)) throw new ChainReadError("The RPC returned the same event twice.");
     seen.add(e.id);
     if (e.inSuccessfulContractCall === false) continue;
+    if (isReconciledEvent(e)) reconciledId ??= e.id;
     const p = decodeSplitEvent(e, want);
     if (p) payments.push(p);
     const c = decodeCreatedEvent(e, want);
     if (c) createdEvents.push(c);
+  }
+  // reconcile() credits USDC that was sent straight to the contract. Caracal cannot tell what that USDC was
+  // (income, a transfer from the owner, a refund), so a number that leaves it out or counts it would be a guess.
+  if (reconciledId !== null) {
+    throw new ChainReadError(
+      `The split contract credited USDC that was sent to it directly (a "reconciled" event, ${reconciledId}). Caracal cannot tell what that USDC was, so it cannot show a tax estimate from this wallet's payments.`,
+    );
+  }
+  // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
+  if (chain.holdings) {
+    const { held, pots } = await chain.holdings(want.contract, want.token);
+    if (held > pots) {
+      throw new ChainReadError(
+        "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
+      );
+    }
   }
   if (payments.length > MAX_PAYMENTS) throw new ChainReadError(`There are more than ${MAX_PAYMENTS} payments, more than Caracal can check one by one today.`);
 
@@ -285,7 +331,7 @@ type Fetch = (url: string, init: { method: "POST"; headers: Record<string, strin
 const RPC_TIMEOUT_MS = 20_000;
 
 /** A reader over a Soroban JSON-RPC endpoint. */
-export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch): ChainReader {
+export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, passphrase: string = NETWORK.passphrase): ChainReader {
   async function call(method: string, params?: unknown): Promise<Record<string, unknown>> {
     let body: unknown;
     try {
@@ -315,7 +361,32 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch): Ch
     return { latestLedger, oldestLedger, latestLedgerCloseTime, oldestLedgerCloseTime };
   };
 
+  /** A read-only contract call, simulated. The source account is a placeholder: a simulation does not need it to exist. */
+  async function simulateRead(contract: string, fn: string, args: xdr.ScVal[]): Promise<unknown> {
+    const source = new Account(StrKey.encodeEd25519PublicKey(Buffer.alloc(32)), "0");
+    const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: passphrase }).addOperation(new Contract(contract).call(fn, ...args)).setTimeout(30).build();
+    const r = await call("simulateTransaction", { transaction: tx.toXDR() });
+    const results = r.results;
+    if (r.error !== undefined || !Array.isArray(results) || results.length !== 1) throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
+    const out = (results[0] as { xdr?: unknown } | null)?.xdr;
+    if (typeof out !== "string") throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
+    try {
+      return scValToNative(xdr.ScVal.fromXDR(out, "base64"));
+    } catch {
+      throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
+    }
+  }
+
   return {
+    async holdings(contract, token) {
+      const held = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
+      const pots = await simulateRead(contract, "balances", []);
+      if (typeof held !== "bigint" || !Array.isArray(pots) || pots.length !== 3 || !pots.every((x) => typeof x === "bigint")) {
+        throw new ChainReadError("The Stellar RPC sent the split contract's USDC in a form Caracal cannot read.");
+      }
+      return { held, pots: (pots as bigint[]).reduce((a, b) => a + b, BigInt(0)) };
+    },
+
     async health() {
       const r = await call("getHealth");
       if (r.status !== "healthy") throw new ChainReadError("The Stellar RPC says it is not healthy.");

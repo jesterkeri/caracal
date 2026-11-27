@@ -297,3 +297,57 @@ describe("the RPC client", () => {
     expect(tx.status).toBe("NOT_FOUND");
   });
 });
+
+describe("adversary t1 follow-ups: paging and unreconciled USDC", () => {
+  const other = (i: number): RawEvent => ({ ...splitEvent({ id: `0025441513655808000-${String(i + 10).padStart(10, "0")}` }), topic: [sym("invoice_opened"), sym("v1")] });
+
+  it("keeps reading after a full page whose cursor already reaches the newest ledger", async () => {
+    const full = Array.from({ length: 200 }, (_, i) => other(i));
+    const late = splitEvent({ id: "0025441513655808000-0000000999", txHash: realTx.transaction.hash });
+    let calls = 0;
+    const chain = fakeChain({
+      events: async () => {
+        calls++;
+        return calls === 1
+          ? { ...real.eventsPage, events: full, cursor: cursorFor(real.health.latestLedger) }
+          : { ...real.eventsPage, events: [late], cursor: `${cursorFor(real.health.latestLedger).slice(0, 19)}-4294967296` };
+      },
+    });
+    const r = await readSplitPayments(chain, want);
+    expect(calls).toBeGreaterThan(1);
+    expect(r.kind === "read" && r.payments.map((p) => p.eventId)).toEqual([late.id]);
+  });
+
+  it("ends the scan when a full page at the newest ledger is followed by an empty one", async () => {
+    const full = Array.from({ length: 200 }, (_, i) => other(i));
+    let calls = 0;
+    const chain = fakeChain({
+      events: async () => ({ ...real.eventsPage, events: calls++ === 0 ? full : [], cursor: cursorFor(real.health.latestLedger) }),
+    });
+    const r = await readSplitPayments(chain, want);
+    expect(r.kind).toBe("read");
+    expect(calls).toBe(2);
+  });
+
+  it("refuses when USDC is held above the pots, and accepts when it matches", async () => {
+    const over = chainWith([], { holdings: async () => ({ held: BigInt(5), pots: BigInt(4) }) });
+    await expect(readSplitPayments(over, want)).rejects.toThrow(/never recorded/);
+    const equal = chainWith([], { holdings: async () => ({ held: BigInt(4), pots: BigInt(4) }) });
+    expect((await readSplitPayments(equal, want)).kind).toBe("read");
+    const broken = chainWith([], { holdings: async () => { throw new ChainReadError("Caracal could not reach the Stellar RPC."); } });
+    await expect(readSplitPayments(broken, want)).rejects.toThrow(/could not reach/);
+  });
+
+  it("the real reader reads the token balance and the pots by simulation, and refuses an unreadable answer", async () => {
+    const answers = [i128(BigInt(30)), xdr.ScVal.scvVec([i128(BigInt(10)), i128(BigInt(10)), i128(BigInt(5))])];
+    const methods: string[] = [];
+    const chain = rpcChainReader("https://rpc.example", (async (_u: string, init: { body: string }) => {
+      methods.push(JSON.parse(init.body).method);
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { results: [{ xdr: answers.shift()!.toXDR("base64") }] } });
+    }) as never);
+    expect(await chain.holdings!(real.contract, TOKENS.usdc)).toEqual({ held: BigInt(30), pots: BigInt(25) });
+    expect(methods).toEqual(["simulateTransaction", "simulateTransaction"]);
+    const bad = rpcChainReader("https://rpc.example", (async () => Response.json({ jsonrpc: "2.0", id: 1, result: { error: "boom" } })) as never);
+    await expect(bad.holdings!(real.contract, TOKENS.usdc)).rejects.toThrow(/could not read/);
+  });
+});

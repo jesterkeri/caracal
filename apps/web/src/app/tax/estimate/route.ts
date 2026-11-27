@@ -7,23 +7,25 @@
 // no sign-in. Every answer, including a refusal, is a 200 with a `status`; a
 // malformed request is a 400.
 
+import { readBounded } from "@/lib/relay/policy";
 import { NETWORK } from "@/lib/stellar/config";
 import { fetchNfemTable } from "@/lib/tax/cbn-rates";
 import { rpcChainReader } from "@/lib/tax/chain-payments";
 import { parseTaxRequest, runTaxEstimate } from "@/lib/tax/pipeline";
 
-const MAX_BODY_CHARS = 2_000;
+const MAX_BODY_BYTES = 2_000;
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 export async function POST(request: Request): Promise<Response> {
   let text: string;
   try {
-    text = await request.text();
+    const read = await readBounded(request, MAX_BODY_BYTES);
+    if (read === null) return json({ error: "The request was too large." }, 400);
+    text = read;
   } catch {
     return json({ error: "The request could not be read." }, 400);
   }
-  if (text.length > MAX_BODY_CHARS) return json({ error: "The request was too large." }, 400);
   let body: unknown;
   try {
     body = JSON.parse(text);
