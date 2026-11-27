@@ -290,6 +290,20 @@ export default function CashoutPage() {
         kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>).finally(() => {
           setSendSettledAt(Date.now());
         }),
+      // The poll kept the record current while the balance was read and the payment built: the passkey is
+      // asked only for the record the person confirmed, while the anchor still waits for it (adversary c23).
+      stillCurrent: () => {
+        const now = txnRef.current;
+        if (!now || now.id !== latest.id || now.status !== "pending_user_transfer_start") {
+          return "The anchor stopped waiting for this payment while Caracal was preparing it, so nothing was sent. Its status is shown below.";
+        }
+        if (payTo(now) !== seenRef.current) {
+          seenRef.current = payTo(now);
+          setTxn(now);
+          return "The anchor changed the account, memo or quote while Caracal was preparing the payment. Nothing was sent. Check the details above and confirm again.";
+        }
+        return null;
+      },
     };
     const r = await sendToAnchor(latest, confirmed, deps);
     refreshBalance();

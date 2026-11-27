@@ -14,7 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
   ]),
   // The kept adversary test assigns `let rt!` once, after the mocks that read it are set up.
-  { files: ["test/adversary-c1-page.test.ts", "test/adversary-c2-harness.ts"], rules: { "prefer-const": "off" } },
+  { files: ["test/adversary-c1-page.test.ts", "test/adversary-c2-harness.ts", "test/adversary-c23-record-changes-after-press.test.ts"], rules: { "prefer-const": "off" } },
 ]);
 
 export default eslintConfig;
