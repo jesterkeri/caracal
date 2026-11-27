@@ -14,7 +14,7 @@
 // tax engine only accepts a rate dated the same day as the payment, so such a
 // payment is refused, never valued with a neighbouring day's rate.
 
-import type { FxQuote } from "./engine";
+import type { FxQuote } from "@caracal/tax";
 
 export const CBN_NFEM_DATA_URL = "https://www.cbn.gov.ng/api/GetAllNFEM_Rates";
 /** The page a person can open to see the same table. It is the quote's sourceUrl. */

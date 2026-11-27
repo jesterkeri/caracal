@@ -8,7 +8,7 @@ import { SPLIT, TOKENS } from "@/lib/stellar/config";
 import { splitAddressFor } from "@/lib/stellar/split-address";
 import { ChainReadError, isContractId, readSplitPayments, type ChainReader, type Coverage, type Payment } from "./chain-payments";
 import { RateSourceError, quoteFor, type RateTable } from "./cbn-rates";
-import { DISCLAIMER, estimate, getRules, type Account, type Estimate, type FxQuote, type LedgerEntry } from "./engine";
+import { DISCLAIMER, estimate, getRules, type Account, type Estimate, type FxQuote, type LedgerEntry } from "@caracal/tax";
 
 /** The tax year this page estimates: the only one the engine has rules for. */
 export const TAX_YEAR = 2026;

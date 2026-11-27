@@ -4,7 +4,7 @@
 // shown with its rule and source; a refusal shows its reasons and no numbers.
 
 import { explorerLink } from "@/lib/stellar/config";
-import type { Estimate } from "@/lib/tax/engine";
+import type { Estimate } from "@caracal/tax";
 import type { Context, TaxOutcome } from "@/lib/tax/pipeline";
 
 export const NOT_ADVICE = "Estimate, not tax advice.";
