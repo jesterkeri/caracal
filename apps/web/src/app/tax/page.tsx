@@ -13,6 +13,13 @@ type Run = { kind: "idle" } | { kind: "running" } | { kind: "failed"; message: s
 
 const FAILED = "Caracal could not get an estimate. No number was produced. Check your connection and try again.";
 
+/** Longest wait for the estimate. Reading a year of payments and the CBN rates normally takes seconds. */
+const ESTIMATE_TIMEOUT_MS = 120_000;
+const TOO_SLOW = "Caracal did not get an estimate within 2 minutes, so it stopped waiting. No number was produced. Try again.";
+
+/** Bumped by every edit and every Estimate: an answer for answers that have since changed is dropped. */
+let asked = 0;
+
 export default function TaxPage() {
   const [who, setWho] = useState<Who>({ kind: "checking" });
   const [scope, setScope] = useState<"all" | "elsewhere" | null>(null);
@@ -39,12 +46,23 @@ export default function TaxPage() {
     };
   }, []);
 
+  /** A changed answer makes any result (or one still being worked out) stale: it is cleared, not left beside the new answers. */
+  function edited() {
+    asked++;
+    setRun({ kind: "idle" });
+  }
+
   async function estimate() {
     if (who.kind !== "ready" || scope === null) return;
+    const mine = ++asked;
+    const current = () => mine === asked;
     setRun({ kind: "running" });
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), ESTIMATE_TIMEOUT_MS);
     try {
       const res = await fetch("/tax/estimate", {
         method: "POST",
+        signal: stop.signal,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           wallet: who.wallet,
@@ -53,11 +71,14 @@ export default function TaxPage() {
         }),
       });
       const body = (await res.json()) as TaxOutcome | { error: string };
+      if (!current()) return;
       if ("error" in body) return setRun({ kind: "failed", message: body.error });
       if (!res.ok || typeof body.status !== "string") return setRun({ kind: "failed", message: FAILED });
       setRun({ kind: "done", outcome: body });
     } catch {
-      setRun({ kind: "failed", message: FAILED });
+      if (current()) setRun({ kind: "failed", message: stop.signal.aborted ? TOO_SLOW : FAILED });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -85,23 +106,23 @@ export default function TaxPage() {
           <fieldset className="flex flex-col gap-2">
             <legend className="font-semibold">Does all your income for the year arrive in this wallet?</legend>
             <label className="flex items-start gap-2">
-              <input type="radio" name="scope" checked={scope === "all"} onChange={() => setScope("all")} />
+              <input type="radio" name="scope" checked={scope === "all"} onChange={() => (setScope("all"), edited())} />
               Yes, all of it arrives through my Caracal split contract.
             </label>
             <label className="flex items-start gap-2">
-              <input type="radio" name="scope" checked={scope === "elsewhere"} onChange={() => setScope("elsewhere")} />
+              <input type="radio" name="scope" checked={scope === "elsewhere"} onChange={() => (setScope("elsewhere"), edited())} />
               No, some income arrives somewhere else.
             </label>
           </fieldset>
           {scope === "elsewhere" && (
             <label className="flex flex-col gap-1">
               Income that arrives elsewhere this year, in naira (it is added as you say it, and not checked on chain)
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={elsewhere} onChange={(e) => setElsewhere(e.target.value)} placeholder="2500000" />
+              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={elsewhere} onChange={(e) => (setElsewhere(e.target.value), edited())} placeholder="2500000" />
             </label>
           )}
           <label className="flex flex-col gap-1">
             Rent you pay for the year, in naira (optional, for the rent relief)
-            <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={rent} onChange={(e) => setRent(e.target.value)} placeholder="600000" />
+            <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={rent} onChange={(e) => (setRent(e.target.value), edited())} placeholder="600000" />
           </label>
           <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-50" disabled={scope === null || run.kind === "running"} onClick={estimate}>
             {run.kind === "running" ? "Working it out..." : "Estimate my 2026 tax"}

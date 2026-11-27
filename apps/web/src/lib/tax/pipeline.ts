@@ -118,10 +118,11 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
   const inYear = (p: Payment) => lagosDate(p.occurredAt).startsWith(`${TAX_YEAR}-`);
   const yearPayments = read.payments.filter(inYear);
 
-  // CBN rates, only for the days that have an in-year payment.
+  // CBN rates, only for the days that have an in-year income payment. The owner's own transfers are
+  // never income and are never valued, so a day with only those needs no rate (and no rate table).
   const ownReasons: string[] = [];
   const quotes = new Map<string, FxQuote>();
-  const days = [...new Set(yearPayments.map((p) => lagosDate(p.occurredAt)))].sort();
+  const days = [...new Set(yearPayments.filter((p) => !isOwnPayment(p, req.wallet)).map((p) => lagosDate(p.occurredAt)))].sort();
   if (days.length > 0) {
     let table: RateTable;
     try {
