@@ -67,6 +67,11 @@ export function previewWithdraw(amountText: string, info: WithdrawInfo, balance:
   if (info.max !== null && amount > info.max) return { ok: false, reason: `The test anchor's largest withdrawal is ${fromStroops(info.max)} USDC.` };
   if (balance !== null && amount > balance) return { ok: false, reason: `Your wallet holds ${fromStroops(balance)} USDC, which is less than ${fromStroops(amount)} USDC.` };
   let fee: bigint | null = null;
+  // A published percentage outside 0 to 100 is not a fee Caracal can show (a huge one would not even convert
+  // to a whole number and threw in the page's render, adversary c22).
+  if (info.feePercent !== null && !(info.feePercent >= 0 && info.feePercent <= 100)) {
+    return { ok: false, reason: "The test anchor published a fee Caracal cannot read, so it cannot show what would arrive. Nothing was started." };
+  }
   if (info.feeFixed !== null || info.feePercent !== null) {
     // fee_percent is a percentage with up to 7 places; work in micro-percent to stay exact.
     const pct = info.feePercent === null ? BigInt(0) : BigInt(Math.round(info.feePercent * 1e7));
