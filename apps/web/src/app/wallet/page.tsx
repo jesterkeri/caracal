@@ -281,7 +281,7 @@ export default function WalletPage() {
     if (out.ran) return;
     setState(
       out.why === "busy"
-        ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true }
+        ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true, remembered: choice.secondTo }
         : { kind: "error", message: out.why === "refused" ? LOCKS_REFUSED : LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
     );
   }
@@ -290,14 +290,14 @@ export default function WalletPage() {
     if (anyway) {
       // Only once the last attempt cannot still finish (creation-marker.ts).
       if (creationAge() < CREATION_SETTLE_MS) {
-        setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
+        setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true, remembered: secondTo });
         return;
       }
       markCreation(me.id, false);
     }
     // An earlier attempt's outcome is unknown: do not start a second.
     if (creationUnconfirmedFor(me.id)) {
-      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
+      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true, remembered: secondTo });
       return;
     }
     // This page may be older than a wallet created since in another tab:
@@ -361,7 +361,7 @@ export default function WalletPage() {
       const message = failureText(e);
       // An unknown outcome: the wait counts from now, when it ended here.
       markCreation(me.id, passkeyMade);
-      if (passkeyMade) setState({ kind: "error", message, checkFirst: true });
+      if (passkeyMade) setState({ kind: "error", message, checkFirst: true, remembered: secondTo });
       else nothingMade(message);
       return;
     } finally {
@@ -381,20 +381,26 @@ export default function WalletPage() {
         return nothingMade(detail);
       }
       markCreation(me.id, true);
-      setState({ kind: "error", message: detail, checkFirst: true });
+      setState({ kind: "error", message: detail, checkFirst: true, remembered: secondTo });
       return;
     }
     try {
       await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined, true);
     } catch (e) {
       // The wallet was made; only recording its owner failed.
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true });
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true, remembered: secondTo });
     }
   }
 
-  /** After an unknown outcome, the person checked with Connect and found no wallet. */
+  /**
+   * After an unknown outcome, the person checked with Connect and found no
+   * wallet. If the attempt was a second wallet beside one this page showed,
+   * that same wallet is passed on, so this account's own binding does not
+   * refuse it; a wallet recorded since (by another tab) still does.
+   */
   function createAnyway() {
-    return create({ anyway: true });
+    const shown = state.kind === "error" || state.kind === "idle" ? state.remembered : undefined;
+    return create({ anyway: true, secondTo: shown });
   }
 
   async function connect() {
