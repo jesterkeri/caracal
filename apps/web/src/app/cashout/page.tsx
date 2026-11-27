@@ -246,68 +246,78 @@ export default function CashoutPage() {
   const canStartAnother = (done || lostSession) && phase !== "sending";
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Cash out</h1>
-      <p className="rounded-md border px-3 py-2 text-sm">{SIMULATION_NOTE}</p>
+    <main className="page">
+      <h1 className="h1">Cash out</h1>
+      <p className="notice">{SIMULATION_NOTE}</p>
 
-      {boot.kind === "loading" && <p className="text-sm">Opening your wallet...</p>}
-      {boot.kind === "error" && <p className="text-sm text-red-600">{boot.message}</p>}
+      {boot.kind === "loading" && <p className="muted">Opening your wallet...</p>}
+      {boot.kind === "error" && <p className="msg msg-bad">{boot.message}</p>}
       {boot.kind === "no-wallet" && (
-        <p className="text-sm">
-          Caracal has no wallet open for this account on this browser. <a className="underline" href="/wallet">Open or create your wallet</a>, then come back.
+        <p className="msg msg-info">
+          Caracal has no wallet open for this account on this browser. <a className="link" href="/wallet">Open or create your wallet</a>, then come back.
         </p>
       )}
 
       {boot.kind === "ready" && (
         <>
-          <p className="text-sm">
-            Wallet: <span className="break-all font-mono">{boot.wallet}</span>
-            <br />
+          <div className="card num gap-2">
+            Wallet: <span className="addr addr-box">{boot.wallet}</span>
+            <br className="hidden" />
             USDC in the wallet: {balance === null ? "not available right now" : `${fromStroops(balance)} USDC`}
-          </p>
-          {infoError && <p className="text-sm text-red-600">{infoError}</p>}
-          {!infoError && !info && <p className="text-sm">Reading the anchor&apos;s limits...</p>}
+          </div>
+          {infoError && <p className="msg msg-bad">{infoError}</p>}
+          {!infoError && !info && <p className="muted small">Reading the anchor&apos;s limits...</p>}
 
           {info && phase === "preview" && (
-            <div className="flex flex-col gap-3">
-              <label className="flex flex-col gap-1 text-sm">
+            <div className="card">
+              <label className="field">
                 Amount to cash out, in USDC
                 <input
-                  className="rounded-md border px-3 py-2 text-base"
+                  className="input money-lg num min-h-16"
                   inputMode="decimal"
                   value={amountText}
                   onChange={(e) => setAmountText(e.target.value)}
                   placeholder="2"
                 />
               </label>
-              {amountText.trim() !== "" && preview && !preview.ok && <p className="text-sm text-red-600">{preview.reason}</p>}
+              {amountText.trim() !== "" && preview && !preview.ok && <p className="msg msg-bad">{preview.reason}</p>}
               {preview?.ok && (
-                <dl className="grid grid-cols-2 gap-1 text-sm">
+                <dl className="kv card-sunken num gap-0 py-1">
+                  <div className="kv-row">
                   <dt>You send</dt>
                   <dd className="text-right">{fromStroops(preview.amount)} USDC</dd>
+                  </div>
+                  <div className="kv-row">
                   <dt>Anchor fee</dt>
                   <dd className="text-right">{preview.fee === null ? "Quoted by the anchor in its form" : `${fromStroops(preview.fee)} USDC`}</dd>
+                  </div>
+                  <div className="kv-row kv-total [&>dd]:font-semibold">
                   <dt>Arrives</dt>
                   <dd className="text-right">{preview.arrives === null ? "Shown after the anchor quotes its fee" : `${fromStroops(preview.arrives)} USDC`}</dd>
+                  </div>
                 </dl>
               )}
-              <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={!preview?.ok} onClick={start}>
+              <button className="btn btn-primary btn-block" disabled={!preview?.ok} onClick={start}>
                 Continue to the anchor
               </button>
-              <p className="text-xs opacity-80">
+              <p className="muted small">
                 Next, your passkey signs you in to the anchor (it cannot move money), then the anchor&apos;s own form opens in a pop-up. Nothing is sent from your wallet until you confirm the anchor&apos;s quote here.
               </p>
             </div>
           )}
 
-          {phase === "starting" && <p className="text-sm">Signing in to the anchor with your passkey...</p>}
+          {phase === "starting" && <p className="msg msg-info">Signing in to the anchor with your passkey...</p>}
 
           {phase === "form" && session && (
-            <div className="flex flex-col gap-2 text-sm">
+            <div className="flex flex-col gap-3">
+              <div className="msg msg-info">
               <p>Finish the anchor&apos;s form in the pop-up window. This page moves on by itself when the anchor is ready for your USDC.</p>
+              </div>
+              <div className="msg msg-unsure empty:hidden">
               {popupBlocked && <p>Your browser blocked the pop-up.</p>}
-              <p>
-                <a className="underline" href={session.url} target="_blank" rel="noopener noreferrer">
+              </div>
+              <p className="muted small flex flex-col items-center gap-2 text-center">
+                <a className="btn btn-secondary btn-block" href={session.url} target="_blank" rel="noopener noreferrer">
                   Open the anchor&apos;s form
                 </a>{" "}
                 if you closed the pop-up.
@@ -316,49 +326,59 @@ export default function CashoutPage() {
           )}
 
           {(phase === "confirm" || phase === "sending") && txn && (
-            <div className="flex flex-col gap-3">
-              <dl className="grid grid-cols-2 gap-1 text-sm">
+            <div className="card">
+              <dl className="kv num">
+                <div className="kv-row">
                 <dt>The anchor wants</dt>
                 <dd className="text-right">{txn.amountIn ?? "?"} USDC</dd>
+                </div>
+                <div className="kv-row">
                 <dt>Anchor fee</dt>
                 <dd className="text-right">{txn.feeTotal ?? "not stated"} USDC</dd>
+                </div>
+                <div className="kv-row kv-total [&>dd]:font-semibold">
                 <dt>Arrives</dt>
                 <dd className="text-right">{txn.amountOut ?? "not stated"} (simulated)</dd>
+                </div>
+                <div className="kv-row flex-col items-stretch gap-2">
                 <dt>Pay to account</dt>
-                <dd className="break-all text-right font-mono">{txn.withdrawAnchorAccount ?? "not stated"}</dd>
+                <dd className="addr addr-box text-left font-normal">{txn.withdrawAnchorAccount ?? "not stated"}</dd>
+                </div>
+                <div className="kv-row">
                 <dt>Memo ({txn.withdrawMemoType ?? "none"})</dt>
-                <dd className="break-all text-right font-mono">{txn.withdrawMemo ?? "not stated"}</dd>
+                <dd className="addr">{txn.withdrawMemo ?? "not stated"}</dd>
+                </div>
               </dl>
-              <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={phase === "sending"} onClick={send}>
+              <button className="btn btn-primary btn-block" disabled={phase === "sending"} onClick={send}>
                 {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
               </button>
-              <p className="text-xs opacity-80">Caracal pays the network fee. Your passkey confirms this one payment.</p>
+              <p className="muted small">Caracal pays the network fee. Your passkey confirms this one payment.</p>
               {phase === "confirm" && (
-                <button className="rounded-md border px-4 py-3 text-sm" onClick={startAgain}>
+                <button className="btn btn-secondary btn-block" onClick={startAgain}>
                   Start again
                 </button>
               )}
             </div>
           )}
 
-          {problem && <p className="text-sm text-red-600">{problem}</p>}
+          {problem && <p className={phase === "watching" ? "msg msg-unsure" : "msg msg-bad"}>{problem}</p>}
 
           {txn && (phase === "watching" || done) && (
-            <div className="flex flex-col gap-2 text-sm">
-              <p className={txn.status === "completed" ? "font-medium" : ""}>{statusText(txn)}</p>
+            <div className="card">
+              <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn)}</p>
               {sentHash && (
-                <a className="break-all underline" href={explorerLink("tx", sentHash)}>
+                <a className="addr link" href={explorerLink("tx", sentHash)}>
                   USDC payment on Stellar: {sentHash}
                 </a>
               )}
-              <p className="break-all opacity-80">Anchor transaction id: {txn.id}</p>
+              <p className="addr muted">Anchor transaction id: {txn.id}</p>
               {txn.status === "completed" && txn.amountOut && <p>The anchor recorded {txn.amountOut} as paid out (simulated).</p>}
             </div>
           )}
-          {pollNote && <p className="text-sm text-red-600">{pollNote}</p>}
+          {pollNote && <p className="msg msg-unsure">{pollNote}</p>}
           {canStartAnother && (
             <button
-              className="rounded-md border px-4 py-3 text-sm"
+              className="btn btn-secondary btn-block"
               onClick={startAgain}
             >
               Start another cash-out
@@ -367,7 +387,7 @@ export default function CashoutPage() {
         </>
       )}
 
-      <p className="text-xs opacity-80">
+      <p className="notice small [&>span]:mt-2 [&>span]:block [&>span]:opacity-80">
         {STAMP_DUTY_NOTE.text} <span>Source: {STAMP_DUTY_NOTE.source}</span>
       </p>
     </main>
