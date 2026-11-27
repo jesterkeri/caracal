@@ -10,10 +10,10 @@ export const metadata: Metadata = { title: "Payment receipt · Caracal" };
 
 export default function ReceiptPage({ params }: { params: Promise<{ hash: string }> }) {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Payment receipt</h1>
+    <main className="page min-h-dvh pt-10">
+      <h1 className="h1">Payment receipt</h1>
       {/* Read from the network on each request, so it streams in after the page shell. */}
-      <Suspense fallback={<p className="text-sm">Reading this payment from Stellar...</p>}>
+      <Suspense fallback={<p className="muted small">Reading this payment from Stellar...</p>}>
         <ReceiptBody params={params} />
       </Suspense>
     </main>
