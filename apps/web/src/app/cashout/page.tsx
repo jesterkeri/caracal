@@ -360,8 +360,14 @@ export default function CashoutPage() {
       clearTimeout(t);
     };
   }, [sendSettledAt]);
+  // An unknown payment the anchor has not reported received may still land until the landing window ends.
+  // No new cash-out is offered before then, whatever else happened (a lost session, a final status), because
+  // a second payment could then pay the anchor twice (adversary c18). Only "completed" and "refunded" prove
+  // the anchor received the first one.
+  const mayStillLand =
+    phase === "watching" && unknownSend && !landingOver && !(txn !== null && (txn.status === "completed" || txn.status === "refunded"));
   // Never while the USDC payment is being sent: starting again then would lose track of it.
-  const canStartAnother = (done || lostSession || pastLanding) && phase !== "sending";
+  const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending";
 
   return (
     <main className="page">
@@ -537,7 +543,11 @@ export default function CashoutPage() {
           {unknownWaiting && (
             <p className="msg msg-unsure">
               {pastLanding
-                ? `The anchor still has not received the USDC, and the payment can no longer reach the network. ${
+                ? `${
+                    lostSession
+                      ? "Caracal can no longer read the anchor's status"
+                      : "The anchor still has not received the USDC"
+                  }, and the payment can no longer reach the network. ${
                     balanceBeforeSend !== null && balance !== null
                       ? `Your USDC balance was ${fromStroops(balanceBeforeSend)} USDC when you pressed Send and is ${fromStroops(balance)} USDC now (read just now). `
                       : "Caracal could not read your USDC balance just now, so check your wallet's history first. "
@@ -545,6 +555,13 @@ export default function CashoutPage() {
                 : stalled && sendSettledAt === null
                   ? "The payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
                   : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
+            </p>
+          )}
+          {mayStillLand && !unknownWaiting && (done || lostSession) && (
+            <p className="msg msg-unsure">
+              {stalled && sendSettledAt === null
+                ? "The USDC payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
+                : "Caracal could not confirm the USDC payment, and it can still reach the network for a short while. This page offers to start another cash-out once it no longer can."}
             </p>
           )}
           {pollNote && <p className="msg msg-unsure">{pollNote}</p>}
