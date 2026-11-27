@@ -21,11 +21,14 @@ function streamed(total: number) {
 }
 
 describe("adversary t1: unbounded request body", () => {
-  it("control: a 10-chunk (640 KiB) body is read and refused as too large", async () => {
+  // Control changed after the fix (disclosed in docs/decisions.md): it asserted the old
+  // behaviour, that the whole 640 KiB body is read before the refusal. It now checks
+  // what the harness is for: the stream is pulled and counted, and the route refuses.
+  it("control: a 10-chunk (640 KiB) body is pulled (and counted) and refused as too large", async () => {
     const s = streamed(10);
     const res = await POST(s.request);
     expect(res.status).toBe(400);
-    expect(s.pulledBytes()).toBe(10 * 64 * 1024);
+    expect(s.pulledBytes()).toBeGreaterThanOrEqual(64 * 1024);
   });
 
   it("stops reading a body that is far over the limit instead of reading all 64 MiB", async () => {

@@ -49,10 +49,10 @@ export type ChainReader = {
   transaction(hash: string): Promise<{ status: string; ledger: number; createdAt: string }>;
   /**
    * What the split contract holds of the token, and the sum of its three pots
-   * (tax, goal, spend), both read now. A real reader always has it. When it is
-   * absent (a test double that does not model balances) the check is skipped.
+   * (tax, goal, spend), both read now. Always checked: USDC held above the
+   * pots arrived without a recorded payment.
    */
-  holdings?(contract: string, token: string): Promise<{ held: bigint; pots: bigint }>;
+  holdings(contract: string, token: string): Promise<{ held: bigint; pots: bigint }>;
 };
 
 /** One payment into the split contract, as it recorded it. */
@@ -296,13 +296,11 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     );
   }
   // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
-  if (chain.holdings) {
-    const { held, pots } = await chain.holdings(want.contract, want.token);
-    if (held > pots) {
-      throw new ChainReadError(
-        "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
-      );
-    }
+  const { held, pots } = await chain.holdings(want.contract, want.token);
+  if (held > pots) {
+    throw new ChainReadError(
+      "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
+    );
   }
   if (payments.length > MAX_PAYMENTS) throw new ChainReadError(`There are more than ${MAX_PAYMENTS} payments, more than Caracal can check one by one today.`);
 

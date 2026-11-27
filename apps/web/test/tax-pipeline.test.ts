@@ -77,6 +77,8 @@ function chain(payments: ReturnType<typeof payment>[], oldest = "2025-12-01T00:0
   return {
     health: async () => retention,
     instance: async () => ({ kind: "wasm", hash: SPLIT.wasmHash }),
+    // Balanced: everything the contract holds is in its pots (holdings is a required read).
+    holdings: async () => ({ held: BigInt(0), pots: BigInt(0) }),
     events: async () => ({ ...retention, events: payments.map((p) => p.event), cursor: cursorFor(6000000) }),
     transaction: async (hash) => payments.find((p) => p.event.txHash === hash)!.tx,
     ...over,
