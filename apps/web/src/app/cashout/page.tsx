@@ -75,6 +75,9 @@ function unpayable(t: AnchorTxn, confirmed: bigint | null): string | null {
   }
 }
 
+/** After the kit's send settled, how long an unconfirmed payment can still land (see unknownWaiting). */
+const LAND_WINDOW_MS = 90_000;
+
 /** Statuses whose text tells the person to open the anchor's form. */
 const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
 /** Non-final statuses where waiting is the right thing and the status text says so. */
@@ -96,6 +99,10 @@ export default function CashoutPage() {
   const [problem, setProblem] = useState<string | null>(null);
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [sentHash, setSentHash] = useState<string | null>(null);
+  /** A send whose outcome is unknown and that gave no hash: the anchor's status decides (adversary c13). */
+  const [unknownSend, setUnknownSend] = useState(false);
+  /** When the kit's signAndSubmit for this page's send settled (resolved or threw), on Date.now(). */
+  const sendSettledAt = useRef<number | null>(null);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -240,6 +247,8 @@ export default function CashoutPage() {
   async function send() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !txn || confirmed === null || sendingFor.current === txn.id) return;
+    // The anchor refused this session: the record on screen can no longer be followed, so it is not paid (adversary c13).
+    if (lostSession) return;
     // The account, memo and quote the person was shown must be the ones the anchor still has.
     // The poll keeps the screen on the anchor's latest record, so the comparison is with what was on screen
     // when the person reached this step, not with the record the poll last wrote.
@@ -255,7 +264,10 @@ export default function CashoutPage() {
     setPhase("sending");
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
-      signAndSubmit: (tx) => kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>),
+      signAndSubmit: (tx) =>
+        kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>).finally(() => {
+          sendSettledAt.current = Date.now();
+        }),
     };
     const r = await sendToAnchor(latest, confirmed, deps);
     refreshBalance();
@@ -265,6 +277,7 @@ export default function CashoutPage() {
     } else if (r.kind === "unknown") {
       // Never sent twice: the sending lock stays, and the anchor's status decides.
       if (r.hash) setSentHash(r.hash);
+      else setUnknownSend(true);
       setProblem(r.message);
       setPhase("watching");
     } else {
@@ -283,6 +296,8 @@ export default function CashoutPage() {
     seenRef.current = null;
     setConfirmed(null);
     setSentHash(null);
+    setUnknownSend(false);
+    sendSettledAt.current = null;
     setProblem(null);
     setPollNote(null);
     setPopupNote(null);
@@ -294,8 +309,14 @@ export default function CashoutPage() {
   const done = txn !== null && FINAL_STATUSES.has(txn.status);
   // The anchor refused this sign-in for status reads: the page can no longer follow the withdrawal, so it offers a new one.
   const lostSession = pollNote !== null && pollNote.startsWith("The anchor no longer accepts");
+  // An unknown send with no hash while the anchor still waits for USDC. Once the kit's send has settled, the
+  // payment can land only while the relay may still send it (its 60 s deadline from receipt) and the
+  // transaction it built is valid (25 s), both started before the send settled: LAND_WINDOW_MS after it,
+  // a payment the anchor still has not seen did not arrive, and a new cash-out cannot pay this one twice.
+  const unknownWaiting = phase === "watching" && unknownSend && sentHash === null && txn?.status === "pending_user_transfer_start";
+  const pastLanding = unknownWaiting && sendSettledAt.current !== null && Date.now() - sendSettledAt.current > LAND_WINDOW_MS;
   // Never while the USDC payment is being sent: starting again then would lose track of it.
-  const canStartAnother = (done || lostSession) && phase !== "sending";
+  const canStartAnother = (done || lostSession || pastLanding) && phase !== "sending";
 
   return (
     <main className="page">
@@ -405,6 +426,9 @@ export default function CashoutPage() {
               {phase !== "sending" && !paidInUsdc(txn) ? (
                 // paymentFor refuses any other asset, so no Send is offered for one.
                 <p className="msg msg-bad">The anchor asks to be paid in {txn.amountInAsset}, not Circle testnet USDC, so Caracal cannot pay this cash-out, and this page sent nothing. Start again for a new one.</p>
+              ) : phase !== "sending" && lostSession ? (
+                // The anchor refused this session: its latest record cannot be read, so this one is not paid (adversary c13).
+                <p className="msg msg-bad">The anchor no longer lets Caracal follow this withdrawal, so Caracal cannot see its latest terms and does not offer to pay it. Nothing was sent. Start another cash-out.</p>
               ) : phase !== "sending" && txn.status === "pending_user_transfer_start" && unpayable(txn, confirmed) !== null ? (
                 // The anchor asks for a payment Send would refuse (a memo a smart wallet cannot carry, or another
                 // amount than the one confirmed): no Send is offered, only the reason (adversary c12, as c8 for an asset).
@@ -464,6 +488,13 @@ export default function CashoutPage() {
             <a className="btn btn-secondary btn-block" href={session.url} target="_blank" rel="noopener noreferrer">
               Open the anchor&apos;s form
             </a>
+          )}
+          {unknownWaiting && (
+            <p className="msg msg-unsure">
+              {pastLanding
+                ? "The anchor still has not received the USDC, and the payment can no longer reach the network. If your USDC balance above did not drop, it did not go through and you can start another cash-out. If it did drop, ask the anchor about it with the transaction id."
+                : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
+            </p>
           )}
           {pollNote && <p className="msg msg-unsure">{pollNote}</p>}
           {canStartAnother && (
