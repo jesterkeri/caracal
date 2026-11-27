@@ -53,7 +53,7 @@ export const buildTx: BuildTx = async (kit, func, method, contractId) => {
     method,
     parseResultXdr: (v) => v,
   } as contract.AssembledTransactionOptions<unknown>);
-  if (tx.simulation && rpc.Api.isSimulationError(tx.simulation)) throw new SimulationRefused(splitErrorText(tx.simulation.error));
+  if (tx.simulation && rpc.Api.isSimulationError(tx.simulation)) throw new SimulationRefused(splitErrorText(tx.simulation.error, contractId));
   // The relay sponsors calls and deployments only, never a restore, so such a call cannot be sent.
   if (tx.simulation && rpc.Api.isSimulationRestore(tx.simulation)) throw new DataExpired("restore needed");
   return tx;
@@ -69,8 +69,8 @@ const TRANSACTION_SIGNING_FAILED = 5002;
 /** Longest wait for the passkey prompt plus the relay and the network to answer (a WebAuthn prompt itself times out within this). */
 export const SEND_TIMEOUT_MS = 5 * 60_000;
 
-function problem(e: unknown): string {
-  return splitErrorText(e instanceof Error ? e.message : String(e));
+function problem(e: unknown, split?: string): string {
+  return splitErrorText(e instanceof Error ? e.message : String(e), split);
 }
 
 export async function sendSplitCall(
@@ -98,8 +98,8 @@ export async function sendSplitCall(
     }
     const refusedByChain = e instanceof SimulationRefused || (e instanceof Error && /Error\(Contract,/.test(e.message));
     return refusedByChain
-      ? { kind: "stopped", message: `The call was refused when Caracal tried it first: ${problem(e)}` }
-      : { kind: "stopped", message: `Caracal could not reach the Stellar network to prepare this, so nothing was signed or sent. Check your connection and try again. (${problem(e)})` };
+      ? { kind: "stopped", message: `The call was refused when Caracal tried it first: ${problem(e, contractId)}` }
+      : { kind: "stopped", message: `Caracal could not reach the Stellar network to prepare this, so nothing was signed or sent. Check your connection and try again. (${problem(e, contractId)})` };
   } finally {
     clearTimeout(timer);
   }
@@ -115,13 +115,13 @@ export async function sendSplitCall(
       }),
     ]);
   } catch (e) {
-    return { kind: "unknown", message: problem(e) };
+    return { kind: "unknown", message: problem(e, contractId) };
   } finally {
     clearTimeout(late);
   }
   if (result.success) return { kind: "done", hash: result.hash };
   const err = result.error;
-  const message = problem(err);
+  const message = problem(err, contractId);
   const hash = typeof result.hash === "string" && result.hash !== "" ? result.hash : undefined;
   if (!hash && message.includes("Nothing was sent")) return { kind: "refused", message };
   // The relay's report that the network ran the transaction and it failed (src/lib/relay/channels.ts, ONCHAIN_FAILED):

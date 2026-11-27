@@ -78,7 +78,10 @@ async function render(actions: Record<string, unknown>) {
   vi.doMock("@/lib/split/actions", async () => ({ ...(await vi.importActual<object>("@/lib/split/actions")), ...actions }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
-  vi.stubGlobal("window", { location: { replace: vi.fn(), reload: vi.fn(), origin: "https://caracal.test", search: "" }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} } });
+  // Fixture change (Codex split R1): storage that keeps what is written, as the write guard reads its record back.
+  const kept = new Map<string, string>();
+  const store = { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) };
+  vi.stubGlobal("window", { location: { replace: vi.fn(), reload: vi.fn(), origin: "https://caracal.test", search: "" }, localStorage: store });
   const mod = await import("../src/app/split/page");
   return { tree: mod.default(), setters };
 }

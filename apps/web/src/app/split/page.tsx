@@ -13,6 +13,8 @@ import type { SimulatingRpc } from "@/lib/split/chain";
 import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
+import { splitAddressFor } from "@/lib/stellar/split-address";
+import { beginWrite, holdOn, holdText } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -54,6 +56,8 @@ export default function SplitPage() {
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [note, setNote] = useState<Note>({});
   const [account, setAccount] = useState<Account | null>(null);
+  // Bumped every few seconds so the hold on writes (below) is read again and lifts on its own.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     let unfollow: (() => void) | undefined;
@@ -99,7 +103,12 @@ export default function SplitPage() {
     };
   }, []);
 
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 5_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const set =<K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
   const refused = (text: string) => setNote({ said: { tone: "bad", text } });
 
   /** Re-reads the contract from the network, keeping what was last said. */
@@ -123,6 +132,10 @@ export default function SplitPage() {
   async function run(what: string, send: (kit: WriteKit) => Promise<SendOutcome>) {
     if (view.kind !== "ready" || note.busy || writing) return;
     const wallet = view.wallet;
+    // An earlier write that may still land holds back every new write on this split (write-guard.ts).
+    const begun = beginWrite(splitAddressFor(wallet));
+    if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) } });
+    const guard = begun.guard;
     writing = true;
     // Any read already under way began before this write: it is dropped.
     readSeq++;
@@ -130,10 +143,11 @@ export default function SplitPage() {
       setNote({ busy: "Waiting for your passkey" });
       let outcome: SendOutcome;
       try {
-        outcome = await send((await getKit()) as unknown as WriteKit);
+        outcome = await send(guard.kit((await getKit()) as unknown as WriteKit));
       } catch (e) {
         outcome = { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
       }
+      guard.finish(outcome);
       const said = say(outcome, what);
       if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
       setNote({ busy: "Reading the result from the network", said });
@@ -181,6 +195,9 @@ export default function SplitPage() {
 
   const busy = note.busy !== undefined;
   const loaded = view.kind === "ready" ? view.loaded : null;
+  // Read from storage on every render (not remembered), so a write in another tab or before a reload counts.
+  const hold = view.kind === "ready" && loaded?.kind !== "error" ? holdOn(splitAddressFor(view.wallet)) : ({ held: false } as const);
+  const blocked = busy || hold.held;
 
   return (
     <main className="page">
@@ -228,7 +245,7 @@ export default function SplitPage() {
             Goal pot, percent of each payment
             <input className="input" inputMode="decimal" placeholder="for example 15" value={form.deployGoal} onChange={(e) => set("deployGoal", e.target.value)} />
           </label>
-          <button className="btn btn-primary btn-block" disabled={busy} onClick={deploy}>
+          <button className="btn btn-primary btn-block" disabled={blocked} onClick={deploy}>
             Deploy my split contract with my passkey
           </button>
           <p className="small muted leading-7">
@@ -285,7 +302,7 @@ export default function SplitPage() {
             <p className="small muted leading-7">
               Goes to your own wallet <span className="addr addr-box box-decoration-clone px-1.5 py-0.5 text-[color:var(--c-text)]">{view.wallet}</span>.
             </p>
-            <button className="btn btn-primary btn-block" disabled={busy} onClick={withdraw}>
+            <button className="btn btn-primary btn-block" disabled={blocked} onClick={withdraw}>
               Withdraw with my passkey
             </button>
           </section>
@@ -316,7 +333,7 @@ export default function SplitPage() {
               Amount in USDC
               <input className="input" inputMode="decimal" placeholder="5.00" value={form.moveAmount} onChange={(e) => set("moveAmount", e.target.value)} />
             </label>
-            <button className="btn btn-primary btn-block" disabled={busy} onClick={move}>
+            <button className="btn btn-primary btn-block" disabled={blocked} onClick={move}>
               Move with my passkey
             </button>
           </section>
@@ -332,13 +349,14 @@ export default function SplitPage() {
               Goal pot, percent
               <input className="input" inputMode="decimal" placeholder={bpsText(loaded.config.goalBps)} value={form.newGoal} onChange={(e) => set("newGoal", e.target.value)} />
             </label>
-            <button className="btn btn-primary btn-block" disabled={busy} onClick={newSplit}>
+            <button className="btn btn-primary btn-block" disabled={blocked} onClick={newSplit}>
               Change split with my passkey
             </button>
           </section>
         </>
       )}
 
+      {!busy && hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
       {note.busy && <p className="small muted">{note.busy}...</p>}
       {note.said && (
         <div className={`msg flex flex-col gap-1 ${note.said.tone === "good" ? "msg-good" : note.said.tone === "bad" ? "msg-bad" : "msg-unsure"}`}>

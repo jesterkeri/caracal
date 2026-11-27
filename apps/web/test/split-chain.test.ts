@@ -1,11 +1,12 @@
 // Reading a split contract. The return values are real: captured from Stellar
 // testnet on 2026-11-27 with scripts/live-split-read.mjs against
 // CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M.
-import { rpc, xdr } from "@stellar/stellar-sdk";
+import { Address, rpc, xdr } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSplit } from "../src/lib/split/actions";
 import { readConfig, readPots } from "../src/lib/split/chain";
 import { splitErrorText } from "../src/lib/split/errors";
+import { SPLIT } from "../src/lib/stellar/config";
 import { splitAddressFor } from "../src/lib/stellar/split-address";
 import { WALLET } from "./relay-fixtures";
 
@@ -20,6 +21,19 @@ afterEach(() => vi.useRealTimers());
 const ok = (b64: string) => ({ result: { retval: xdr.ScVal.fromXDR(b64, "base64"), auth: [] }, latestLedger: 1 }) as unknown as rpc.Api.SimulateTransactionResponse;
 const fail = (error: string) => ({ error, latestLedger: 1, events: [], id: "x", _parsed: true }) as unknown as rpc.Api.SimulateTransactionResponse;
 
+/** A contract instance entry running the split wasm (SPLIT.wasmHash). */
+function instanceEntry(hash: string = SPLIT.wasmHash): xdr.LedgerEntryData {
+  return xdr.LedgerEntryData.contractData(
+    new xdr.ContractDataEntry({
+      ext: new xdr.ExtensionPoint(0),
+      contract: new Address(LIVE_SPLIT).toScAddress(),
+      key: xdr.ScVal.scvLedgerKeyContractInstance(),
+      durability: xdr.ContractDataDurability.persistent(),
+      val: xdr.ScVal.scvContractInstance(new xdr.ScContractInstance({ executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(hash, "hex")), storage: null })),
+    }),
+  );
+}
+
 /** A fake network: answers each function by name from the simulated call. */
 function network(answers: Record<string, rpc.Api.SimulateTransactionResponse | (() => Promise<never>)>, entry: "live" | "none" | "archived" | "down" = "live") {
   return {
@@ -32,7 +46,8 @@ function network(answers: Record<string, rpc.Api.SimulateTransactionResponse | (
     async getLedgerEntries() {
       if (entry === "down") throw new Error("connection refused");
       if (entry === "none") return { entries: [], latestLedger: 100 };
-      return { entries: [{ liveUntilLedgerSeq: entry === "archived" ? 50 : 500 }], latestLedger: 100 };
+      // Fixture change (Codex split R1): the instance entry now also carries the wasm it runs, which loadSplit checks.
+      return { entries: [{ liveUntilLedgerSeq: entry === "archived" ? 50 : 500, val: instanceEntry() }], latestLedger: 100 };
     },
   } as never;
 }

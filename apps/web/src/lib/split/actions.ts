@@ -3,11 +3,13 @@
 // sent to a passkey prompt for something that cannot work, then goes through
 // sendSplitCall (the wallet's passkey and Caracal's fee relay).
 
+import { SPLIT, TOKENS } from "../stellar/config";
 import { splitAddressFor } from "../stellar/split-address";
 import { formatUsdc, splitProblem } from "./amounts";
 import { readConfig, readPots, splitStatus, type Pots, type SimulatingRpc, type SplitConfig } from "./chain";
 import { deploySplitFunction, moveFunction, setSplitFunction, withdrawFunction, type Pot } from "./calls";
 import { sendSplitCall, type BuildTx, type SendOutcome, type WriteKit } from "./send";
+import { readInstanceCode, type EntryReader } from "./verify";
 import type { LedgerReader } from "../stellar/wallet-lookup";
 
 export type Loaded =
@@ -38,10 +40,16 @@ export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefin
   if (status === "not-found") return { kind: "absent", split };
   if (status === "archived") return { kind: "archived", split };
   if (status === "unknown" || !server) return { kind: "error", split, message: "Caracal could not reach the Stellar network to look for your split contract. Check your connection and try again." };
+  // Not Caracal's split code, or code that could not be checked: show no balance and offer no action.
+  const code = await readInstanceCode(server as unknown as EntryReader, split);
+  if (code.kind === "unchecked") return { kind: "error", split, message: "Caracal could not check which code your split contract runs, so it will not show or use it yet. Check your connection and try again." };
+  if (code.kind !== "wasm" || code.hash !== SPLIT.wasmHash) return { kind: "error", split, message: "The contract at your split address does not run Caracal's split code, so Caracal will not show its balances or use it." };
   try {
     const [pots, config] = await Promise.all([readPots(server, split), readConfig(server, split)]);
     // Only this wallet can have deployed this address, so a different owner means something is badly wrong.
     if (config.owner !== wallet) return { kind: "error", split, message: "The contract at your split address is not owned by your wallet, so Caracal will not use it." };
+    // A split over another token would have its balances shown as USDC.
+    if (config.token !== TOKENS.usdc) return { kind: "error", split, message: "Your split contract is set up for a token other than USDC, so Caracal will not show its balances as USDC or use it." };
     return { kind: "present", split, pots, config };
   } catch (e) {
     return { kind: "error", split, message: `Your split contract exists, but its balances could not be read: ${e instanceof Error ? e.message : String(e)}` };

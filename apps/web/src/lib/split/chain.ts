@@ -37,7 +37,7 @@ async function simulateRead(server: SimulatingRpc, split: string, fn: string, pa
   } finally {
     clearTimeout(timer);
   }
-  if (rpc.Api.isSimulationError(sim)) throw new Error(splitErrorText(sim.error));
+  if (rpc.Api.isSimulationError(sim)) throw new Error(splitErrorText(sim.error, split));
   const retval = "result" in sim ? sim.result?.retval : undefined;
   if (!retval) throw new Error(`${fn}() returned no answer`);
   return scValToNative(retval);
