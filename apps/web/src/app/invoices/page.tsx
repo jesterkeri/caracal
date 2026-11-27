@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { readSignInState } from "@/lib/auth/account";
+import { followAccount, readSignInState } from "@/lib/auth/account";
 import { browserStore, mayRestoreWallet } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
@@ -13,7 +13,8 @@ import { checkDetails, deleteDetails, listDetails, saveDetails, type Db } from "
 import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
 import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
 
-type Ready = { wallet: string; split: string; rows: Row[] };
+/** `account` is the signed-in account the page loaded for: the details it saves go into that account's rows only. */
+type Ready = { account: string; wallet: string; split: string; rows: Row[] };
 type Load =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -22,6 +23,8 @@ type Load =
   | ({ kind: "ready" } & Ready);
 
 const db = () => supabaseBrowser() as unknown as Db;
+
+const ACCOUNT_CHANGED = "The signed-in account changed in another tab, so nothing was opened. Reloading for the account signed in now.";
 
 /** Longest wait for loading the wallet kit and restoring the saved wallet: the wallet page's limit (decisions 2026-11-26, r4e). */
 const RESTORE_TIMEOUT_MS = 30_000;
@@ -42,20 +45,28 @@ export default function InvoicesPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
-  async function refresh(wallet: string, split: string) {
+  async function refresh(account: string, wallet: string, split: string) {
     const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
     const rows = await loadRows(kit.rpc, await bounded(listDetails(db()), "Reading your saved invoices"), split);
-    setLoad({ kind: "ready", wallet, split, rows });
+    setLoad({ kind: "ready", account, wallet, split, rows });
+  }
+
+  /** Another tab signed in as someone else (or signed out): this page's wallet and form belong to the old account, so it starts again. */
+  function accountChanged() {
+    setLoad({ kind: "loading" });
+    window.location.reload();
   }
 
   useEffect(() => {
     let gone = false;
+    let unfollow = () => {};
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
       const me = await readSignInState(auth);
       if (me.kind === "signed-out") return window.location.replace("/signin");
       if (me.kind === "unverified") throw new Error("Caracal could not verify your sign-in. Check your connection and reload the page.");
+      unfollow = followAccount(auth, me.id, accountChanged);
       const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
       // Only a wallet this account connected on this browser is used (the same rule as the wallet page).
       const wallet = (await mayRestoreWallet(browserStore, kit, me.id)) ? await bounded(kit.connectWallet(), "Restoring your saved wallet", RESTORE_TIMEOUT_MS) : null;
@@ -68,7 +79,7 @@ export default function InvoicesPage() {
       if (!isCaracalSplit(split, cfg) || cfg.owner !== wallet.contractId) {
         throw new Error("The contract at your split address is not a Caracal split owned by your wallet, so Caracal will not use it.");
       }
-      await refresh(wallet.contractId, split);
+      await refresh(me.id, wallet.contractId, split);
     })().catch((e: unknown) => {
       console.error("invoices page:", e instanceof Error ? e.message : String(e));
       if (gone) return;
@@ -77,6 +88,7 @@ export default function InvoicesPage() {
     });
     return () => {
       gone = true;
+      unfollow();
     };
   }, []);
 
@@ -94,6 +106,15 @@ export default function InvoicesPage() {
     } catch (e) {
       setBusy(null);
       return setNotice(`Caracal could not load the wallet kit, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // The details go into the rows of whoever is signed in at the moment they are saved (supabase-js reads the
+    // session shared by every tab), so the account is read again here: another tab may have switched it.
+    const now = await readSignInState(supabaseBrowser().auth);
+    if (now.kind !== "verified" || now.id !== ready.account) {
+      setBusy(null);
+      if (now.kind === "unverified") return setNotice("Caracal could not verify your sign-in, so nothing was opened. Check your connection and try again.");
+      setNotice(ACCOUNT_CHANGED);
+      return accountChanged();
     }
     try {
       // The details are saved first, so an invoice that reached the chain always has its client name here.
@@ -119,7 +140,7 @@ export default function InvoicesPage() {
       setDescription("");
       setNotice("Invoice opened. Copy its pay link below and send it to your client.");
     }
-    if (outcome.kind !== "not-sent" && outcome.kind !== "failed") await refresh(ready.wallet, ready.split).catch(listFailed);
+    if (outcome.kind !== "not-sent" && outcome.kind !== "failed") await refresh(ready.account, ready.wallet, ready.split).catch(listFailed);
   }
 
   async function cancel(ready: Ready, ref: string) {
@@ -135,14 +156,14 @@ export default function InvoicesPage() {
     const outcome = await cancelInvoice(kit, ready.split, ref);
     setBusy(null);
     setNotice(outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice"));
-    await refresh(ready.wallet, ready.split).catch(listFailed);
+    await refresh(ready.account, ready.wallet, ready.split).catch(listFailed);
   }
 
   /** An entry the chain has no invoice for (opening it did not finish) can be removed from the list. */
   async function removeUnopened(ready: Ready, ref: string) {
     try {
       await deleteDetails(db(), ref);
-      await refresh(ready.wallet, ready.split);
+      await refresh(ready.account, ready.wallet, ready.split);
     } catch (e) {
       setNotice(`Caracal could not remove that entry. ${e instanceof Error ? e.message : String(e)}`);
     }

@@ -147,8 +147,8 @@ export type WriteOutcome =
   | { kind: "done"; hash: string }
   // Nothing was sent: it failed before any transaction left (passkey refused, the call fails when tried, or the relay said so).
   | { kind: "not-sent"; message: string }
-  // Reached the chain and failed there. Nothing moved.
-  | { kind: "failed"; message: string; hash: string }
+  // Reached the chain and failed there. Nothing moved. (The relay's own report of it carries no hash.)
+  | { kind: "failed"; message: string; hash?: string }
   // The answer was lost or unclear. It may have landed.
   | { kind: "unknown"; message: string; hash?: string };
 
@@ -193,6 +193,8 @@ export async function sendCall(kit: Submitter, split: string, method: string, ar
   const readable = splitErrorText(text, split) ?? (/Transaction failed on-chain/.test(text) ? "The network rejected the transaction." : text);
   if (text.includes("Nothing was sent") || (code !== undefined && NOT_SENT_CODES.has(code))) return { kind: "not-sent", message: readable };
   if (hash && /Transaction failed on-chain/.test(text)) return { kind: "failed", message: readable, hash };
+  // The relay's report that the network ran the transaction and it failed (src/lib/relay/channels.ts, ONCHAIN_FAILED).
+  if (/This transaction failed on the network \(ONCHAIN_FAILED\), so nothing changed\./.test(text)) return { kind: "failed", message: readable, hash };
   return { kind: "unknown", message: readable, hash };
 }
 

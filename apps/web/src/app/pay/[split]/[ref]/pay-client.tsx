@@ -118,7 +118,7 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
         text: `Your wallet holds ${formatUsdc(balance)} USDC and this invoice needs ${formatUsdc(amount)} USDC. Nothing was sent. Add USDC to your wallet, then pay.`,
       });
     }
-    setPay({ kind: "busy", label: "Paying. Approve it with your passkey." });
+    setPay({ kind: "busy", label: "Paying. Approve it with your passkey" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
       kit = await getKit();
@@ -135,7 +135,9 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     // Unknown: the chain says whether it landed.
     const after = await reload();
     setView(after);
-    if (after.kind === "invoice" && after.invoice.status === "paid") return setPay({ kind: "paid", hash: outcome.hash ?? after.txHash });
+    // The receipt is the transaction the contract's events say paid the invoice: after a lost answer the
+    // payer's own transaction may have failed while someone else's paid it.
+    if (after.kind === "invoice" && after.invoice.status === "paid") return setPay({ kind: "paid", hash: after.txHash });
     setPay({
       kind: "message",
       checkFirst: true,

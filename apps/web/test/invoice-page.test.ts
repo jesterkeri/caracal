@@ -54,7 +54,9 @@ afterEach(() => {
 
 type Row = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; chain: unknown; txHash: string | null };
 const row = (over: Partial<Row> = {}): Row => ({ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z", chain: { amount: usdc(150), status: "open" }, txHash: null, ...over });
-const ready = (rows: Row[]) => ({ kind: "ready", wallet: WALLET, split: SPLIT, rows });
+// Fixture fix (2026-11-27, adversary i2): the ready state records the account it was loaded for, and the fake
+// auth has onAuthStateChange like the real one, since the page now follows the signed-in account.
+const ready = (rows: Row[]) => ({ kind: "ready", account: "A", wallet: WALLET, split: SPLIT, rows });
 
 /** States, in order: load, amount, client, description, busy, notice, copied. */
 async function render(states: unknown[], o: { config?: unknown; outcome?: unknown; rows?: Row[] } = {}) {
@@ -98,7 +100,7 @@ async function render(states: unknown[], o: { config?: unknown; outcome?: unknow
     return { ...actual, loadRows: async () => o.rows ?? [] };
   });
   vi.doMock("@/lib/auth/wallet-binding", () => ({ browserStore: {}, mayRestoreWallet: async () => true }));
-  const auth = { getUser: async () => ({ data: { user: { id: "A", email: "a@x.ng" } }, error: null }), getSession: async () => ({ data: { session: {} } }) };
+  const auth = { getUser: async () => ({ data: { user: { id: "A", email: "a@x.ng" } }, error: null }), getSession: async () => ({ data: { session: {} } }), onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }) };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
