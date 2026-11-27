@@ -130,6 +130,8 @@ export type AnchorTxn = {
   amountInAsset?: string | null;
   amountOut: string | null;
   feeTotal: string | null;
+  /** The asset fee_details.total is in (SEP-38 id), when the anchor says; absent means the asset paid in. */
+  feeAsset?: string | null;
   withdrawAnchorAccount: string | null;
   withdrawMemo: string | null;
   withdrawMemoType: string | null;
@@ -144,7 +146,7 @@ export function parseTransaction(json: unknown): AnchorTxn {
   if (!t || typeof t !== "object" || typeof t.id !== "string" || typeof t.status !== "string") {
     throw new AnchorError("The test anchor's status answer was not in the expected shape.", "status");
   }
-  const fee = t.fee_details as { total?: unknown } | undefined;
+  const fee = t.fee_details as { total?: unknown; asset?: unknown } | undefined;
   return {
     id: t.id,
     status: t.status,
@@ -153,6 +155,7 @@ export function parseTransaction(json: unknown): AnchorTxn {
     amountInAsset: str(t.amount_in_asset),
     amountOut: str(t.amount_out),
     feeTotal: str(fee?.total),
+    feeAsset: str(fee?.asset),
     withdrawAnchorAccount: str(t.withdraw_anchor_account),
     withdrawMemo: str(t.withdraw_memo),
     withdrawMemoType: str(t.withdraw_memo_type),

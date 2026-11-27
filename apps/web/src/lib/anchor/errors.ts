@@ -46,7 +46,9 @@ export async function requestWithin(fetchFn: typeof fetch, input: string, init: 
   });
   const run = (async (): Promise<Reply> => {
     const res = await fetchFn(input, { ...init, signal: ctl.signal });
-    return { ok: res.ok, status: res.status, text: await res.text().catch(() => "") };
+    // A body that breaks off partway fails the request (the network's failure), never an empty answer the
+    // anchor did not give.
+    return { ok: res.ok, status: res.status, text: await res.text() };
   })();
   run.catch(() => {}); // when the deadline wins, a later failure of the request is not an unhandled rejection
   try {

@@ -9,7 +9,7 @@ import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { explorerLink } from "@/lib/stellar/config";
 import { fromStroops } from "@/lib/anchor/amount";
-import { SIMULATION_NOTE, STAMP_DUTY_NOTE } from "@/lib/anchor/config";
+import { CASHOUT_ASSET, SIMULATION_NOTE, STAMP_DUTY_NOTE } from "@/lib/anchor/config";
 import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
@@ -34,6 +34,11 @@ function within<T>(p: Promise<T>, ms: number): Promise<T> {
     timer = setTimeout(() => reject(new Error("timed out")), ms);
   });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
+/** The unit an anchor amount is in: USDC when the anchor names Circle testnet USDC or no asset, else its own id. */
+function assetLabel(asset: string | null | undefined): string {
+  return asset == null || asset === CASHOUT_ASSET.id ? "USDC" : `(in ${asset})`;
 }
 
 /** What a payment goes to: the anchor's account and memo. */
@@ -333,7 +338,7 @@ export default function CashoutPage() {
                 <dt>The anchor wants</dt>
                 <dd className="text-right">{txn.amountIn ?? "?"} USDC</dd>
                 <dt>Anchor fee</dt>
-                <dd className="text-right">{txn.feeTotal ?? "not stated"} USDC</dd>
+                <dd className="text-right">{txn.feeTotal === null ? "not stated" : `${txn.feeTotal} ${assetLabel(txn.feeAsset)}`}</dd>
                 <dt>Arrives</dt>
                 <dd className="text-right">{txn.amountOut ?? "not stated"} (simulated)</dd>
                 <dt>Pay to account</dt>
