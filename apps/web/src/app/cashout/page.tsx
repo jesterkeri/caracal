@@ -99,8 +99,12 @@ export default function CashoutPage() {
   const [problem, setProblem] = useState<string | null>(null);
   const [pollNote, setPollNote] = useState<string | null>(null);
   const [sentHash, setSentHash] = useState<string | null>(null);
-  /** A send whose outcome is unknown and that gave no hash: the anchor's status decides (adversary c13). */
+  /** A send whose outcome is unknown, with or without a hash: the anchor's status decides (adversary c13, c14). */
   const [unknownSend, setUnknownSend] = useState(false);
+  /** The send was confirmed on chain (not merely given a hash). */
+  const [sendConfirmed, setSendConfirmed] = useState(false);
+  /** The outcome was unknown while the kit's send had not settled, and it still has not, LAND_WINDOW_MS later. */
+  const [stalled, setStalled] = useState(false);
   /** When the kit's signAndSubmit for this page's send settled (resolved or threw), on Date.now(). */
   const [sendSettledAt, setSendSettledAt] = useState<number | null>(null);
   /** LAND_WINDOW_MS has passed since sendSettledAt (set by a timer, see unknownWaiting). */
@@ -275,11 +279,12 @@ export default function CashoutPage() {
     refreshBalance();
     if (r.kind === "sent") {
       setSentHash(r.hash);
+      setSendConfirmed(true);
       setPhase("watching");
     } else if (r.kind === "unknown") {
       // Never sent twice: the sending lock stays, and the anchor's status decides.
       if (r.hash) setSentHash(r.hash);
-      else setUnknownSend(true);
+      setUnknownSend(true);
       setProblem(r.message);
       setPhase("watching");
     } else {
@@ -299,6 +304,8 @@ export default function CashoutPage() {
     setConfirmed(null);
     setSentHash(null);
     setUnknownSend(false);
+    setSendConfirmed(false);
+    setStalled(false);
     setSendSettledAt(null);
     setLandingOver(false);
     setProblem(null);
@@ -316,8 +323,16 @@ export default function CashoutPage() {
   // payment can land only while the relay may still send it (its 60 s deadline from receipt) and the
   // transaction it built is valid (25 s), both started before the send settled: LAND_WINDOW_MS after it,
   // a payment the anchor still has not seen did not arrive, and a new cash-out cannot pay this one twice.
-  const unknownWaiting = phase === "watching" && unknownSend && sentHash === null && txn?.status === "pending_user_transfer_start";
+  const unknownWaiting = phase === "watching" && unknownSend && txn?.status === "pending_user_transfer_start";
   const pastLanding = unknownWaiting && landingOver;
+  // A send still unsettled LAND_WINDOW_MS after its outcome was called unknown (the page's 5 minute limit) has
+  // no bound the page can wait out: it may still be in the passkey prompt. The page then stops promising a new
+  // cash-out and says to reload, which ends it (adversary c14).
+  useEffect(() => {
+    if (!unknownSend || sendSettledAt !== null) return;
+    const t = setTimeout(() => setStalled(true), LAND_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [unknownSend, sendSettledAt]);
   useEffect(() => {
     if (sendSettledAt === null) return;
     const t = setTimeout(() => setLandingOver(true), Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
@@ -470,7 +485,7 @@ export default function CashoutPage() {
 
           {txn && (phase === "watching" || done) && (
             <div className="card">
-              <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn, sentHash !== null)}</p>
+              <p className={txn.status === "completed" ? "font-semibold" : ""}>{statusText(txn, sendConfirmed)}</p>
               {sentHash && (
                 <a className="addr link" href={explorerLink("tx", sentHash)}>
                   USDC payment on Stellar: {sentHash}
@@ -501,7 +516,9 @@ export default function CashoutPage() {
             <p className="msg msg-unsure">
               {pastLanding
                 ? "The anchor still has not received the USDC, and the payment can no longer reach the network. If your USDC balance above did not drop, it did not go through and you can start another cash-out. If it did drop, ask the anchor about it with the transaction id."
-                : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
+                : stalled && sendSettledAt === null
+                  ? "The payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
+                  : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
             </p>
           )}
           {pollNote && <p className="msg msg-unsure">{pollNote}</p>}
