@@ -71,12 +71,12 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
 /** smart-account-kit 0.10.0 errors raised only after it found a contract at the passkey's address. */
 const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousError", "WalletOwnershipError", "WalletCodeNotAcceptedError"]);
 
-const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(browserStore);
+const { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor } = creationMarker(browserStore);
 
 const NO_WALLET_FOR_PASSKEY =
   "No wallet was found on Stellar testnet for this passkey. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
 const SAVED_WALLET_GONE =
-  "Your saved wallet was not found on Stellar testnet (the test network may have been reset). Sign out and sign in again to start over on this browser.";
+  "Your saved wallet was not found on Stellar testnet. If you created it in the last few minutes, the network may not show it yet: wait a minute and reload. Otherwise the test network may have been reset: sign out and sign in again to start over on this browser.";
 const WALLET_ARCHIVED =
   "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can be used. Caracal cannot restore it yet. Do not create another wallet.";
 const WALLET_EXISTS_UNREAD = "Your wallet exists on Stellar testnet, but Caracal could not load it just now. Try again in a moment.";
@@ -110,6 +110,8 @@ const CREATION_IN_PROGRESS =
   "An earlier wallet creation for this account could not be confirmed.";
 const CREATION_UNDER_WAY =
   "A wallet creation is already under way in another tab of this browser, or in this one. Wait for it to finish, then reload this page.";
+const LOCKS_REFUSED =
+  "This browser refused to let Caracal make sure that only one tab creates your wallet, so nothing was created. If site data is blocked for this site or you are in private browsing, allow it and reload the page; otherwise use a current version of Chrome, Edge, Safari or Firefox.";
 const LOCKS_UNSUPPORTED =
   "This browser cannot make sure that only one tab creates your wallet. Use a current version of Chrome, Edge, Safari or Firefox to create it.";
 
@@ -231,7 +233,8 @@ export default function WalletPage() {
     };
   }, []);
 
-  async function connected(contractId: string, txHash?: string) {
+  /** created: this wallet is the one this page's own creation just made. */
+  async function connected(contractId: string, txHash?: string, created = false) {
     if (!account) return;
     // The account may have changed since the page loaded (another tab), so it
     // is confirmed again before this wallet is recorded as its.
@@ -240,7 +243,9 @@ export default function WalletPage() {
     // Recorded as this account's: a reload restores it, so the note goes.
     // "not-saved" keeps it: nothing on this browser would remember the wallet.
     if (bound === "bound") {
-      markCreation(account.id, false);
+      // Only the attempt's own wallet confirms it. Connecting an older wallet
+      // says nothing about whether the unconfirmed attempt may still land.
+      if (created || pendingWalletFor(account.id) === contractId) markCreation(account.id, false);
       rememberWallet(browserStore, account.id, contractId);
     }
     // "not-saved": the wallet is this person's for this visit, but it will not
@@ -276,8 +281,8 @@ export default function WalletPage() {
     if (out.ran) return;
     setState(
       out.why === "busy"
-        ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true }
-        : { kind: "error", message: LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
+        ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true, remembered: choice.secondTo }
+        : { kind: "error", message: out.why === "refused" ? LOCKS_REFUSED : LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
     );
   }
 
@@ -285,14 +290,14 @@ export default function WalletPage() {
     if (anyway) {
       // Only once the last attempt cannot still finish (creation-marker.ts).
       if (creationAge() < CREATION_SETTLE_MS) {
-        setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
+        setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true, remembered: secondTo });
         return;
       }
       markCreation(me.id, false);
     }
     // An earlier attempt's outcome is unknown: do not start a second.
     if (creationUnconfirmedFor(me.id)) {
-      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
+      setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true, remembered: secondTo });
       return;
     }
     // This page may be older than a wallet created since in another tab:
@@ -312,13 +317,19 @@ export default function WalletPage() {
       setState({ kind: "error", message: WALLET_RECORDED_ELSEWHERE });
       return;
     }
+    // Nothing was made or sent: what was known before still holds. A wallet
+    // this account had here is named again, and a new one stays an explicit
+    // choice; plain Create only where none was known.
+    const nothingMade = (message: string) => {
+      const remembered = rememberedWallet(browserStore, me.id) ?? undefined;
+      setState(remembered ? { kind: "error", message, remembered } : { kind: "error", message, createAllowed: true });
+    };
     setState({ kind: "busy", label: "Creating your passkey and wallet" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
       kit = await getKit();
     } catch (e) {
-      // Nothing was made or sent; what was known before still holds.
-      setState({ kind: "error", message: failureText(e), createAllowed: true });
+      nothingMade(failureText(e));
       return;
     }
     // The kit announces credentialCreated once the passkey exists, before the
@@ -327,11 +338,13 @@ export default function WalletPage() {
     // submitting). Without the event API nothing can be told apart, so every
     // failure counts as after.
     let passkeyMade = typeof kit.events?.on !== "function";
-    const stop = kit.events?.on?.("credentialCreated", () => {
+    const stop = kit.events?.on?.("credentialCreated", (e?: { credential?: { contractId?: unknown } }) => {
       passkeyMade = true;
       // The wait before "Start a new one anyway" counts from here, not from
-      // before the passkey prompt (which can take a minute).
-      markCreation(me.id, true);
+      // before the passkey prompt (which can take a minute). The address the
+      // attempt would create is kept: connecting it later confirms the attempt.
+      const wallet = e?.credential?.contractId;
+      markCreation(me.id, true, typeof wallet === "string" ? wallet : undefined);
     });
     markCreation(me.id, true);
     // While the attempt runs, its start time is renewed, so if this tab
@@ -348,7 +361,8 @@ export default function WalletPage() {
       const message = failureText(e);
       // An unknown outcome: the wait counts from now, when it ended here.
       markCreation(me.id, passkeyMade);
-      setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
+      if (passkeyMade) setState({ kind: "error", message, checkFirst: true, remembered: secondTo });
+      else nothingMade(message);
       return;
     } finally {
       clearInterval(beat);
@@ -364,23 +378,29 @@ export default function WalletPage() {
       const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
       if (!sent && detail.includes("Nothing was sent")) {
         markCreation(me.id, false);
-        return setState({ kind: "error", message: detail, createAllowed: true });
+        return nothingMade(detail);
       }
       markCreation(me.id, true);
-      setState({ kind: "error", message: detail, checkFirst: true });
+      setState({ kind: "error", message: detail, checkFirst: true, remembered: secondTo });
       return;
     }
     try {
-      await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
+      await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined, true);
     } catch (e) {
       // The wallet was made; only recording its owner failed.
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true });
+      setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true, remembered: secondTo });
     }
   }
 
-  /** After an unknown outcome, the person checked with Connect and found no wallet. */
+  /**
+   * After an unknown outcome, the person checked with Connect and found no
+   * wallet. If the attempt was a second wallet beside one this page showed,
+   * that same wallet is passed on, so this account's own binding does not
+   * refuse it; a wallet recorded since (by another tab) still does.
+   */
   function createAnyway() {
-    return create({ anyway: true });
+    const shown = state.kind === "error" || state.kind === "idle" ? state.remembered : undefined;
+    return create({ anyway: true, secondTo: shown });
   }
 
   async function connect() {

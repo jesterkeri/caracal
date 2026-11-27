@@ -11,6 +11,12 @@ import type { KeyValue } from "./wallet-binding";
  * the page offers only Connect, even after a reload.
  */
 export const CREATION_UNCONFIRMED_KEY = "caracal.creationUnconfirmed";
+/**
+ * The wallet address each unconfirmed attempt would create ({ accountId:
+ * address }, JSON), known once its passkey exists. Connecting that wallet is
+ * what confirms the attempt; connecting another (an older wallet) is not.
+ */
+export const CREATION_PENDING_WALLET_KEY = "caracal.creationPendingWallet";
 /** The latest attempt's start (ms since epoch), for all accounts. */
 export const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
 /**
@@ -68,9 +74,41 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
     }
   }
 
-  /** Records (unconfirmed true) or clears this account's creation attempt; other accounts' are kept. */
-  function markCreation(id: string, unconfirmed: boolean) {
+  function pendingWallets(): Record<string, string> {
+    try {
+      const v: unknown = JSON.parse(store.getItem(CREATION_PENDING_WALLET_KEY) ?? "{}");
+      return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** The wallet this account's unconfirmed attempt would create, if known. */
+  function pendingWalletFor(id: string): string | null {
+    try {
+      const w = pendingWallets()[id];
+      return typeof w === "string" ? w : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Records (unconfirmed true) or clears this account's creation attempt;
+   * other accounts' are kept. `wallet`: the address the attempt would create,
+   * kept until the attempt is cleared.
+   */
+  function markCreation(id: string, unconfirmed: boolean, wallet?: string) {
     if (unconfirmed) startedHere = now();
+    try {
+      const pending = pendingWallets();
+      if (unconfirmed && wallet) pending[id] = wallet;
+      if (!unconfirmed) delete pending[id];
+      if (Object.keys(pending).length === 0) store.removeItem(CREATION_PENDING_WALLET_KEY);
+      else store.setItem(CREATION_PENDING_WALLET_KEY, JSON.stringify(pending));
+    } catch (e) {
+      console.error("could not record the attempt's wallet:", e instanceof Error ? e.message : String(e));
+    }
     try {
       const others = unconfirmedIds().filter((x) => x !== id);
       const ids = unconfirmed ? [...others, id] : others;
@@ -86,5 +124,5 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
     }
   }
 
-  return { creationUnconfirmedFor, creationAge, markCreation };
+  return { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor };
 }

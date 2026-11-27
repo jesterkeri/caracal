@@ -124,16 +124,6 @@ const fail = (error: string, status: number) =>
 
 const refuse = (error: string, status: number) => fail(refusalText(error), status);
 
-/** Whether a request body (not yet checked) asks to deploy a contract. */
-function deploysContract(body: unknown): boolean {
-  try {
-    const func = (body as { func?: unknown })?.func;
-    return typeof func === "string" && xdr.HostFunction.fromXDR(func, "base64").switch().name === "hostFunctionTypeCreateContractV2";
-  } catch {
-    return false;
-  }
-}
-
 export async function POST(request: Request) {
   const arrived = Date.now();
   /** Refusal if this request may no longer be sent: too late, or its caller has gone. */
@@ -166,9 +156,10 @@ export async function POST(request: Request) {
   if (!deps) return refuse("Fee sponsorship is not set up on this server.", 503);
 
   const verdict = await checkPayload(body, CARACAL_POLICY, chain.wasm, chain.instance);
-  // A refused deployment says "Nothing was sent", which the wallet page needs
-  // to offer creation again; calls keep the policy's own wording.
-  if (!verdict.ok) return deploysContract(body) ? refuse(verdict.error, verdict.status) : fail(verdict.error, verdict.status);
+  // Every refusal here is made before anything is sent, so it says "Nothing
+  // was sent": the wallet page needs it to offer creation again, and the
+  // invoice and split pages need it to tell a refusal from a lost answer.
+  if (!verdict.ok) return refuse(verdict.error, verdict.status);
 
   // Only the shared deployer's wallet deployment goes to SDF's proxy as
   // { func, auth }: it names its exact code hash and no existing contract's
@@ -229,7 +220,7 @@ export async function POST(request: Request) {
       return refuse("The network could not be reached to check this call. Try again.", 503);
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
-    if (!built.ok) return toProxy ? refuse(built.error, built.status) : fail(built.error, built.status);
+    if (!built.ok) return refuse(built.error, built.status);
     const late = tooLate();
     if (late) return late;
 
