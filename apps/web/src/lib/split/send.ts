@@ -11,13 +11,18 @@
 //   done     the network confirmed it.
 //   refused  Caracal's relay said "Nothing was sent".
 //   stopped  it failed before anything reached the relay (the passkey prompt
-//            was closed, the call was refused when simulated).
+//            was closed, the call was refused when simulated, or the network
+//            did not answer the first simulation within its limit).
 //   unknown  anything else: it may or may not have landed. The page re-reads
 //            the chain instead of guessing.
 
 import { contract, rpc, Operation, type xdr } from "@stellar/stellar-sdk";
 import type { TransactionResult } from "smart-account-kit";
 import { splitErrorText } from "./errors";
+import { READ_TIMEOUT_MS } from "./chain";
+
+/** The network answered and said the call fails (a simulation error), as opposed to not answering. */
+export class SimulationRefused extends Error {}
 
 /** The part of smart-account-kit's SmartAccountKit used to write. */
 export type WriteKit = {
@@ -45,7 +50,7 @@ export const buildTx: BuildTx = async (kit, func, method, contractId) => {
     method,
     parseResultXdr: (v) => v,
   } as contract.AssembledTransactionOptions<unknown>);
-  if (tx.simulation && rpc.Api.isSimulationError(tx.simulation)) throw new Error(splitErrorText(tx.simulation.error));
+  if (tx.simulation && rpc.Api.isSimulationError(tx.simulation)) throw new SimulationRefused(splitErrorText(tx.simulation.error));
   return tx;
 };
 
@@ -66,11 +71,24 @@ export async function sendSplitCall(
   build: BuildTx = buildTx,
 ): Promise<SendOutcome> {
   let tx: contract.AssembledTransaction<unknown>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    tx = await build(kit, func, method, contractId);
+    // The first simulation has the same limit as every read: an RPC that never answers ends the write here.
+    tx = await Promise.race([
+      build(kit, func, method, contractId),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`the Stellar network did not answer within ${READ_TIMEOUT_MS / 1000} seconds`)), READ_TIMEOUT_MS);
+      }),
+    ]);
   } catch (e) {
-    // Nothing has been signed or posted yet.
-    return { kind: "stopped", message: `The call was refused when Caracal tried it first: ${problem(e)}` };
+    // Nothing has been signed or posted yet. A refusal by the contract is named as one;
+    // anything else is the network not answering, not the call being refused.
+    const refusedByChain = e instanceof SimulationRefused || (e instanceof Error && /Error\(Contract,/.test(e.message));
+    return refusedByChain
+      ? { kind: "stopped", message: `The call was refused when Caracal tried it first: ${problem(e)}` }
+      : { kind: "stopped", message: `Caracal could not reach the Stellar network to prepare this, so nothing was signed or sent. Check your connection and try again. (${problem(e)})` };
+  } finally {
+    clearTimeout(timer);
   }
   let result: TransactionResult;
   try {
