@@ -248,14 +248,16 @@ export default function InvoicesPage() {
     setBusy(null);
     if (outcome.kind === "unknown") rememberUnknownOpening(ref);
     else forgetOpening(ref);
-    if (outcome.kind !== "done") setNotice(outcomeText(outcome, "Opening the invoice"));
+    let said: string;
+    if (outcome.kind !== "done") said = outcomeText(outcome, "Opening the invoice");
     else {
       setAmount("");
       setClient("");
       setDescription("");
-      setNotice("Invoice opened. Copy its pay link below and send it to your client.");
+      said = "Invoice opened. Copy its pay link below and send it to your client.";
     }
-    if (outcome.kind !== "not-sent" && outcome.kind !== "failed") await refresh(ready.account, ready.wallet, ready.split).catch(listFailed);
+    setNotice(said);
+    if (outcome.kind !== "not-sent" && outcome.kind !== "failed") await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
   }
 
   async function cancel(ready: Ready, ref: string) {
@@ -270,22 +272,24 @@ export default function InvoicesPage() {
     }
     const outcome = await cancelInvoice(kit, ready.split, ref);
     setBusy(null);
-    setNotice(outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice"));
-    await refresh(ready.account, ready.wallet, ready.split).catch(listFailed);
+    const said = outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice");
+    setNotice(said);
+    await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
   }
 
   /** An entry the chain has no invoice for (opening it did not finish) can be removed from the list. */
   async function removeUnopened(ready: Ready, ref: string) {
     try {
       await deleteDetails(db(), ref);
-      await refresh(ready.account, ready.wallet, ready.split);
     } catch (e) {
-      setNotice(`Caracal could not remove that entry. ${e instanceof Error ? e.message : String(e)}`);
+      return setNotice(`Caracal could not remove that entry. ${e instanceof Error ? e.message : String(e)}`);
     }
+    await refresh(ready.account, ready.wallet, ready.split).catch(listFailed("Entry removed."));
   }
 
-  function listFailed(e: unknown) {
-    setNotice(`The invoice list could not be refreshed. Reload the page. ${e instanceof Error ? e.message : String(e)}`);
+  /** A list read that failed after a write: what the write did is kept, and the failed read is added to it. */
+  function listFailed(said: string) {
+    return (e: unknown) => setNotice(`${said} The invoice list could not be refreshed, so it may be out of date. Reload the page. ${e instanceof Error ? e.message : String(e)}`);
   }
 
   async function copy(link: string, ref: string) {

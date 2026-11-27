@@ -27,6 +27,9 @@ const READ_SOURCE = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 /** Longest wait for one network read. The SDK has no timeout of its own, and a browser fetch can wait for ever. */
 export const READ_TIMEOUT_MS = 20_000;
 
+/** The longest wait for a write's send (passkey, the kit's re-simulation, the relay and its confirmation). */
+export const SEND_TIMEOUT_MS = 5 * 60_000;
+
 /** `p`, or a rejection once READ_TIMEOUT_MS has passed: a node that never answers ends in an error, not an endless wait. */
 export function bounded<T>(p: Promise<T>, what: string, ms: number = READ_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -187,7 +190,9 @@ export async function sendCall(kit: Submitter, split: string, method: string, ar
   }
   let result: Awaited<ReturnType<Submitter["signAndSubmit"]>>;
   try {
-    result = await kit.signAndSubmit(tx);
+    // The kit re-simulates after the passkey and polls on an RPC client with no timeout of its own, so the whole
+    // send has a limit too (as the split page's, decisions s4). Past it the write may still land: unknown, never "not sent".
+    result = await bounded(kit.signAndSubmit(tx), "Sending it", SEND_TIMEOUT_MS);
   } catch (e) {
     return { kind: "unknown", message: msg(e) };
   }

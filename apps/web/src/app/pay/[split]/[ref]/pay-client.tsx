@@ -147,6 +147,11 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     // The receipt is the transaction the contract's events say paid the invoice: after a lost answer the
     // payer's own transaction may have failed while someone else's paid it.
     if (after.kind === "invoice" && after.invoice.status === "paid") return setPay({ kind: "paid", hash: after.txHash });
+    // A cancelled invoice was never paid (the contract refuses to cancel a paid one) and takes no deposit
+    // after (InvoiceCancelled), so this payment did not go through and cannot.
+    if (after.kind === "invoice" && after.invoice.status === "cancelled") {
+      return setPay({ kind: "message", text: "The payment did not go through, and no money moved: the person who sent this invoice cancelled it." });
+    }
     setPay({
       kind: "message",
       checkFirst: true,
