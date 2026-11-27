@@ -9,6 +9,7 @@
 import { Account, Address, MuxedAccount, Operation, StrKey, TransactionBuilder, contract, nativeToScVal, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, TOKENS } from "../stellar/config";
 import { fromStroops, toStroops } from "./amount";
+import { CASHOUT_ASSET } from "./config";
 import { AnchorError, RequestTimeout, within } from "./errors";
 import type { AnchorTxn } from "./sep24";
 
@@ -38,6 +39,10 @@ export function paymentFor(txn: AnchorTxn, confirmed: bigint): AnchorPayment {
       "The anchor asked for a memo type a smart wallet cannot send (a Soroban payment carries only a numeric id inside the destination). Nothing was sent.",
       "send",
     );
+  }
+  // The withdraw was started for Circle testnet USDC; a record that names any other asset is not paid in it.
+  if (txn.amountInAsset != null && txn.amountInAsset !== CASHOUT_ASSET.id) {
+    throw new AnchorError(`The anchor asks to be paid in ${txn.amountInAsset}, not Circle testnet USDC. Nothing was sent.`, "send");
   }
   const quoted = txn.amountIn ? toStroops(txn.amountIn) : null;
   if (quoted === null || quoted === BigInt(0)) throw new AnchorError("The anchor did not say how much USDC to send, so nothing was sent.", "send");
@@ -93,7 +98,10 @@ export async function buildAnchorTransfer(wallet: string, payment: AnchorPayment
   }
   const sim = tx.simulation;
   if (sim && rpc.Api.isSimulationError(sim)) {
-    throw new AnchorError("The network rejected the USDC payment before it was signed, so nothing was sent. Your wallet may not hold enough USDC.", "send");
+    // The balance is named as the cause only when it is read and short of the payment.
+    const balance = await readUsdcBalance(wallet, server);
+    const short = balance !== null && balance < payment.stroops ? ` Your wallet holds ${fromStroops(balance)} USDC, less than the ${fromStroops(payment.stroops)} USDC to send.` : "";
+    throw new AnchorError(`The network rejected the USDC payment before it was signed, so nothing was sent.${short || " Try again; if it happens again, start a new cash-out."}`, "send");
   }
   return tx;
 }

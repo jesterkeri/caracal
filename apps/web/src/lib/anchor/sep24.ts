@@ -126,6 +126,8 @@ export type AnchorTxn = {
   status: string;
   message: string | null;
   amountIn: string | null;
+  /** The asset amount_in is in (SEP-38 id), when the anchor says; absent means the asset the withdraw was started for. */
+  amountInAsset?: string | null;
   amountOut: string | null;
   feeTotal: string | null;
   withdrawAnchorAccount: string | null;
@@ -148,6 +150,7 @@ export function parseTransaction(json: unknown): AnchorTxn {
     status: t.status,
     message: str(t.message),
     amountIn: str(t.amount_in),
+    amountInAsset: str(t.amount_in_asset),
     amountOut: str(t.amount_out),
     feeTotal: str(fee?.total),
     withdrawAnchorAccount: str(t.withdraw_anchor_account),
