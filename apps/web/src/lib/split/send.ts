@@ -41,6 +41,9 @@ export type SendOutcome =
 /** Builds and simulates the transaction for a host function. Replaceable in tests. */
 export type BuildTx = (kit: WriteKit, func: xdr.HostFunction, method: string, contractId: string) => Promise<contract.AssembledTransaction<unknown>>;
 
+/** The network answered that data this call reads has expired and must be restored first (a restore preamble). */
+export class DataExpired extends Error {}
+
 export const buildTx: BuildTx = async (kit, func, method, contractId) => {
   const tx = await contract.AssembledTransaction.buildWithOp<unknown>(Operation.invokeHostFunction({ func, auth: [] }), {
     contractId,
@@ -51,6 +54,8 @@ export const buildTx: BuildTx = async (kit, func, method, contractId) => {
     parseResultXdr: (v) => v,
   } as contract.AssembledTransactionOptions<unknown>);
   if (tx.simulation && rpc.Api.isSimulationError(tx.simulation)) throw new SimulationRefused(splitErrorText(tx.simulation.error));
+  // The relay sponsors calls and deployments only, never a restore, so such a call cannot be sent.
+  if (tx.simulation && rpc.Api.isSimulationRestore(tx.simulation)) throw new DataExpired("restore needed");
   return tx;
 };
 
@@ -58,6 +63,8 @@ export const buildTx: BuildTx = async (kit, func, method, contractId) => {
 const BEFORE_SENDING = new Set(["WebAuthnError", "WalletNotConnectedError", "SignerNotFoundError", "CredentialNotFoundError", "ValidationError", "SimulationError"]);
 /** What a closed or timed-out passkey prompt raises in the browser. */
 const PROMPT_CLOSED = new Set(["NotAllowedError", "AbortError"]);
+/** smart-account-kit's SmartAccountErrorCode.TRANSACTION_SIGNING_FAILED. */
+const TRANSACTION_SIGNING_FAILED = 5002;
 
 /** Longest wait for the passkey prompt plus the relay and the network to answer (a WebAuthn prompt itself times out within this). */
 export const SEND_TIMEOUT_MS = 5 * 60_000;
@@ -86,6 +93,9 @@ export async function sendSplitCall(
   } catch (e) {
     // Nothing has been signed or posted yet. A refusal by the contract is named as one;
     // anything else is the network not answering, not the call being refused.
+    if (e instanceof DataExpired) {
+      return { kind: "stopped", message: "Part of the data this needs has expired on Stellar testnet and must be restored first, so nothing was signed or sent. Caracal cannot restore it yet." };
+    }
     const refusedByChain = e instanceof SimulationRefused || (e instanceof Error && /Error\(Contract,/.test(e.message));
     return refusedByChain
       ? { kind: "stopped", message: `The call was refused when Caracal tried it first: ${problem(e)}` }
@@ -122,5 +132,8 @@ export async function sendSplitCall(
     return { kind: "stopped", message: "The passkey prompt was closed or timed out." };
   }
   if (!hash && BEFORE_SENDING.has(err.name)) return { kind: "stopped", message };
+  // smart-account-kit 0.10.0's signAndSubmit returns code 5002 only for failures before it sends (signing,
+  // re-simulation, the transaction's simulation data); failures of the send itself come back as 5003, 5004 or a throw.
+  if (!hash && (err as { code?: unknown }).code === TRANSACTION_SIGNING_FAILED) return { kind: "stopped", message };
   return { kind: "unknown", message, hash };
 }
