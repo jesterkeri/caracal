@@ -9,7 +9,7 @@
 //
 // The outcome says only what is known:
 //   done     the network confirmed it.
-//   refused  Caracal's relay said "Nothing was sent".
+//   refused  Caracal's relay said "Nothing was sent", or that the network ran it and it failed, so nothing changed (ONCHAIN_FAILED).
 //   stopped  it failed before anything reached the relay (the passkey prompt
 //            was closed, the call was refused when simulated, or the network
 //            did not answer the first simulation within its limit).
@@ -59,6 +59,9 @@ const BEFORE_SENDING = new Set(["WebAuthnError", "WalletNotConnectedError", "Sig
 /** What a closed or timed-out passkey prompt raises in the browser. */
 const PROMPT_CLOSED = new Set(["NotAllowedError", "AbortError"]);
 
+/** Longest wait for the passkey prompt plus the relay and the network to answer (a WebAuthn prompt itself times out within this). */
+export const SEND_TIMEOUT_MS = 5 * 60_000;
+
 function problem(e: unknown): string {
   return splitErrorText(e instanceof Error ? e.message : String(e));
 }
@@ -91,16 +94,29 @@ export async function sendSplitCall(
     clearTimeout(timer);
   }
   let result: TransactionResult;
+  let late: ReturnType<typeof setTimeout> | undefined;
   try {
-    result = await kit.signAndSubmit(tx);
+    // The kit re-simulates and polls on an RPC client with no timeout of its own, so the whole send has a
+    // limit too. Once it has passed the write may still land: the outcome is unknown, never "not sent".
+    result = await Promise.race([
+      kit.signAndSubmit(tx),
+      new Promise<never>((_, reject) => {
+        late = setTimeout(() => reject(new Error(`no answer within ${SEND_TIMEOUT_MS / 60_000} minutes`)), SEND_TIMEOUT_MS);
+      }),
+    ]);
   } catch (e) {
     return { kind: "unknown", message: problem(e) };
+  } finally {
+    clearTimeout(late);
   }
   if (result.success) return { kind: "done", hash: result.hash };
   const err = result.error;
   const message = problem(err);
   const hash = typeof result.hash === "string" && result.hash !== "" ? result.hash : undefined;
   if (!hash && message.includes("Nothing was sent")) return { kind: "refused", message };
+  // The relay's report that the network ran the transaction and it failed (src/lib/relay/channels.ts, ONCHAIN_FAILED):
+  // certain, and nothing changed, so it is a refusal in the page's words, not an unknown.
+  if (/This transaction failed on the network \(ONCHAIN_FAILED\), so nothing changed\./.test(message)) return { kind: "refused", message };
   const cause = (err as { cause?: unknown }).cause;
   if (!hash && cause instanceof Error && PROMPT_CLOSED.has(cause.name)) {
     return { kind: "stopped", message: "The passkey prompt was closed or timed out." };
