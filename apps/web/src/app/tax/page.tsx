@@ -94,55 +94,57 @@ export default function TaxPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Your naira tax estimate</h1>
-      <p className="text-sm opacity-80">
+    <main className="page">
+      <h1 className="h1">Your naira tax estimate</h1>
+      <p className="lead">
         Caracal reads the payments into your split contract, values each in naira at the Central Bank of Nigeria official rate for the day it arrived, and estimates your 2026
         personal income tax. It refuses when it cannot prove it has all your payments for the year. Estimate, not tax advice.
       </p>
 
-      {who.kind === "checking" && <p className="text-sm">Checking your sign-in...</p>}
-      {who.kind === "error" && <p className="text-sm text-red-600">{who.message}</p>}
+      {who.kind === "checking" && <p className="small muted">Checking your sign-in...</p>}
+      {who.kind === "error" && <p className="msg msg-bad">{who.message}</p>}
       {who.kind === "no-wallet" && (
-        <p className="text-sm">
-          Caracal does not know your wallet on this browser yet. Open <a className="underline" href="/wallet">your wallet page</a>, connect your wallet, then come back.
+        <p className="msg msg-info">
+          Caracal does not know your wallet on this browser yet. Open <a className="link" href="/wallet">your wallet page</a>, connect your wallet, then come back.
         </p>
       )}
 
       {who.kind === "ready" && (
-        <div className="flex flex-col gap-4 text-sm">
-          <p>
-            Wallet: <span className="break-all font-mono">{who.wallet}</span>
+        <div className="flex flex-col gap-5">
+          <p className="flex flex-col gap-1.5 text-sm font-medium">
+            Wallet: <span className="addr addr-box font-normal">{who.wallet}</span>
           </p>
+          <div className="card gap-5 text-sm">
           <fieldset className="flex flex-col gap-2">
-            <legend className="font-semibold">Does all your income for the year arrive in this wallet?</legend>
-            <label className="flex items-start gap-2">
+            <legend className="h3 mb-3">Does all your income for the year arrive in this wallet?</legend>
+            <label className="choice py-3 has-checked:bg-[var(--c-green-soft)] has-checked:text-[var(--c-on-green-soft)]">
               <input type="radio" name="scope" checked={scope === "all"} onChange={() => (setScope("all"), edited())} />
               Yes, all of it arrives through my Caracal split contract.
             </label>
-            <label className="flex items-start gap-2">
+            <label className="choice py-3 has-checked:bg-[var(--c-green-soft)] has-checked:text-[var(--c-on-green-soft)]">
               <input type="radio" name="scope" checked={scope === "elsewhere"} onChange={() => (setScope("elsewhere"), edited())} />
               No, some income arrives somewhere else.
             </label>
           </fieldset>
           {scope === "elsewhere" && (
-            <label className="flex flex-col gap-1">
+            <label className="field">
               Income that arrives elsewhere this year, in naira (it is added as you say it, and not checked on chain)
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={elsewhere} onChange={(e) => (setElsewhere(e.target.value), edited())} placeholder="2500000" />
+              <input className="input" inputMode="decimal" value={elsewhere} onChange={(e) => (setElsewhere(e.target.value), edited())} placeholder="2500000" />
             </label>
           )}
-          <label className="flex flex-col gap-1">
+          <label className="field">
             Rent you pay for the year, in naira (optional, for the rent relief)
-            <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" value={rent} onChange={(e) => (setRent(e.target.value), edited())} placeholder="600000" />
+            <input className="input" inputMode="decimal" value={rent} onChange={(e) => (setRent(e.target.value), edited())} placeholder="600000" />
           </label>
-          <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-50" disabled={scope === null || run.kind === "running"} onClick={estimate}>
+          <button className="btn btn-primary btn-block" disabled={scope === null || run.kind === "running"} onClick={estimate}>
             {run.kind === "running" ? "Working it out..." : "Estimate my 2026 tax"}
           </button>
-          {scope === null && <p className="opacity-80">Answer the income question first: Caracal cannot see income that arrives elsewhere unless you say so.</p>}
+          {scope === null && <p className="small muted">Answer the income question first: Caracal cannot see income that arrives elsewhere unless you say so.</p>}
+          </div>
         </div>
       )}
 
-      {run.kind === "failed" && <p className="text-sm text-red-600">{run.message}</p>}
+      {run.kind === "failed" && <p className="msg msg-bad">{run.message}</p>}
       {run.kind === "done" && <ResultView outcome={run.outcome} />}
     </main>
   );
