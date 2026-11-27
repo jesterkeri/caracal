@@ -71,12 +71,12 @@ function restoreWithin<T>(p: Promise<T>, what: string): Promise<T> {
 /** smart-account-kit 0.10.0 errors raised only after it found a contract at the passkey's address. */
 const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousError", "WalletOwnershipError", "WalletCodeNotAcceptedError"]);
 
-const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(browserStore);
+const { creationUnconfirmedFor, creationAge, markCreation, pendingWalletFor } = creationMarker(browserStore);
 
 const NO_WALLET_FOR_PASSKEY =
   "No wallet was found on Stellar testnet for this passkey. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
 const SAVED_WALLET_GONE =
-  "Your saved wallet was not found on Stellar testnet (the test network may have been reset). Sign out and sign in again to start over on this browser.";
+  "Your saved wallet was not found on Stellar testnet. If you created it in the last few minutes, the network may not show it yet: wait a minute and reload. Otherwise the test network may have been reset: sign out and sign in again to start over on this browser.";
 const WALLET_ARCHIVED =
   "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can be used. Caracal cannot restore it yet. Do not create another wallet.";
 const WALLET_EXISTS_UNREAD = "Your wallet exists on Stellar testnet, but Caracal could not load it just now. Try again in a moment.";
@@ -231,7 +231,8 @@ export default function WalletPage() {
     };
   }, []);
 
-  async function connected(contractId: string, txHash?: string) {
+  /** created: this wallet is the one this page's own creation just made. */
+  async function connected(contractId: string, txHash?: string, created = false) {
     if (!account) return;
     // The account may have changed since the page loaded (another tab), so it
     // is confirmed again before this wallet is recorded as its.
@@ -240,7 +241,9 @@ export default function WalletPage() {
     // Recorded as this account's: a reload restores it, so the note goes.
     // "not-saved" keeps it: nothing on this browser would remember the wallet.
     if (bound === "bound") {
-      markCreation(account.id, false);
+      // Only the attempt's own wallet confirms it. Connecting an older wallet
+      // says nothing about whether the unconfirmed attempt may still land.
+      if (created || pendingWalletFor(account.id) === contractId) markCreation(account.id, false);
       rememberWallet(browserStore, account.id, contractId);
     }
     // "not-saved": the wallet is this person's for this visit, but it will not
@@ -327,11 +330,13 @@ export default function WalletPage() {
     // submitting). Without the event API nothing can be told apart, so every
     // failure counts as after.
     let passkeyMade = typeof kit.events?.on !== "function";
-    const stop = kit.events?.on?.("credentialCreated", () => {
+    const stop = kit.events?.on?.("credentialCreated", (e?: { credential?: { contractId?: unknown } }) => {
       passkeyMade = true;
       // The wait before "Start a new one anyway" counts from here, not from
-      // before the passkey prompt (which can take a minute).
-      markCreation(me.id, true);
+      // before the passkey prompt (which can take a minute). The address the
+      // attempt would create is kept: connecting it later confirms the attempt.
+      const wallet = e?.credential?.contractId;
+      markCreation(me.id, true, typeof wallet === "string" ? wallet : undefined);
     });
     markCreation(me.id, true);
     // While the attempt runs, its start time is renewed, so if this tab
@@ -371,7 +376,7 @@ export default function WalletPage() {
       return;
     }
     try {
-      await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined);
+      await connected(r.contractId, r.submitResult?.success ? r.submitResult.hash : undefined, true);
     } catch (e) {
       // The wallet was made; only recording its owner failed.
       setState({ kind: "error", message: e instanceof Error ? e.message : String(e), checkFirst: true });
