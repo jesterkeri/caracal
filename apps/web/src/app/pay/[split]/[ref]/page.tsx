@@ -12,7 +12,7 @@ async function Invoice({ params }: { params: Params }) {
 // and status are read from the chain in the browser, never taken from the URL.
 export default function PayPage({ params }: { params: Params }) {
   return (
-    <Suspense fallback={<p className="p-4 text-sm">Loading the invoice.</p>}>
+    <Suspense fallback={<p className="page small muted">Loading the invoice.</p>}>
       <Invoice params={params} />
     </Suspense>
   );

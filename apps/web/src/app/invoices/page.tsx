@@ -225,88 +225,90 @@ export default function InvoicesPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-xl flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Invoices</h1>
-      {load.kind === "loading" && <p className="text-sm">Loading your invoices.</p>}
-      {load.kind === "error" && <p className="text-sm text-red-600">{load.message}</p>}
+    <main className="page page-wide">
+      <h1 className="h1">Invoices</h1>
+      {load.kind === "loading" && <p className="small muted">Loading your invoices.</p>}
+      {load.kind === "error" && <p className="msg msg-bad">{load.message}</p>}
       {load.kind === "no-wallet" && (
-        <p className="text-sm">
-          Invoices are opened from your Caracal wallet. <a className="underline" href="/wallet">Create or connect your wallet</a> first.
+        <p className="msg msg-info">
+          Invoices are opened from your Caracal wallet. <a className="link" href="/wallet">Create or connect your wallet</a> first.
         </p>
       )}
       {load.kind === "no-split" && (
-        <p className="text-sm">
-          Your split contract is not on Stellar yet, so there is nothing to open an invoice on. <a className="underline" href="/split">Set up your split</a> first.
+        <p className="msg msg-info">
+          Your split contract is not on Stellar yet, so there is nothing to open an invoice on. <a className="link" href="/split">Set up your split</a> first.
         </p>
       )}
       {load.kind === "ready" && (
         <>
           <form
-            className="flex flex-col gap-3"
+            className="card"
             onSubmit={(e) => {
               e.preventDefault();
               void create(load);
             }}
           >
-            <h2 className="text-lg font-medium">New invoice</h2>
-            <label className="flex flex-col gap-1 text-sm">
+            <h2 className="h2">New invoice</h2>
+            <label className="field">
               Client
-              <input className="rounded border px-2 py-1" value={client} maxLength={120} onChange={(e) => setClient(e.target.value)} />
+              <input className="input" value={client} maxLength={120} onChange={(e) => setClient(e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label className="field">
               What it is for (optional)
-              <input className="rounded border px-2 py-1" value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} />
+              <input className="input" value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label className="field">
               Amount in USDC
-              <input className="rounded border px-2 py-1" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <input className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </label>
-            <p className="text-xs opacity-70">
+            <p className="small muted">
               Only an invoice id and the amount go on the blockchain. The client name and description stay in your Caracal account. The client pays exactly this amount, once.
             </p>
-            <button className="rounded border px-3 py-2 text-sm" type="submit" disabled={busy !== null}>
+            <button className="btn btn-primary btn-block" type="submit" disabled={busy !== null}>
               Open invoice
             </button>
           </form>
-          {busy && <p className="text-sm">{busy}</p>}
-          {notice && <p className="text-sm">{notice}</p>}
-          <section className="flex flex-col gap-3">
-            <h2 className="text-lg font-medium">Your invoices</h2>
-            {load.rows.length === 0 && <p className="text-sm">No invoices yet.</p>}
+          {busy && <p className="small muted">{busy}</p>}
+          {notice && <p className={notice.includes("may have gone through") ? "msg msg-unsure" : notice.startsWith("Invoice opened") || notice.startsWith("Invoice cancelled") ? "msg msg-good" : "msg msg-bad"}>{notice}</p>}
+          <section className="list">
+            <h2 className="h2">Your invoices</h2>
+            {load.rows.length === 0 && <p className="small muted">No invoices yet.</p>}
             {load.rows.map((r) => {
               const link = `${window.location.origin}${payPath(r.split, r.invoice_ref)}`;
               return (
-                <article key={r.invoice_ref} className="flex flex-col gap-1 rounded border p-3 text-sm">
-                  <p>
+                <article key={r.invoice_ref} className="item">
+                  <p className="num">
                     <strong>{r.client_name}</strong>
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
-                  {r.description && <p className="opacity-80">{r.description}</p>}
+                  {r.description && <p className="small muted">{r.description}</p>}
+                  <div className={r.chain === "unreadable" || (r.chain === null && r.stillOpening) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
                   <p>{r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
+                  </div>
                   {r.chain === null && !r.stillOpening && (
                     <p>
-                      <button className="underline" onClick={() => void removeUnopened(load, r.invoice_ref)}>
+                      <button className="link small" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry
                       </button>
                     </p>
                   )}
                   {typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
                     <>
-                      <p className="break-all text-xs">{link}</p>
-                      <p className="flex gap-3">
-                        <button className="underline" onClick={() => void copy(link, r.invoice_ref)}>
+                      <p className="addr addr-box">{link}</p>
+                      <p className="flex flex-wrap gap-2">
+                        <button className="btn btn-secondary btn-sm" onClick={() => void copy(link, r.invoice_ref)}>
                           {copied === r.invoice_ref ? "Link copied" : "Copy pay link"}
                         </button>
-                        <button className="underline" disabled={busy !== null} onClick={() => void cancel(load, r.invoice_ref)}>
+                        <button className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => void cancel(load, r.invoice_ref)}>
                           Cancel invoice
                         </button>
                       </p>
                     </>
                   )}
                   {typeof r.chain === "object" && r.chain !== null && r.chain.status === "paid" && (
-                    <p>
+                    <p className="small muted">
                       {r.txHash ? (
-                        <a className="underline" href={`/receipt/${r.txHash}`}>
+                        <a className="link" href={`/receipt/${r.txHash}`}>
                           View receipt
                         </a>
                       ) : (
