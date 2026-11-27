@@ -7,6 +7,8 @@ when they are found, not saved for this day.
 
 ## Queued non-money issues
 
+Codex R6 (27 Nov) says two of these must be decided before any public deployment, even on testnet: the shared sponsor quota (the `/api/relay` per-process limits are burst controls, not a budget) and the callback `Cache-Control: no-store` (`apps/web/src/lib/supabase/server.ts`). Joshua decides; nothing deploys before that.
+
 | Found | Where | Issue | Proof |
 |---|---|---|---|
 | Receipt adversary round 4 | `apps/web/src/lib/stellar/receipt.ts` (`isNetworkError`) | An RPC answer cut off partway, or an empty 200 body, says "could not read this transaction's details" instead of "could not reach the network" | Test `adversary-rcpt4-truncated.test.ts`, kept for this day |
@@ -29,6 +31,8 @@ when they are found, not saved for this day.
 | Day 1 adversary r4r (suspicion) | `apps/web/src/app/wallet/page.tsx` (`connect`, `create`) | `getKit()` has no time limit there, so a stalled first load of the kit leaves the busy label until Sign out or a reload (close to the r4l suspicion) | Not proven |
 | Day 1 adversary r4r (suspicion) | `apps/web/src/app/wallet/page.tsx` | A new account that presses "I already have a wallet" and finds none loses Create until a reload (deliberate since r4i), and nothing on screen says to reload | Not proven; a copy question |
 | Day 1 adversary r5a (suspicion) | `apps/web/src/app/wallet/page.tsx` | A sign-in as another account completed in another tab by the server callback (cookies) may fire no auth event in this tab, which keeps showing the earlier account's wallet until a reload (binding re-checks the account first) | Not proven; check in a real browser |
+| Adversaries i6, s6 (suspicion) | `apps/web/src/lib/relay/channels.ts` (`REFUSED_BEFORE_SUBMIT`) | Channels codes not in the list (FAILED_TO_GET_SEQUENCE, SIMULATION_RPC_FAILURE, RELAYER_UNAVAILABLE, CONFIG_MISSING, CONFIG_INVALID, KV_ERROR and others) read as "could not confirm", though some may be raised before sending. Errs towards caution; each needs the plugin 0.21.1 source traced before it is added | Not proven |
+| Adversary c5 (follow-up) | `apps/web/src/lib/invoices/chain.ts`, `apps/web/src/lib/split/send.ts` | The kit's pre-send contract error (code 10000 with no hash) is now "not sent" on cash-out only; invoices and split still say "may have gone through" for it (cautious, not false) | Proven on cash-out (adversary-c5-kit-resim-contract-error) |
 
 Promoted out of this list by Codex R5 and fixed on 27 Nov (decisions rows of that date): the r4h hint after signing in again, the r4l relay queue deadline, and the r4q "no wallet" judged on the ledger endpoint alone.
 

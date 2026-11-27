@@ -22,14 +22,14 @@
 // official client), which only adds a fee bump; without the key it is refused
 // (fail closed).
 //
-// A request is sent upstream within SEND_DEADLINE_MS of arriving, or not at
-// all (refused, "Nothing was sent"), and never once its caller has gone. A
-// wallet deployment is forwarded with its authorisation re-signed to expire
+// A request is sent upstream within SEND_DEADLINE_MS of arriving (on a
+// monotonic clock, checked again just before sending), or not at all
+// (refused, "Nothing was sent"), and never once its caller has gone. A wallet
+// deployment is forwarded with its authorisation re-signed to expire
 // DEPLOY_AUTH_LEDGERS after the simulation's ledger (deploy-auth.ts), so it
-// cannot land more than about a minute after it was sent. Together these
-// bound how long after arriving a wallet creation can still land, which the
-// wallet page's wait before "start a new one anyway" relies on
-// (creation-marker.ts).
+// cannot land in a later ledger. That is a bound in ledgers, not in time (a
+// slow network closes them late): the wallet page waits for both before
+// "start a new one anyway" (creation-marker.ts).
 //
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
@@ -125,12 +125,13 @@ const fail = (error: string, status: number) =>
 const refuse = (error: string, status: number) => fail(refusalText(error), status);
 
 export async function POST(request: Request) {
-  const arrived = Date.now();
+  // A monotonic clock: setting the system clock back cannot stretch the deadline.
+  const arrived = performance.now();
   /** Refusal if this request may no longer be sent: too late, or its caller has gone. */
   const tooLate = () =>
     request.signal?.aborted
       ? refuse("The request was cancelled before it was sent", 499)
-      : Date.now() - arrived > SEND_DEADLINE_MS
+      : performance.now() - arrived > SEND_DEADLINE_MS
         ? refuse("The fee sponsor is busy. Try again in a minute.", 503)
         : null;
   if (!perIp.take(clientKey(request, process.env))) return refuse("Too many requests. Wait a minute.", 429);
@@ -235,6 +236,9 @@ export async function POST(request: Request) {
       console.error("relay could not re-sign the deployment:", e instanceof Error ? e.message : String(e));
       return refuse("Caracal could not prepare this wallet creation", 400);
     }
+    // Checked again just before sending: re-signing above is asynchronous.
+    const atSend = tooLate();
+    if (atSend) return atSend;
     try {
       // The timeout covers both the request and reading the answer.
       const res = await fetch(proxyUrl ?? DEFAULT_UPSTREAM, {

@@ -203,10 +203,12 @@ describe("Codex R5 #2: the relay bounds when a creation can still land", () => {
     const post = () => POST(new Request("http://x/api/relay", { method: "POST", body: JSON.stringify(walletDeploy()) }));
     const first = post();
     await settle();
-    const t0 = Date.now();
+    // Harness (Codex R6 #4, 2026-11-27): the relay's deadline now runs on the monotonic clock, so that clock is
+    // the one moved on by 61 s (it was Date.now). Assertions unchanged.
+    const t0 = performance.now();
     const second = post(); // arrives while the first is still in the queue
     await settle();
-    vi.spyOn(Date, "now").mockReturnValue(t0 + 61_000);
+    vi.spyOn(performance, "now").mockReturnValue(t0 + 61_000);
     release();
     const [r1, r2] = await Promise.all([first, second]);
     expect(r1.status).toBe(200);

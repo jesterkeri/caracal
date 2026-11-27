@@ -35,8 +35,11 @@ export async function withShortDeployAuth(
     body.auth.map(async (a) => {
       const entry = xdr.SorobanAuthorizationEntry.fromXDR(a, "base64");
       const cr = entry.credentials();
-      if (cr.switch().name !== "sorobanCredentialsAddress") throw new Error("only the shared deployer's address authorisation is re-signed");
-      const addr = cr.address().address();
+      // Both address arms the policy accepts. stellar-sdk's authorizeEntry keeps the arm and signs the
+      // payload that arm needs (ADDRESS_V2 binds the address into it).
+      const arm = cr.switch().name;
+      if (arm !== "sorobanCredentialsAddress" && arm !== "sorobanCredentialsAddressV2") throw new Error("only the shared deployer's address authorisation is re-signed");
+      const addr = (arm === "sorobanCredentialsAddressV2" ? cr.addressV2() : cr.address()).address();
       if (addr.switch().name !== "scAddressTypeAccount" || !addr.accountId().ed25519().equals(SHARED_DEPLOYER.rawPublicKey())) {
         throw new Error("only the shared deployer's address authorisation is re-signed");
       }
