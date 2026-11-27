@@ -53,6 +53,23 @@ function payment(closedAt: string, units: number, owner = WALLET): { event: RawE
   };
 }
 
+/** A `created` v1 event (constructor event of contracts/split) that closed at `closedAt`; constructed in the real wire format. */
+function created(closedAt: string, o: { owner?: string; token?: string; txStatus?: string } = {}): ReturnType<typeof payment> {
+  const n = ++seq;
+  const ledger = 5900000 + n;
+  const entries: [string, xdr.ScVal][] = [
+    ["goal_bps", nativeToScVal(1500, { type: "u32" })],
+    ["owner", Address.fromString(o.owner ?? WALLET).toScVal()],
+    ["tax_bps", nativeToScVal(1000, { type: "u32" })],
+    ["token", Address.fromString(o.token ?? TOKENS.usdc).toScVal()],
+  ];
+  const value = xdr.ScVal.scvMap(entries.map(([k, v]) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(k), val: v })));
+  return {
+    event: { type: "contract", ledger, ledgerClosedAt: closedAt, contractId: CONTRACT, id: `${String(ledger).padStart(19, "0")}-0000000000`, txHash: String(n).padStart(64, "0"), topic: [sym("created"), sym("v1")], value: value.toXDR("base64") },
+    tx: { status: o.txStatus ?? "SUCCESS", ledger, createdAt: unix(closedAt) },
+  };
+}
+
 /** A chain that has kept history since `oldest` and holds these payments. */
 function chain(payments: ReturnType<typeof payment>[], oldest = "2025-12-01T00:00:00Z", over: Partial<ChainReader> = {}): ChainReader {
   const retention = { latestLedger: 6000000, oldestLedger: 5000000, latestLedgerCloseTime: unix("2026-11-27T14:59:30Z"), oldestLedgerCloseTime: unix(oldest) };
@@ -225,6 +242,71 @@ describe("refusing to guess", () => {
     const out = await runTaxEstimate(req, deps(chain([payment("2026-11-25T21:17:43Z", 10_000_000)]), { rateTable: async () => forged }));
     expect(out.status).toBe("ok");
     expect(out.status === "ok" && out.estimate.incomeLines[0]!.rateSourceUrl.startsWith("https://www.cbn.gov.ng/")).toBe(true);
+  });
+});
+
+describe("proving when the contract was created (the created event)", () => {
+  const WINDOW_START = "2026-11-20T14:15:35Z"; // what the real testnet RPC reported on 2026-11-27
+  const big = 10_000_000_000; // 1,000 USDC
+
+  it("a creation event inside the window makes the estimate possible although the window starts after 1 January", async () => {
+    const out = await runTaxEstimate(req, deps(chain([created("2026-11-22T10:00:00Z"), payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+    expect(out.status).toBe("ok");
+    expect(out.status === "ok" && out.estimate.totalTaxNgn).toBe("88837.22");
+    expect(out.status === "ok" && out.context.coverage.from).toBe(WINDOW_START);
+  });
+
+  it("with no creation event the contract may be older than the window: refused with a plain reason, no numbers", async () => {
+    const out = await runTaxEstimate(req, deps(chain([payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+    expect(out.status).toBe("refused");
+    if (out.status !== "refused") return;
+    expect(out.reasons[0]).toBe(
+      "The split contract was created before the RPC's history window of about a week, so payments before 2026-11-20T14:15:35Z cannot be read. A payment indexer is needed to read the whole of 2026.",
+    );
+    expect(JSON.stringify(out)).not.toMatch(/totalTaxNgn|ngnValue|grossIncomeNgn/);
+  });
+
+  it("does not add that reason when the window itself covers the year", async () => {
+    const out = await runTaxEstimate({ ...req, otherIncome: { kind: "elsewhere", amountNgn: "1.001" } }, deps(chain([], "2025-12-01T00:00:00Z")));
+    expect(out.status === "refused" && out.reasons.join(" ")).not.toContain("history window of about a week");
+  });
+
+  it("refuses a payment dated before the creation event (the engine's openedAt check)", async () => {
+    const out = await runTaxEstimate(req, deps(chain([created("2026-11-24T10:00:00Z"), payment("2026-11-23T10:00:00Z", big)], WINDOW_START)));
+    expect(out.status).toBe("refused");
+    expect(JSON.stringify(out)).not.toMatch(/totalTaxNgn|ngnValue/);
+  });
+
+  it("refuses two creation events, with no numbers", async () => {
+    const out = await runTaxEstimate(req, deps(chain([created("2026-11-22T10:00:00Z"), created("2026-11-23T10:00:00Z"), payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+    expect(out).toMatchObject({ status: "unavailable" });
+    expect(out.status === "unavailable" && out.message).toMatch(/more than one creation event/);
+    expect(JSON.stringify(out)).not.toMatch(/totalTaxNgn|ngnValue/);
+  });
+
+  it("refuses a creation event naming another owner or another token", async () => {
+    const other = StrKey.encodeContract(Buffer.alloc(32, 3));
+    for (const c of [created("2026-11-22T10:00:00Z", { owner: other }), created("2026-11-22T10:00:00Z", { token: TOKENS.xlm })]) {
+      const out = await runTaxEstimate(req, deps(chain([c, payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+      expect(out.status).toBe("unavailable");
+    }
+  });
+
+  it("refuses a creation event whose transaction did not succeed", async () => {
+    const out = await runTaxEstimate(req, deps(chain([created("2026-11-22T10:00:00Z", { txStatus: "FAILED" }), payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+    expect(out.status).toBe("unavailable");
+    expect(out.status === "unavailable" && out.message).toMatch(/could not be confirmed/);
+  });
+
+  it("refuses a creation event of an unknown version or with unreadable data", async () => {
+    const v2 = created("2026-11-22T10:00:00Z");
+    v2.event.topic = [sym("created"), sym("v2")];
+    const junk = created("2026-11-22T10:00:00Z");
+    junk.event.value = "AAAAAQ==";
+    for (const c of [v2, junk]) {
+      const out = await runTaxEstimate(req, deps(chain([c, payment("2026-11-25T21:17:43Z", big)], WINDOW_START)));
+      expect(out.status).toBe("unavailable");
+    }
   });
 });
 

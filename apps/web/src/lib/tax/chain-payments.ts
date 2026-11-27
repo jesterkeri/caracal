@@ -70,7 +70,18 @@ export type Coverage = {
   to: string;
 };
 
-export type PaymentRead = { kind: "read"; payments: Payment[]; coverage: Coverage } | { kind: "no-contract" };
+/** The contract's `created` event: when its constructor ran. */
+export type CreatedEvent = { eventId: string; txHash: string; ledger: number; occurredAt: string };
+
+export type PaymentRead =
+  | {
+      kind: "read";
+      payments: Payment[];
+      coverage: Coverage;
+      /** Exactly one valid `created` event in the window, or null when there is none (the contract is older than the window). */
+      created: CreatedEvent | null;
+    }
+  | { kind: "no-contract" };
 
 export type SplitExpectation = {
   /** The split contract (C address). */
@@ -165,6 +176,39 @@ export function decodeSplitEvent(e: RawEvent, want: SplitExpectation): Payment |
 }
 
 /**
+ * The contract's `created` v1 event, or null for any other kind of event. A
+ * `created` event that cannot be fully read, or that names another owner or
+ * token, throws: it is never skipped and never trusted.
+ */
+export function decodeCreatedEvent(e: RawEvent, want: SplitExpectation): CreatedEvent | null {
+  if (!Array.isArray(e.topic) || e.topic.length === 0) return null;
+  const fail = (why: string): never => {
+    throw new ChainReadError(`The contract's creation event (${e.id}) ${why}, so its creation time cannot be proven and no estimate can be made.`);
+  };
+  let topics: xdr.ScVal[];
+  try {
+    topics = e.topic.map((t) => xdr.ScVal.fromXDR(t, "base64"));
+  } catch {
+    return null; // split events with unreadable topics are refused by decodeSplitEvent
+  }
+  if (!isSym(topics[0]!, "created")) return null;
+  if (topics.length !== 2 || !isSym(topics[1]!, "v1")) return fail("is a version Caracal does not know");
+  let value: unknown;
+  try {
+    value = scValToNative(xdr.ScVal.fromXDR(e.value, "base64"));
+  } catch {
+    return fail("could not be read");
+  }
+  if (typeof value !== "object" || value === null) return fail("has an unexpected shape");
+  const { owner, token, tax_bps, goal_bps } = value as Record<string, unknown>;
+  if (typeof owner !== "string" || typeof token !== "string" || typeof tax_bps !== "number" || typeof goal_bps !== "number") return fail("is missing a field");
+  if (owner !== want.owner) return fail("names a different owner than this wallet");
+  if (token !== want.token) return fail("is not for USDC");
+  if (!ISO_Z.test(e.ledgerClosedAt)) return fail("has a time Caracal cannot read");
+  return { eventId: e.id, txHash: e.txHash, ledger: e.ledger, occurredAt: e.ledgerClosedAt };
+}
+
+/**
  * Every split payment the RPC still holds for the contract, with the window it
  * proves. Throws ChainReadError when anything cannot be relied on.
  */
@@ -202,6 +246,7 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
 
   const seen = new Set<string>();
   const payments: Payment[] = [];
+  const createdEvents: CreatedEvent[] = [];
   for (const e of events) {
     if (e.type !== "contract" || e.contractId !== want.contract) throw new ChainReadError("The RPC returned an event from another contract.");
     if (!Number.isSafeInteger(e.ledger) || e.ledger < startLedger || e.ledger > last.latestLedger) throw new ChainReadError("The RPC returned an event outside the ledgers asked for.");
@@ -210,23 +255,27 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     if (e.inSuccessfulContractCall === false) continue;
     const p = decodeSplitEvent(e, want);
     if (p) payments.push(p);
+    const c = decodeCreatedEvent(e, want);
+    if (c) createdEvents.push(c);
   }
   if (payments.length > MAX_PAYMENTS) throw new ChainReadError(`There are more than ${MAX_PAYMENTS} payments, more than Caracal can check one by one today.`);
 
   // Each payment's transaction must be a successful one, in the ledger the
   // event names, closed at the time the event names.
+  if (createdEvents.length > 1) throw new ChainReadError("The contract has more than one creation event, so its creation time cannot be proven and no estimate can be made.");
+  const created = createdEvents[0] ?? null;
   const checked = new Set<string>();
-  for (const p of payments) {
+  for (const p of created ? [created, ...payments] : payments) {
     if (checked.has(p.txHash)) continue;
     checked.add(p.txHash);
     const tx = await chain.transaction(p.txHash);
     const closed = Date.parse(p.occurredAt);
     if (tx.status !== "SUCCESS" || tx.ledger !== p.ledger || Number(tx.createdAt) * 1000 !== closed) {
-      throw new ChainReadError(`Payment ${p.txHash} could not be confirmed as a successful transaction in the ledger its event names.`);
+      throw new ChainReadError(`Transaction ${p.txHash} could not be confirmed as a successful transaction in the ledger its event names.`);
     }
   }
 
-  return { kind: "read", payments, coverage: { fromLedger: startLedger, from: coverageFrom, toLedger: last.latestLedger, to: isoFromUnix(last.latestLedgerCloseTime) } };
+  return { kind: "read", payments, created, coverage: { fromLedger: startLedger, from: coverageFrom, toLedger: last.latestLedger, to: isoFromUnix(last.latestLedgerCloseTime) } };
 }
 
 // ---- the real RPC ----
