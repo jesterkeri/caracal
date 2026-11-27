@@ -1,0 +1,30 @@
+{
+ "capturedAt": "2026-11-27T14:15:58.625Z",
+ "rpc": "https://soroban-testnet.stellar.org",
+ "transaction": {
+  "hash": "7b4c51da532d16c49ff331b808b4decc7e02ddfe9ac0bc6c3d8f0260e48634fb",
+  "status": "SUCCESS",
+  "ledger": 5923564,
+  "createdAt": "1795641463",
+  "latestLedger": 5953062,
+  "oldestLedger": 5832103
+ },
+ "missingTransaction": {
+  "latestLedger": 5953062,
+  "latestLedgerCloseTime": "1795788954",
+  "oldestLedger": 5832103,
+  "oldestLedgerCloseTime": "1795184155",
+  "status": "NOT_FOUND",
+  "txHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "applicationOrder": 0,
+  "feeBump": false,
+  "events": {},
+  "ledger": 0,
+  "createdAt": "0"
+ },
+ "absentContract": "CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR",
+ "absentLedgerEntries": {
+  "entries": [],
+  "latestLedger": 5953062
+ }
+}
