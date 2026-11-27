@@ -108,7 +108,7 @@ export default function SplitPage() {
     return () => clearInterval(t);
   }, []);
 
-  const set =<K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
   const refused = (text: string) => setNote({ said: { tone: "bad", text } });
 
   /** Re-reads the contract from the network, keeping what was last said. */
