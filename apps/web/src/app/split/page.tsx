@@ -183,57 +183,57 @@ export default function SplitPage() {
   const loaded = view.kind === "ready" ? view.loaded : null;
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Your split and pots</h1>
-      <p className="text-sm opacity-80">
+    <main className="page">
+      <h1 className="h1">Your split and pots</h1>
+      <p className="lead">
         Each payment you receive is divided on Stellar testnet into three pots, Tax, Goal and Spend, by a contract that only your passkey can move money out of.
         Caracal pays the network fee and can never move your money.
       </p>
       {account && (
-        <p className="text-sm">
-          Signed in as <strong>{account.email ?? "your Google account"}</strong>. <a className="underline" href="/wallet">Your wallet</a>
+        <p className="small muted">
+          Signed in as <strong>{account.email ?? "your Google account"}</strong>. <a className="link" href="/wallet">Your wallet</a>
         </p>
       )}
 
-      {view.kind === "checking" && <p className="text-sm">Checking for your wallet...</p>}
-      {view.kind === "problem" && <p className="text-sm text-red-600">{view.message}</p>}
+      {view.kind === "checking" && <p className="small muted">Checking for your wallet...</p>}
+      {view.kind === "problem" && <p className="msg msg-bad">{view.message}</p>}
       {view.kind === "no-wallet" && (
-        <p className="text-sm">
-          This browser has no wallet open for your account. <a className="underline" href="/wallet">Open or create your wallet</a> first, then come back.
+        <p className="msg msg-info">
+          This browser has no wallet open for your account. <a className="link" href="/wallet">Open or create your wallet</a> first, then come back.
         </p>
       )}
 
       {view.kind === "ready" && loaded?.kind === "error" && (
-        <div className="flex flex-col gap-2 text-sm">
-          <p className="text-red-600">{loaded.message}</p>
-          <button className="self-start underline" disabled={busy} onClick={() => reread(view.wallet)}>
+        <div className="flex flex-col gap-3">
+          <p className="msg msg-bad">{loaded.message}</p>
+          <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
             Try again
           </button>
         </div>
       )}
-      {loaded?.kind === "archived" && <p className="text-sm text-red-600">{ARCHIVED}</p>}
+      {loaded?.kind === "archived" && <p className="msg msg-bad">{ARCHIVED}</p>}
 
       {view.kind === "ready" && loaded?.kind === "absent" && (
-        <section className="flex flex-col gap-3 text-sm">
-          <h2 className="text-lg font-semibold">Set up your split</h2>
-          <p>
+        <section className="card">
+          <h2 className="h2">Set up your split</h2>
+          <p className="small muted">
             You have no split contract yet. Choose how each payment is divided. Spend is always what is left, so rounding is never lost. You can change this later.
           </p>
-          <label className="flex flex-col gap-1">
+          <label className="field">
             Tax pot, percent of each payment
-            <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder="for example 10" value={form.deployTax} onChange={(e) => set("deployTax", e.target.value)} />
+            <input className="input" inputMode="decimal" placeholder="for example 10" value={form.deployTax} onChange={(e) => set("deployTax", e.target.value)} />
           </label>
-          <label className="flex flex-col gap-1">
+          <label className="field">
             Goal pot, percent of each payment
-            <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder="for example 15" value={form.deployGoal} onChange={(e) => set("deployGoal", e.target.value)} />
+            <input className="input" inputMode="decimal" placeholder="for example 15" value={form.deployGoal} onChange={(e) => set("deployGoal", e.target.value)} />
           </label>
-          <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-50" disabled={busy} onClick={deploy}>
+          <button className="btn btn-primary btn-block" disabled={busy} onClick={deploy}>
             Deploy my split contract with my passkey
           </button>
-          <p className="opacity-80">
-            Your wallet deploys it at a fixed address, <span className="break-all font-mono">{loaded.split}</span>, so it cannot be deployed twice. Caracal pays the fee.
+          <p className="small muted leading-7">
+            Your wallet deploys it at a fixed address, <span className="addr addr-box box-decoration-clone px-1.5 py-0.5 text-[color:var(--c-text)]">{loaded.split}</span>, so it cannot be deployed twice. Caracal pays the fee.
           </p>
-          <button className="self-start underline" disabled={busy} onClick={() => reread(view.wallet)}>
+          <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
             Check again
           </button>
         </section>
@@ -241,35 +241,35 @@ export default function SplitPage() {
 
       {view.kind === "ready" && loaded?.kind === "present" && (
         <>
-          <section className="flex flex-col gap-2 text-sm">
-            <h2 className="text-lg font-semibold">Your pots (USDC)</h2>
-            <ul className="flex flex-col gap-1">
+          <section className="card">
+            <h2 className="h2">Your pots (USDC)</h2>
+            <ul className="kv">
               {POTS.map((p) => (
-                <li key={p} className="flex justify-between">
+                <li key={p} className="kv-row [&>:first-child]:text-(color:--c-muted)">
                   <span>{POT_LABEL[p]}</span>
-                  <span className="font-mono">{formatUsdc(potBalance(loaded.pots, p))}</span>
+                  <span className="kv-v num font-mono">{formatUsdc(potBalance(loaded.pots, p))}</span>
                 </li>
               ))}
             </ul>
-            <p className="opacity-80">
+            <p className="small muted">
               New payments split {bpsText(loaded.config.taxBps)}% to Tax, {bpsText(loaded.config.goalBps)}% to Goal and the rest ({bpsText(10_000 - loaded.config.taxBps - loaded.config.goalBps)}%) to Spend.
             </p>
-            <p>
+            <p className="small muted">
               Contract:{" "}
-              <a className="break-all font-mono underline" href={explorerLink("contract", loaded.split)}>
+              <a className="link addr" href={explorerLink("contract", loaded.split)}>
                 {loaded.split}
               </a>
             </p>
-            <button className="self-start underline" disabled={busy} onClick={() => reread(view.wallet)}>
+            <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
               Refresh
             </button>
           </section>
 
-          <section className="flex flex-col gap-3 text-sm">
-            <h2 className="text-lg font-semibold">Withdraw to your wallet</h2>
-            <label className="flex flex-col gap-1">
+          <section className="card">
+            <h2 className="h2">Withdraw to your wallet</h2>
+            <label className="field">
               From pot
-              <select className="rounded-md border px-3 py-2 text-base" value={form.wdPot} onChange={(e) => set("wdPot", e.target.value as Pot)}>
+              <select className="select" value={form.wdPot} onChange={(e) => set("wdPot", e.target.value as Pot)}>
                 {POTS.map((p) => (
                   <option key={p} value={p}>
                     {POT_LABEL[p]}
@@ -277,23 +277,23 @@ export default function SplitPage() {
                 ))}
               </select>
             </label>
-            <label className="flex flex-col gap-1">
+            <label className="field">
               Amount in USDC
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder="25.00" value={form.wdAmount} onChange={(e) => set("wdAmount", e.target.value)} />
+              <input className="input" inputMode="decimal" placeholder="25.00" value={form.wdAmount} onChange={(e) => set("wdAmount", e.target.value)} />
             </label>
-            <p className="break-all opacity-80">
-              Goes to your own wallet <span className="font-mono">{view.wallet}</span>.
+            <p className="small muted leading-7">
+              Goes to your own wallet <span className="addr addr-box box-decoration-clone px-1.5 py-0.5 text-[color:var(--c-text)]">{view.wallet}</span>.
             </p>
-            <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-50" disabled={busy} onClick={withdraw}>
+            <button className="btn btn-primary btn-block" disabled={busy} onClick={withdraw}>
               Withdraw with my passkey
             </button>
           </section>
 
-          <section className="flex flex-col gap-3 text-sm">
-            <h2 className="text-lg font-semibold">Move between pots</h2>
-            <label className="flex flex-col gap-1">
+          <section className="card">
+            <h2 className="h2">Move between pots</h2>
+            <label className="field">
               From
-              <select className="rounded-md border px-3 py-2 text-base" value={form.moveFrom} onChange={(e) => set("moveFrom", e.target.value as Pot)}>
+              <select className="select" value={form.moveFrom} onChange={(e) => set("moveFrom", e.target.value as Pot)}>
                 {POTS.map((p) => (
                   <option key={p} value={p}>
                     {POT_LABEL[p]}
@@ -301,9 +301,9 @@ export default function SplitPage() {
                 ))}
               </select>
             </label>
-            <label className="flex flex-col gap-1">
+            <label className="field">
               To
-              <select className="rounded-md border px-3 py-2 text-base" value={form.moveTo} onChange={(e) => set("moveTo", e.target.value as Pot)}>
+              <select className="select" value={form.moveTo} onChange={(e) => set("moveTo", e.target.value as Pot)}>
                 {POTS.map((p) => (
                   <option key={p} value={p}>
                     {POT_LABEL[p]}
@@ -311,45 +311,45 @@ export default function SplitPage() {
                 ))}
               </select>
             </label>
-            <label className="flex flex-col gap-1">
+            <label className="field">
               Amount in USDC
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder="5.00" value={form.moveAmount} onChange={(e) => set("moveAmount", e.target.value)} />
+              <input className="input" inputMode="decimal" placeholder="5.00" value={form.moveAmount} onChange={(e) => set("moveAmount", e.target.value)} />
             </label>
-            <button className="rounded-md border px-4 py-3 disabled:opacity-50" disabled={busy} onClick={move}>
+            <button className="btn btn-primary btn-block" disabled={busy} onClick={move}>
               Move with my passkey
             </button>
           </section>
 
-          <section className="flex flex-col gap-3 text-sm">
-            <h2 className="text-lg font-semibold">Change the split</h2>
-            <p className="opacity-80">This applies to payments that arrive after the change. Money already in the pots stays where it is.</p>
-            <label className="flex flex-col gap-1">
+          <section className="card">
+            <h2 className="h2">Change the split</h2>
+            <p className="small muted">This applies to payments that arrive after the change. Money already in the pots stays where it is.</p>
+            <label className="field">
               Tax pot, percent
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder={bpsText(loaded.config.taxBps)} value={form.newTax} onChange={(e) => set("newTax", e.target.value)} />
+              <input className="input" inputMode="decimal" placeholder={bpsText(loaded.config.taxBps)} value={form.newTax} onChange={(e) => set("newTax", e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1">
+            <label className="field">
               Goal pot, percent
-              <input className="rounded-md border px-3 py-2 text-base" inputMode="decimal" placeholder={bpsText(loaded.config.goalBps)} value={form.newGoal} onChange={(e) => set("newGoal", e.target.value)} />
+              <input className="input" inputMode="decimal" placeholder={bpsText(loaded.config.goalBps)} value={form.newGoal} onChange={(e) => set("newGoal", e.target.value)} />
             </label>
-            <button className="rounded-md border px-4 py-3 disabled:opacity-50" disabled={busy} onClick={newSplit}>
+            <button className="btn btn-primary btn-block" disabled={busy} onClick={newSplit}>
               Change split with my passkey
             </button>
           </section>
         </>
       )}
 
-      {note.busy && <p className="text-sm">{note.busy}...</p>}
+      {note.busy && <p className="small muted">{note.busy}...</p>}
       {note.said && (
-        <div className={`flex flex-col gap-1 text-sm ${note.said.tone === "good" ? "" : note.said.tone === "bad" ? "text-red-600" : "text-amber-700"}`}>
+        <div className={`msg flex flex-col gap-1 ${note.said.tone === "good" ? "msg-good" : note.said.tone === "bad" ? "msg-bad" : "msg-unsure"}`}>
           <p>{note.said.text}</p>
           {note.said.hash && (
-            <a className="underline" href={explorerLink("tx", note.said.hash)}>
+            <a className="link self-start text-current" href={explorerLink("tx", note.said.hash)}>
               Transaction on Stellar testnet (fee paid by the sponsor)
             </a>
           )}
         </div>
       )}
-      <p className="text-xs opacity-60">Network: Stellar {NETWORK.name}.</p>
+      <p className="small muted">Network: Stellar {NETWORK.name}.</p>
     </main>
   );
 }
