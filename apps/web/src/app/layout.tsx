@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { Poppins, Geist_Mono } from "next/font/google";
 import AppNav from "@/components/app-nav";
@@ -27,7 +28,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${poppins.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <AppNav />
+        <Suspense fallback={null}><AppNav /></Suspense>
         {children}
       </body>
     </html>
