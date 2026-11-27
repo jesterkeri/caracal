@@ -101,7 +101,8 @@ export async function submitToChannels(client: Submitter, xdr: string, deadlineM
     }
     if (e instanceof PluginTransportError) {
       console.error("channels transport error:", e.statusCode ?? "", e.message.slice(0, 200));
-      if (e.statusCode === 429) return { ok: false, status: 429, error: "The fee sponsor is busy. Try again shortly." };
+      // A rate-limited request is turned away unread, so nothing was sent.
+      if (e.statusCode === 429) return { ok: false, status: 429, error: "The fee sponsor is busy. Nothing was sent. Try again shortly." };
       // A timeout may come after Channels already submitted the transaction.
       return { ok: false, status: 502, error: "The fee relayer did not answer. Check your activity before trying again." };
     }

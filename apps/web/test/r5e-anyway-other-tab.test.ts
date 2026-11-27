@@ -60,7 +60,8 @@ async function render(state: S, local: Map<string, string>, createWallet: () => 
     getSession: async () => ({ data: { session: { user: A } } }),
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
-  const kit = { events: { on: () => () => {} }, disconnect: async () => {}, connectWallet: async () => null, createWallet, rpc: undefined };
+  // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+  const kit = { events: { on: () => () => {} }, disconnect: async () => {}, connectWallet: async () => null, createWallet, rpc: { getLatestLedger: async () => ({ sequence: 1000 }) } };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
@@ -81,6 +82,7 @@ describe("the escape after an unknown second-wallet attempt", () => {
       [KNOWN_WALLETS_KEY, JSON.stringify({ [A.id]: W1 })],
       [CREATION_UNCONFIRMED_KEY, A.id],
       [CREATION_STARTED_AT_KEY, String(Date.now() - 4 * 60_000)],
+      ["caracal.creationCloseLedger", "999"], // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
     ]);
     const createWallet = vi.fn(async () => {
       throw new Error("not reached");

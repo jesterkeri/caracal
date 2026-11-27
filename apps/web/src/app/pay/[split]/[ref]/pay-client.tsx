@@ -25,7 +25,10 @@ const NETWORK_DOWN = "Caracal could not reach the Stellar network to read this i
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-const NO_WALLET_FOR_PASSKEY = "No Caracal wallet was found for that passkey. Choose another passkey, or create a wallet first.";
+// An empty answer does not prove there is no wallet: an RPC may leave out a wallet whose data was archived
+// (wallet-lookup.ts, Codex R6 #2), so the text says only what was seen.
+const NO_WALLET_FOR_PASSKEY =
+  "No Caracal wallet was found on Stellar testnet for that passkey. That does not prove there is none: the network may not show a wallet whose data has expired. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
 
 /**
  * Why Connect failed, in true words. smart-account-kit says "not found
@@ -37,7 +40,7 @@ async function connectFailure(e: unknown, rpc: LedgerReader | undefined): Promis
   const credential = credentialInKitError(e);
   if (!credential) return `Caracal could not connect your wallet. ${errorText(e)}`;
   const status = await walletStatus(rpc, walletAddressFor(credential, NETWORK.passphrase));
-  if (status === "absent") return NO_WALLET_FOR_PASSKEY;
+  if (status === "not-found") return NO_WALLET_FOR_PASSKEY;
   if (status === "archived") return "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can pay. Caracal cannot restore it yet.";
   if (status === "present") return "Your wallet exists on Stellar testnet, but Caracal could not open it. Reload the page and try again.";
   return "Caracal could not reach the Stellar network to check whether a wallet exists for this passkey. Check your connection and try again.";
