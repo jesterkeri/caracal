@@ -110,6 +110,8 @@ const CREATION_IN_PROGRESS =
   "An earlier wallet creation for this account could not be confirmed.";
 const CREATION_UNDER_WAY =
   "A wallet creation is already under way in another tab of this browser, or in this one. Wait for it to finish, then reload this page.";
+const LOCKS_REFUSED =
+  "This browser refused to let Caracal make sure that only one tab creates your wallet, so nothing was created. If site data is blocked for this site or you are in private browsing, allow it and reload the page; otherwise use a current version of Chrome, Edge, Safari or Firefox.";
 const LOCKS_UNSUPPORTED =
   "This browser cannot make sure that only one tab creates your wallet. Use a current version of Chrome, Edge, Safari or Firefox to create it.";
 
@@ -280,7 +282,7 @@ export default function WalletPage() {
     setState(
       out.why === "busy"
         ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true }
-        : { kind: "error", message: LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
+        : { kind: "error", message: out.why === "refused" ? LOCKS_REFUSED : LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
     );
   }
 

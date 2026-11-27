@@ -12,20 +12,30 @@ export type Locks = {
 
 export const CREATION_LOCK = "caracal.walletCreation";
 
-export type Locked<T> = { ran: true; value: T } | { ran: false; why: "busy" | "unsupported" };
+export type Locked<T> = { ran: true; value: T } | { ran: false; why: "busy" | "unsupported" | "refused" };
 
 /**
  * Runs `fn` while holding this browser's wallet-creation lock, and lets go
  * when it settles. Does not wait: if another tab holds the lock, `fn` does not
  * run ("busy"). Without Web Locks (no browser that supports passkeys lacks
- * them) nothing runs ("unsupported"): creation fails closed.
+ * them) nothing runs ("unsupported"): creation fails closed. If the browser
+ * refuses the request itself (a SecurityError where site data is blocked, or
+ * in a sandboxed frame), nothing runs either ("refused"). An error thrown by
+ * `fn` once it has the lock is passed on as it is.
  */
 export async function withCreationLock<T>(locks: Locks | undefined, fn: () => Promise<T>): Promise<Locked<T>> {
   if (!locks || typeof locks.request !== "function") return { ran: false, why: "unsupported" };
-  return locks.request(CREATION_LOCK, { ifAvailable: true }, async (lock): Promise<Locked<T>> => {
-    if (!lock) return { ran: false, why: "busy" };
-    return { ran: true, value: await fn() };
-  });
+  let entered = false;
+  try {
+    return await locks.request(CREATION_LOCK, { ifAvailable: true }, async (lock): Promise<Locked<T>> => {
+      entered = true;
+      if (!lock) return { ran: false, why: "busy" };
+      return { ran: true, value: await fn() };
+    });
+  } catch (e) {
+    if (entered) throw e;
+    return { ran: false, why: "refused" };
+  }
 }
 
 /** This browser's Web Locks, or undefined where there are none (old browsers, server rendering). */
