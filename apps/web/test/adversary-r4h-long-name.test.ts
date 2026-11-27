@@ -80,6 +80,7 @@ function fakeBrowser() {
   vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
   vi.stubGlobal("location", { hostname: "caracal.test", origin: "https://caracal.test" });
   vi.stubGlobal("navigator", {
+    locks: (globalThis.navigator as { locks?: unknown } | undefined)?.locks, // harness: a real browser has Web Locks (added for Codex R5 #1)
     credentials: {
       create: async (o: { publicKey: { user: { id: ArrayBuffer | Uint8Array } } }) => {
         const userIdBytes = o.publicKey.user.id.byteLength;

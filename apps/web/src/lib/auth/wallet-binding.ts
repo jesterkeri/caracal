@@ -21,6 +21,46 @@ export const browserStore: KeyValue = {
 /** The part of the passkey kit used here. */
 export type Disconnectable = { disconnect(): Promise<void> };
 
+/**
+ * Wallets each account connected on this browser, kept after sign-out
+ * ({ accountId: walletAddress }, JSON). Sign-out ends the binding, so the
+ * wallet is not restored; this only lets the page tell the same account, when
+ * it signs in again, that it already has a wallet, so it connects that one
+ * instead of unknowingly making a second. Neither value is secret: an account
+ * id is a random id, and a wallet address is public on chain.
+ */
+export const KNOWN_WALLETS_KEY = "caracal.knownWallets";
+
+function knownWallets(store: KeyValue): Record<string, string> {
+  const raw = store.getItem(KNOWN_WALLETS_KEY);
+  if (!raw) return {};
+  try {
+    const v: unknown = JSON.parse(raw);
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The wallet this account last connected on this browser, or null (none, or storage blocked). */
+export function rememberedWallet(store: KeyValue, userId: string): string | null {
+  try {
+    const w = knownWallets(store)[userId];
+    return typeof w === "string" && /^C[A-Z2-7]{55}$/.test(w) ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Remembers this account's wallet on this browser (best effort). */
+export function rememberWallet(store: KeyValue, userId: string, contractId: string): void {
+  try {
+    store.setItem(KNOWN_WALLETS_KEY, JSON.stringify({ ...knownWallets(store), [userId]: contractId }));
+  } catch (e) {
+    console.error("could not remember the wallet:", errorText(e));
+  }
+}
+
 /** Record that the connected wallet belongs to this signed-in account. */
 export function bindWallet(store: KeyValue, userId: string): void {
   store.setItem(WALLET_OWNER_KEY, userId);

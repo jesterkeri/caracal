@@ -2,13 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { bindIfStillSignedIn, followAccount, readSignInState } from "@/lib/auth/account";
-import { SIGN_OUT_FAILED, WALLET_OWNER_KEY, browserStore, endSupabaseSession, mayRestoreWallet, signOutEverywhere } from "@/lib/auth/wallet-binding";
+import {
+  SIGN_OUT_FAILED,
+  WALLET_OWNER_KEY,
+  browserStore,
+  endSupabaseSession,
+  mayRestoreWallet,
+  rememberWallet,
+  rememberedWallet,
+  signOutEverywhere,
+} from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { passkeyName } from "@/lib/stellar/passkey-name";
-import { CREATION_SETTLE_MS, creationMarker } from "@/lib/auth/creation-marker";
-import { explorerLink } from "@/lib/stellar/config";
+import { CREATION_HEARTBEAT_MS, CREATION_SETTLE_MS, creationMarker } from "@/lib/auth/creation-marker";
+import { browserLocks, withCreationLock } from "@/lib/auth/creation-lock";
+import { NETWORK, explorerLink } from "@/lib/stellar/config";
+import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader, type WalletStatus } from "@/lib/stellar/wallet-lookup";
 
 type Account = { id: string; email: string | null };
 
@@ -62,31 +73,31 @@ const WALLET_PROVEN_ERRORS = new Set(["WalletProvenanceError", "WalletAmbiguousE
 
 const { creationUnconfirmedFor, creationAge, markCreation } = creationMarker(browserStore);
 
-/** How smart-account-kit 0.10.0 begins its error for a passkey whose contract lookup failed (missing, or unreachable). */
-const KIT_NOT_FOUND = "Smart account contract not found on-chain";
 const NO_WALLET_FOR_PASSKEY =
   "No wallet was found on Stellar testnet for this passkey. If it was created a moment ago, wait a minute and try again, or choose another passkey.";
 const SAVED_WALLET_GONE =
   "Your saved wallet was not found on Stellar testnet (the test network may have been reset). Sign out and sign in again to start over on this browser.";
-const CONNECT_UNREACHABLE = "Caracal could not reach the Stellar network to look up your wallet. Check your connection and try again.";
+const WALLET_ARCHIVED =
+  "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can be used. Caracal cannot restore it yet. Do not create another wallet.";
+const WALLET_EXISTS_UNREAD = "Your wallet exists on Stellar testnet, but Caracal could not load it just now. Try again in a moment.";
+const WALLET_STATUS_UNKNOWN =
+  "Caracal could not reach the Stellar network to check whether a wallet exists for this passkey. Check your connection and try again.";
 
-/** Whether the kit's Stellar RPC answers now (within 10 s). */
-async function networkAnswers(kit: { rpc?: { getLatestLedger(): Promise<unknown> } } | undefined): Promise<boolean> {
-  if (!kit?.rpc) return false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * After smart-account-kit's "not found on-chain" (said for any failed lookup):
+ * the wallet contract for that passkey, looked up on the network itself. Null
+ * for any other error.
+ */
+async function lookedUp(e: unknown, kit: { rpc?: unknown } | undefined): Promise<WalletStatus | null> {
+  const credential = credentialInKitError(e);
+  if (!credential) return null;
+  let contractId: string;
   try {
-    await Promise.race([
-      kit.rpc.getLatestLedger(),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("no answer")), 10_000);
-      }),
-    ]);
-    return true;
+    contractId = walletAddressFor(credential, NETWORK.passphrase);
   } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
+    return "unknown";
   }
+  return walletStatus(kit?.rpc as LedgerReader | undefined, contractId);
 }
 
 const WALLET_RECORDED_ELSEWHERE =
@@ -96,7 +107,11 @@ const CREATION_TOO_RECENT =
   "The last attempt started less than 3 minutes ago and may still finish. Wait a few minutes, then check with \"I already have a wallet\" first.";
 
 const CREATION_IN_PROGRESS =
-  "A wallet creation for this account is already under way in another tab, or an earlier one could not be confirmed.";
+  "An earlier wallet creation for this account could not be confirmed.";
+const CREATION_UNDER_WAY =
+  "A wallet creation is already under way in another tab of this browser. Wait for it to finish, then reload this page.";
+const LOCKS_UNSUPPORTED =
+  "This browser cannot make sure that only one tab creates your wallet. Use a current version of Chrome, Edge, Safari or Firefox to create it.";
 
 /** Shown under a failure after which a wallet may already exist, unless the failure already says it. */
 const WALLET_MAYBE_EXISTS =
@@ -105,7 +120,9 @@ const WALLET_MAYBE_EXISTS =
 type State =
   // knownWallet: this account has, or may have, a wallet already (one was
   // restored and then disconnected, or one is recorded as its own here).
-  | { kind: "idle"; knownWallet?: boolean; checkFirst?: boolean }
+  // remembered: the wallet this account last connected on this browser (kept
+  // after sign-out); a new wallet is then offered only as an explicit choice.
+  | { kind: "idle"; knownWallet?: boolean; checkFirst?: boolean; remembered?: string }
   | { kind: "busy"; label: string }
   | { kind: "connected"; contractId: string; txHash?: string }
   // Create is offered after an error only with createAllowed: when the page
@@ -114,7 +131,7 @@ type State =
   // offered: a second try could make a second passkey and an orphan wallet.
   // checkFirst: a creation whose outcome is unknown; the page says to check
   // with Connect before creating another.
-  | { kind: "error"; message: string; createAllowed?: boolean; checkFirst?: boolean };
+  | { kind: "error"; message: string; createAllowed?: boolean; checkFirst?: boolean; remembered?: string };
 
 /** Create is offered only where the page knows this account has no wallet yet. */
 function createOffered(state: State): boolean {
@@ -176,23 +193,28 @@ export default function WalletPage() {
       const mayRestore = await mayRestoreWallet(browserStore, kit, me.id);
       if (stale()) return;
       if (!mayRestore) {
-        // An earlier creation by this account whose outcome is unknown: only Connect.
-        return setState(creationUnconfirmedFor(me.id) ? { kind: "idle", knownWallet: true, checkFirst: true } : { kind: "idle" });
+        // An earlier creation by this account whose outcome is unknown, or a
+        // wallet it connected here before signing out: Connect first.
+        const unconfirmed = creationUnconfirmedFor(me.id);
+        const remembered = rememberedWallet(browserStore, me.id) ?? undefined;
+        return setState(unconfirmed || remembered ? { kind: "idle", knownWallet: true, checkFirst: unconfirmed || undefined, remembered } : { kind: "idle" });
       }
       const r = await restoreWithin(kit.connectWallet(), "restoring the saved wallet");
       if (stale()) return;
-      setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle", knownWallet: true });
+      if (r) rememberWallet(browserStore, me.id, r.contractId);
+      setState(r ? { kind: "connected", contractId: r.contractId } : { kind: "idle", knownWallet: true, remembered: rememberedWallet(browserStore, me.id) ?? undefined });
     })().catch(async (e: unknown) => {
       console.error("could not check the sign-in or saved wallet:", e instanceof Error ? e.message : String(e));
       if (stale()) return;
-      // The kit says "not found on-chain" for any failed lookup. With the
-      // network answering, the saved wallet is gone from the chain (a testnet
+      // The kit says "not found on-chain" for any failed lookup, so the saved
+      // wallet's contract is looked up itself. Only a network that answers
+      // that it has no such contract means the wallet is gone (a testnet
       // reset, say): reloading would fail the same way, so the way forward is
       // named (signing out forgets it on this browser).
-      if (verified && e instanceof Error && e.message.startsWith(KIT_NOT_FOUND) && (await networkAnswers(loadedKit))) {
-        if (stale()) return;
-        return setState({ kind: "error", message: SAVED_WALLET_GONE });
-      }
+      const status = verified ? await lookedUp(e, loadedKit) : null;
+      if (stale()) return;
+      if (status === "absent") return setState({ kind: "error", message: SAVED_WALLET_GONE });
+      if (status === "archived") return setState({ kind: "error", message: WALLET_ARCHIVED });
       // Without a known account a new wallet could not be bound to its owner,
       // so creating or connecting is offered only after a successful check.
       // Each failure is named for what failed: a wrong RPC setting, the wallet
@@ -217,7 +239,10 @@ export default function WalletPage() {
     if (bound === "account-changed") return accountChanged();
     // Recorded as this account's: a reload restores it, so the note goes.
     // "not-saved" keeps it: nothing on this browser would remember the wallet.
-    if (bound === "bound") markCreation(account.id, false);
+    if (bound === "bound") {
+      markCreation(account.id, false);
+      rememberWallet(browserStore, account.id, contractId);
+    }
     // "not-saved": the wallet is this person's for this visit, but it will not
     // be restored on a later visit (mayRestoreWallet fails closed).
     setState({ kind: "connected", contractId, txHash });
@@ -238,11 +263,34 @@ export default function WalletPage() {
     window.location.replace("/signin");
   }
 
-  async function create() {
+  /**
+   * Creates a wallet, holding this browser's creation lock throughout, so no
+   * other tab can start one until this attempt's outcome is recorded.
+   * anyway: the person chose to start a new wallet after an unknown outcome.
+   */
+  async function create(anyway = false) {
     if (!account) return; // a wallet is always bound to its signed-in owner
-    // Another tab of this browser may be creating this account's wallet right
-    // now, or an earlier attempt's outcome is unknown: do not start a second.
-    if (creationUnconfirmedFor(account.id)) {
+    const me = account;
+    const out = await withCreationLock(browserLocks(), () => createHoldingLock(me, anyway));
+    if (out.ran) return;
+    setState(
+      out.why === "busy"
+        ? { kind: "error", message: CREATION_UNDER_WAY, checkFirst: true }
+        : { kind: "error", message: LOCKS_UNSUPPORTED, remembered: rememberedWallet(browserStore, me.id) ?? undefined },
+    );
+  }
+
+  async function createHoldingLock(me: Account, anyway: boolean) {
+    if (anyway) {
+      // Only once the last attempt cannot still finish (creation-marker.ts).
+      if (creationAge() < CREATION_SETTLE_MS) {
+        setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
+        return;
+      }
+      markCreation(me.id, false);
+    }
+    // An earlier attempt's outcome is unknown: do not start a second.
+    if (creationUnconfirmedFor(me.id)) {
       setState({ kind: "error", message: CREATION_IN_PROGRESS, checkFirst: true });
       return;
     }
@@ -254,7 +302,7 @@ export default function WalletPage() {
     } catch {
       // storage blocked: nothing can have been recorded by another tab either
     }
-    if (recordedOwner === account.id) {
+    if (recordedOwner === me.id) {
       setState({ kind: "error", message: WALLET_RECORDED_ELSEWHERE });
       return;
     }
@@ -277,18 +325,23 @@ export default function WalletPage() {
       passkeyMade = true;
       // The wait before "Start a new one anyway" counts from here, not from
       // before the passkey prompt (which can take a minute).
-      markCreation(account.id, true);
+      markCreation(me.id, true);
     });
+    markCreation(me.id, true);
+    // While the attempt runs, its start time is renewed, so if this tab
+    // closes mid-attempt the wait counts from its last sign of life.
+    const beat = setInterval(() => markCreation(me.id, true), CREATION_HEARTBEAT_MS);
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
-    markCreation(account.id, true);
     try {
       r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
     } catch (e) {
       const message = failureText(e);
-      if (!passkeyMade) markCreation(account.id, false);
+      // An unknown outcome: the wait counts from now, when it ended here.
+      markCreation(me.id, passkeyMade);
       setState(passkeyMade ? { kind: "error", message, checkFirst: true } : { kind: "error", message, createAllowed: true });
       return;
     } finally {
+      clearInterval(beat);
       stop?.();
     }
     if (r.submitResult && !r.submitResult.success) {
@@ -299,9 +352,10 @@ export default function WalletPage() {
       const detail = r.submitResult.error.message;
       const sent = "hash" in r.submitResult && typeof r.submitResult.hash === "string" && r.submitResult.hash !== "";
       if (!sent && detail.includes("Nothing was sent")) {
-        markCreation(account.id, false);
+        markCreation(me.id, false);
         return setState({ kind: "error", message: detail, createAllowed: true });
       }
+      markCreation(me.id, true);
       setState({ kind: "error", message: detail, checkFirst: true });
       return;
     }
@@ -314,14 +368,8 @@ export default function WalletPage() {
   }
 
   /** After an unknown outcome, the person checked with Connect and found no wallet. */
-  async function createAnyway() {
-    if (!account) return;
-    if (creationAge() < CREATION_SETTLE_MS) {
-      setState({ kind: "error", message: CREATION_TOO_RECENT, checkFirst: true });
-      return;
-    }
-    markCreation(account.id, false);
-    await create();
+  function createAnyway() {
+    return create(true);
   }
 
   async function connect() {
@@ -339,7 +387,7 @@ export default function WalletPage() {
       // out ("Start a new one anyway") after a Connect that found nothing.
       const unconfirmed = creationUnconfirmedFor(account.id);
       if (r) await connected(r.contractId);
-      else setState({ kind: "idle", knownWallet: !couldCreate, checkFirst: unconfirmed });
+      else setState({ kind: "idle", knownWallet: !couldCreate, checkFirst: unconfirmed, remembered: rememberedWallet(browserStore, account.id) ?? undefined });
     } catch (e) {
       // Not createAllowed: the kit's checks that fail after it found a contract
       // at this passkey's address (provenance, ownership, wallet code) prove a
@@ -347,13 +395,28 @@ export default function WalletPage() {
       // Only those keep the way out hidden: any other failure (no contract at
       // this passkey's address, a closed prompt) leaves it for an unconfirmed
       // creation.
-      const proven = e instanceof Error && WALLET_PROVEN_ERRORS.has(e.name);
       // The kit says "not found on-chain" for any failed lookup, a network
-      // failure included, so the page asks the network itself before saying
-      // anything about the wallet.
-      const notFound = e instanceof Error && e.message.startsWith(KIT_NOT_FOUND);
-      const message = notFound ? ((await networkAnswers(kit)) ? NO_WALLET_FOR_PASSKEY : CONNECT_UNREACHABLE) : failureText(e);
-      setState({ kind: "error", message, checkFirst: !proven && creationUnconfirmedFor(account.id) });
+      // failure included, so the page looks up that passkey's wallet contract
+      // itself. "No wallet" only when the network answers that it has none;
+      // a failed lookup is "could not check", and keeps the hint to check first.
+      const status = await lookedUp(e, kit);
+      const proven = (e instanceof Error && WALLET_PROVEN_ERRORS.has(e.name)) || status === "present" || status === "archived";
+      const message =
+        status === "absent"
+          ? NO_WALLET_FOR_PASSKEY
+          : status === "archived"
+            ? WALLET_ARCHIVED
+            : status === "present"
+              ? WALLET_EXISTS_UNREAD
+              : status === "unknown"
+                ? WALLET_STATUS_UNKNOWN
+                : failureText(e);
+      setState({
+        kind: "error",
+        message,
+        checkFirst: !proven && creationUnconfirmedFor(account.id),
+        remembered: rememberedWallet(browserStore, account.id) ?? undefined,
+      });
     }
   }
 
@@ -361,7 +424,7 @@ export default function WalletPage() {
     try {
       const kit = await getKit();
       await kit.disconnect();
-      setState({ kind: "idle", knownWallet: true });
+      setState({ kind: "idle", knownWallet: true, remembered: account ? (rememberedWallet(browserStore, account.id) ?? undefined) : undefined });
     } catch (e) {
       console.error("could not disconnect the wallet:", e instanceof Error ? e.message : String(e));
       setState({ kind: "error", message: "Caracal could not disconnect this wallet. Reload the page and try again." });
@@ -413,7 +476,7 @@ export default function WalletPage() {
           </label>
           {createOffered(state) && (
             // Hidden while a wallet may already exist: a second try would make another.
-            <button className="rounded-md bg-black px-4 py-3 text-white" onClick={create}>
+            <button className="rounded-md bg-black px-4 py-3 text-white" onClick={() => create()}>
               Create wallet with a passkey
             </button>
           )}
@@ -421,6 +484,19 @@ export default function WalletPage() {
             I already have a wallet
           </button>
           {state.kind === "error" && <p className="text-sm text-red-600">{state.message}</p>}
+          {state.remembered && !state.checkFirst && !createOffered(state) && (
+            // This account connected a wallet on this browser before: connect
+            // that one first; a new wallet only as an explicit choice.
+            <div className="flex flex-col gap-2 text-sm">
+              <p>
+                This browser was last connected to your wallet <span className="break-all font-mono">{state.remembered}</span>. Use &quot;I
+                already have a wallet&quot; to open it with your passkey.
+              </p>
+              <button className="text-left underline" onClick={() => create()}>
+                Make a second, new wallet instead (your first wallet stays as it is)
+              </button>
+            </div>
+          )}
           {(state.kind === "error" || state.kind === "idle") && state.checkFirst && !(state.kind === "error" && state.message.includes("check with Connect")) && (
             <p className="text-sm">{WALLET_MAYBE_EXISTS}</p>
           )}

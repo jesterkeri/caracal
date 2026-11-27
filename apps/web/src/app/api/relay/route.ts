@@ -22,6 +22,15 @@
 // official client), which only adds a fee bump; without the key it is refused
 // (fail closed).
 //
+// A request is sent upstream within SEND_DEADLINE_MS of arriving, or not at
+// all (refused, "Nothing was sent"), and never once its caller has gone. A
+// wallet deployment is forwarded with its authorisation re-signed to expire
+// DEPLOY_AUTH_LEDGERS after the simulation's ledger (deploy-auth.ts), so it
+// cannot land more than about a minute after it was sent. Together these
+// bound how long after arriving a wallet creation can still land, which the
+// wallet page's wait before "start a new one anyway" relies on
+// (creation-marker.ts).
+//
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
 // relayer. Calling it from the server means no browser CORS and no key in the
@@ -35,6 +44,8 @@ import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay
 import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, isTxHash, safeTransactionId, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
+import { DEPLOY_AUTH_LEDGERS, withShortDeployAuth } from "@/lib/relay/deploy-auth";
+import { SEND_DEADLINE_MS } from "@/lib/relay/limits";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
 
@@ -124,6 +135,14 @@ function deploysContract(body: unknown): boolean {
 }
 
 export async function POST(request: Request) {
+  const arrived = Date.now();
+  /** Refusal if this request may no longer be sent: too late, or its caller has gone. */
+  const tooLate = () =>
+    request.signal?.aborted
+      ? refuse("The request was cancelled before it was sent", 499)
+      : Date.now() - arrived > SEND_DEADLINE_MS
+        ? refuse("The fee sponsor is busy. Try again in a minute.", 503)
+        : null;
   if (!perIp.take(clientKey(request, process.env))) return refuse("Too many requests. Wait a minute.", 429);
   if (!perInstance.take("all")) return refuse("The fee sponsor is busy. Try again shortly.", 429);
 
@@ -192,6 +211,10 @@ export async function POST(request: Request) {
   // and relayer call inside is time-bounded, so one hung call cannot hold the
   // queue (sponsor.ts and the 60 s relayer timeouts).
   const answer = await oneAtATime(async (): Promise<Response | { res: Response; out: string }> => {
+    // Waiting in the queue (or on the policy's lookups) is bounded: a request
+    // that waited too long, or whose caller has gone, is not sent.
+    const waited = tooLate();
+    if (waited) return waited;
     let built;
     try {
       built = await buildSponsoredTx(verdict.body, deps);
@@ -207,17 +230,26 @@ export async function POST(request: Request) {
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
     if (!built.ok) return toProxy ? refuse(built.error, built.status) : fail(built.error, built.status);
+    const late = tooLate();
+    if (late) return late;
 
     if (!toProxy) {
       const sent = await submitToChannels(channels(channelsKey!, channelsUrl), built.xdr, channelsTimeout());
       return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
+    }
+    let forwarded: { func: string; auth: string[] };
+    try {
+      forwarded = await withShortDeployAuth(verdict.body, built.latestLedger + DEPLOY_AUTH_LEDGERS, NETWORK.passphrase);
+    } catch (e) {
+      console.error("relay could not re-sign the deployment:", e instanceof Error ? e.message : String(e));
+      return refuse("Caracal could not prepare this wallet creation", 400);
     }
     try {
       // The timeout covers both the request and reading the answer.
       const res = await fetch(proxyUrl ?? DEFAULT_UPSTREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(verdict.body),
+        body: JSON.stringify(forwarded),
         signal: AbortSignal.timeout(60_000),
       });
       return { res, out: await res.text() };

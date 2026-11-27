@@ -328,7 +328,9 @@ describe("r4p follow-up: 'not found on-chain' is checked against the network", (
     return (page.setters.filter((s) => s.i === 0).at(-1)!.v as { message: string }).message;
   }
   it("the network answers: no wallet for this passkey", async () => {
-    const m = await connectFails({ getLatestLedger: async () => ({ sequence: 1 }) });
+    // Since Codex R5 #4 the page asks for the passkey's wallet contract itself
+    // (getLedgerEntries); a ledger that answers is no longer enough.
+    const m = await connectFails({ getLatestLedger: async () => ({ sequence: 1 }), getLedgerEntries: async () => ({ entries: [], latestLedger: 1 }) });
     expect(m).toMatch(/No wallet was found on Stellar testnet for this passkey/);
   });
   it("the network does not answer: says so, not that the wallet is missing", async () => {

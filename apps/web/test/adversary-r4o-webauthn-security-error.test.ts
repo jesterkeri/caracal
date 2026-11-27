@@ -99,6 +99,7 @@ async function connectFailsWith(hostname: string, fail: () => Error) {
   // @simplewebauthn/browser run on top of it.
   vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
   vi.stubGlobal("navigator", {
+    locks: (globalThis.navigator as { locks?: unknown } | undefined)?.locks, // harness: a real browser has Web Locks (added for Codex R5 #1)
     credentials: {
       get: async () => {
         throw fail();

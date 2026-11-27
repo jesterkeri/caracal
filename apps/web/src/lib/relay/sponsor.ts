@@ -34,7 +34,8 @@ export type SponsorDeps = {
   maxResourceFee: bigint;
 };
 
-export type Sponsored = { ok: true; xdr: string } | { ok: false; status: number; error: string };
+/** `latestLedger`: the ledger the simulation ran at (the RPC's view of the network then). */
+export type Sponsored = { ok: true; xdr: string; latestLedger: number } | { ok: false; status: number; error: string };
 
 /** Longest wait for one RPC answer. The SDK has no timeout by default. */
 export const RPC_TIMEOUT_MS = 20_000;
@@ -98,7 +99,7 @@ export async function buildSponsoredTx(body: { func: string; auth: string[] }, d
     return refuse(400, "The auth entries changed during simulation.");
   }
   assembled.sign(deps.source);
-  return { ok: true, xdr: assembled.toXDR() };
+  return { ok: true, xdr: assembled.toXDR(), latestLedger: sim.latestLedger };
 }
 
 /**

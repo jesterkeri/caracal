@@ -117,7 +117,18 @@ describe("code identity is decided on what the transaction loads (Codex r3 #1)",
     const { r, upstream } = await post(body);
     expect(r.status).toBe(200);
     expect(upstream.mock.calls[0][0]).toBe("https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev");
-    expect(JSON.parse(upstream.mock.calls[0][1].body as string)).toEqual(body);
+    // Changed with Codex R5 #2: the same deployment and invocation, with the
+    // shared deployer's authorisation re-signed to expire 12 ledgers after the
+    // simulation's ledger (1_000_000 in the fake), so a lost answer cannot land
+    // an hour later. Was: the body forwarded unchanged.
+    const sent = JSON.parse(upstream.mock.calls[0][1].body as string) as { func: string; auth: string[] };
+    expect(sent.func).toBe(body.func);
+    expect(sent.auth).toHaveLength(body.auth.length);
+    const before = xdr.SorobanAuthorizationEntry.fromXDR(body.auth[0], "base64");
+    const after = xdr.SorobanAuthorizationEntry.fromXDR(sent.auth[0], "base64");
+    expect(after.rootInvocation().toXDR("base64")).toBe(before.rootInvocation().toXDR("base64"));
+    expect(after.credentials().address().nonce().toString()).toBe(before.credentials().address().nonce().toString());
+    expect(after.credentials().address().signatureExpirationLedger()).toBe(1_000_012);
   });
 });
 

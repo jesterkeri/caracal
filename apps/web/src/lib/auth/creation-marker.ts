@@ -14,11 +14,20 @@ export const CREATION_UNCONFIRMED_KEY = "caracal.creationUnconfirmed";
 /** The latest attempt's start (ms since epoch), for all accounts. */
 export const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
 /**
- * How long a creation may still be finishing (the relay's own limits are
- * shorter). Before that, "start a new wallet anyway" waits: another tab, or
- * the network, may still complete the first one.
+ * How long after its last sign of life a creation may still land. Before
+ * that, "start a new wallet anyway" waits. The bound, from the relay
+ * (apps/web/src/app/api/relay/route.ts): a request is sent upstream within
+ * 60 s of arriving or never (SEND_DEADLINE_MS), and a wallet deployment is
+ * forwarded with an authorisation that expires 12 ledgers (about 70 s) after
+ * the ledger it was checked at (DEPLOY_AUTH_LEDGERS). The page renews the
+ * start time every CREATION_HEARTBEAT_MS while an attempt runs, and again when
+ * it ends, so 10 + 60 + about 70 s is under these 3 minutes. While a tab is
+ * still running an attempt, it also holds the creation lock
+ * (creation-lock.ts), so no other tab can start one.
  */
 export const CREATION_SETTLE_MS = 3 * 60_000;
+/** How often a running attempt renews its start time. */
+export const CREATION_HEARTBEAT_MS = 10_000;
 
 export function creationMarker(store: KeyValue, now: () => number = () => Date.now()) {
   /** When this page last started a creation (kept in memory too, for browsers that block storage). */
