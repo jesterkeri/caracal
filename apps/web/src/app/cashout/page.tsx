@@ -37,6 +37,11 @@ function within<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /** The unit an anchor amount is in: USDC when the anchor names Circle testnet USDC or no asset, else its own id. */
+/** Whether the anchor asks for Circle testnet USDC (or names no asset): the only payment the page can make. */
+function paidInUsdc(txn: { amountInAsset?: string | null }): boolean {
+  return txn.amountInAsset == null || txn.amountInAsset === CASHOUT_ASSET.id;
+}
+
 function assetLabel(asset: string | null | undefined): string {
   return asset == null || asset === CASHOUT_ASSET.id ? "USDC" : `(in ${asset})`;
 }
@@ -55,7 +60,8 @@ export default function CashoutPage() {
   const [amountText, setAmountText] = useState("");
   const [phase, setPhase] = useState<Phase>("preview");
   const [session, setSession] = useState<Session | null>(null);
-  const [popupBlocked, setPopupBlocked] = useState(false);
+  // Why the anchor's form is not in the pop-up: the browser refused to open one, or the person closed it.
+  const [popupNote, setPopupNote] = useState<"blocked" | "closed" | null>(null);
   const [confirmed, setConfirmed] = useState<bigint | null>(null);
   const [txn, setTxn] = useState<AnchorTxn | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -170,7 +176,7 @@ export default function CashoutPage() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
     setProblem(null);
-    setPopupBlocked(false);
+    setPopupNote(null);
     setPhase("starting");
     // The popup is opened now, inside the click, so the browser allows it. It
     // is pointed at the anchor's form once the anchor has started the withdrawal.
@@ -193,7 +199,7 @@ export default function CashoutPage() {
       setConfirmed(preview.amount);
       setSession(r);
       if (popupRef.current && !popupRef.current.closed) popupRef.current.location.href = r.url;
-      else setPopupBlocked(true);
+      else setPopupNote(popupRef.current ? "closed" : "blocked");
       setPhase("form");
     } catch (e) {
       popupRef.current?.close();
@@ -250,7 +256,7 @@ export default function CashoutPage() {
     setSentHash(null);
     setProblem(null);
     setPollNote(null);
-    setPopupBlocked(false);
+    setPopupNote(null);
     sendingFor.current = null;
     setPhase("preview");
     refreshBalance();
@@ -319,10 +325,11 @@ export default function CashoutPage() {
 
           {phase === "starting" && <p className="text-sm">Signing in to the anchor with your passkey...</p>}
 
-          {phase === "form" && session && (
+          {phase === "form" && session && !done && !lostSession && (
             <div className="flex flex-col gap-2 text-sm">
               <p>Finish the anchor&apos;s form in the pop-up window. This page moves on by itself when the anchor is ready for your USDC.</p>
-              {popupBlocked && <p>Your browser blocked the pop-up.</p>}
+              {popupNote === "blocked" && <p>Your browser blocked the pop-up.</p>}
+              {popupNote === "closed" && <p>The pop-up was closed before the anchor&apos;s form could open in it.</p>}
               <p>
                 <a className="underline" href={session.url} target="_blank" rel="noopener noreferrer">
                   Open the anchor&apos;s form
@@ -336,7 +343,7 @@ export default function CashoutPage() {
             <div className="flex flex-col gap-3">
               <dl className="grid grid-cols-2 gap-1 text-sm">
                 <dt>The anchor wants</dt>
-                <dd className="text-right">{txn.amountIn ?? "?"} USDC</dd>
+                <dd className="text-right">{txn.amountIn ?? "?"} {assetLabel(txn.amountInAsset)}</dd>
                 <dt>Anchor fee</dt>
                 <dd className="text-right">{txn.feeTotal === null ? "not stated" : `${txn.feeTotal} ${assetLabel(txn.feeAsset)}`}</dd>
                 <dt>Arrives</dt>
@@ -346,7 +353,10 @@ export default function CashoutPage() {
                 <dt>Memo ({txn.withdrawMemoType ?? "none"})</dt>
                 <dd className="break-all text-right font-mono">{txn.withdrawMemo ?? "not stated"}</dd>
               </dl>
-              {txn.status === "pending_user_transfer_start" || phase === "sending" ? (
+              {phase !== "sending" && !paidInUsdc(txn) ? (
+                // paymentFor refuses any other asset, so no Send is offered for one.
+                <p className="text-sm">The anchor asks to be paid in {txn.amountInAsset}, not Circle testnet USDC, so Caracal cannot pay this cash-out, and this page sent nothing. Start again for a new one.</p>
+              ) : txn.status === "pending_user_transfer_start" || phase === "sending" ? (
                 <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={phase === "sending"} onClick={send}>
                   {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
                 </button>
