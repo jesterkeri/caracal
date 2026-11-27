@@ -14,6 +14,24 @@ import type { AnchorToml } from "./toml";
 
 /** smart-account-kit's code for a passkey prompt the person closed (SmartAccountErrorCode). */
 const WEBAUTHN_CANCELLED = 4004;
+/** smart-account-kit's WebAuthn error codes (4001 to 4004). */
+const WEBAUTHN_CODES = new Set([4001, 4002, 4003, 4004]);
+/** What the browser's passkey prompt (or @simplewebauthn) raises. */
+const PASSKEY_ERRORS = new Set(["NotAllowedError", "AbortError", "SecurityError", "InvalidStateError", "NotSupportedError", "WebAuthnError"]);
+/**
+ * Longest wait for the kit's signing of the sign-in entry: its own network reads (the wallet's rules and
+ * code) come before the passkey prompt and have no timeout, and the prompt itself times out well within this.
+ */
+export const SIGN_ENTRY_TIMEOUT_MS = 3 * 60_000;
+
+/** Whether a failure came from the passkey prompt itself, not from the kit's network reads before it. */
+function passkeyFailed(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const { code, name, cause } = e as { code?: unknown; name?: unknown; cause?: unknown };
+  if (typeof code === "number" && WEBAUTHN_CODES.has(code)) return true;
+  if (typeof name === "string" && PASSKEY_ERRORS.has(name)) return true;
+  return typeof cause === "object" && cause !== null && PASSKEY_ERRORS.has(String((cause as { name?: unknown }).name));
+}
 
 /** Ledgers the signature stays valid for (about 8 minutes at 5 seconds a ledger). */
 export const SIGNATURE_LEDGERS = 100;
@@ -109,14 +127,18 @@ export async function signInToAnchor(wallet: string, toml: AnchorToml, deps: Sep
   // Rule 0 is the default rule every Caracal wallet is created with; a
   // web_auth_verify call on another contract falls under its default context.
   try {
-    entries[own] = await deps.signAuthEntry(entries[own]!, { expiration, contextRuleIds: [0] });
+    entries[own] = await within(deps.signAuthEntry(entries[own]!, { expiration, contextRuleIds: [0] }), SIGN_ENTRY_TIMEOUT_MS);
   } catch (e) {
-    // Only a failure of the passkey signing itself is put down to the passkey.
+    if (e instanceof RequestTimeout) {
+      throw new AnchorError("Caracal got no answer within 3 minutes while preparing or signing the anchor's sign-in. Nothing was started. Check your connection and try again.", "sign-in");
+    }
     if (typeof e === "object" && e !== null && (e as { code?: number }).code === WEBAUTHN_CANCELLED) {
       throw new AnchorError("You cancelled the passkey prompt, so Caracal did not sign in to the anchor. Nothing was started.", "sign-in");
     }
-    console.error("anchor sign-in: passkey signing failed:", messageOf(e));
-    throw new AnchorError("Your passkey could not sign the anchor's sign-in. Nothing was started. Try again.", "sign-in");
+    console.error("anchor sign-in: signing failed:", messageOf(e));
+    // Only a failure of the passkey prompt itself is put down to the passkey; the kit reads the network first.
+    if (passkeyFailed(e)) throw new AnchorError("Your passkey could not sign the anchor's sign-in. Nothing was started. Try again.", "sign-in");
+    throw new AnchorError("Caracal could not prepare the anchor's sign-in for your passkey, usually because the Stellar network could not be read. Nothing was started. Check your connection and try again.", "sign-in");
   }
 
   let answer;

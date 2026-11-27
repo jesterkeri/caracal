@@ -70,7 +70,10 @@ describe("beginning a cash-out", () => {
   it("names a passkey failure without leaking its raw error", async () => {
     const { fetchFn } = anchor();
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(beginCashout(WALLET, TOML, TWO, { fetchFn, signAuthEntry: async () => Promise.reject(new Error("boom")), latestLedger: async () => 50 })).rejects.toThrow(/passkey could not sign/);
+    // Fixture fix (2026-11-27, adversary c4): a passkey failure is one the browser's prompt raises (here a SecurityError);
+    // a plain error can come from the kit's network reads before the prompt, and is no longer put down to the passkey.
+    const passkeyError = Object.assign(new Error("boom"), { name: "SecurityError" });
+    await expect(beginCashout(WALLET, TOML, TWO, { fetchFn, signAuthEntry: async () => Promise.reject(passkeyError), latestLedger: async () => 50 })).rejects.toThrow(/passkey could not sign/);
     expect(JSON.stringify(log.mock.calls)).not.toContain(TOKEN);
     log.mockRestore();
   });

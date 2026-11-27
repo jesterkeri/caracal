@@ -97,6 +97,10 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
   if (r.error.code === WEBAUTHN_CANCELLED) return { kind: "not-sent", message: "You cancelled the passkey prompt. Nothing was sent." };
   console.error("USDC payment failed:", r.error.message);
   const code = r.error.code;
+  // The relay's report that the network ran the payment and it failed (src/lib/relay/channels.ts, ONCHAIN_FAILED).
+  if (/This transaction failed on the network \(ONCHAIN_FAILED\), so nothing changed\./.test(r.error.message)) {
+    return { kind: "not-sent", message: "The USDC payment failed on the network, so nothing left your wallet. Try again." };
+  }
   if (!r.hash && code !== TRANSACTION_TIMEOUT && provenNotSent(code, r.error.message)) {
     return { kind: "not-sent", message: "The USDC payment was not sent. Nothing left your wallet. Try again." };
   }
