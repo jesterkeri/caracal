@@ -1,7 +1,7 @@
 // The two steps of a cash-out that need the wallet, with their dependencies
 // passed in so they are tested without a browser, a passkey or a network.
 
-import { AnchorError, messageOf } from "./errors";
+import { AnchorError, RequestTimeout, messageOf, within } from "./errors";
 import { signInToAnchor, type Sep45Deps } from "./sep45";
 import { startWithdraw, type AnchorTxn } from "./sep24";
 import { paymentFor, type AnchorPayment } from "./transfer";
@@ -16,6 +16,12 @@ const TRANSACTION_TIMEOUT = 5004;
  * signing step): WebAuthn 4001 to 4004, simulation 5001, signing 5002.
  */
 const BEFORE_SUBMIT = new Set([4001, 4002, 4003, 4004, 5001, 5002]);
+
+/**
+ * Longest wait for the passkey, the relay and the kit's confirmation poll together. The kit polls on an RPC
+ * client with no timeout of its own; past this the payment may still land, so the outcome is unknown.
+ */
+export const SEND_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * "Not sent" needs proof: the relay's own refusal text ("Nothing was sent",
@@ -78,8 +84,11 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
   }
   let r: Awaited<ReturnType<SendDeps["signAndSubmit"]>>;
   try {
-    r = await deps.signAndSubmit(tx);
+    r = await within(deps.signAndSubmit(tx), SEND_TIMEOUT_MS);
   } catch (e) {
+    if (e instanceof RequestTimeout) {
+      return { kind: "unknown", message: "Caracal got no answer about the USDC payment within 5 minutes. It may still go through. The anchor's status below shows whether it arrived. Do not send it again." };
+    }
     if (codeOf(e) === WEBAUTHN_CANCELLED) return { kind: "not-sent", message: "You cancelled the passkey prompt. Nothing was sent." };
     console.error("USDC payment threw:", messageOf(e));
     return { kind: "unknown", message: "Something went wrong while sending the USDC and Caracal cannot tell whether it left your wallet. The anchor's status below shows whether it arrived. Do not send it again." };
