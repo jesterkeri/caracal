@@ -3,7 +3,7 @@
 
 import { CASHOUT_ASSET, INTERACTIVE_HOST_SUFFIX } from "./config";
 import { fromStroops, toStroops } from "./amount";
-import { AnchorError } from "./errors";
+import { AnchorError, RequestTimeout, jsonOf, requestWithin } from "./errors";
 
 export type WithdrawInfo = {
   enabled: boolean;
@@ -36,14 +36,15 @@ export function parseInfo(json: unknown): WithdrawInfo {
 }
 
 export async function loadInfo(transferServer: string, fetchFn: typeof fetch = fetch): Promise<WithdrawInfo> {
-  let res: Response;
+  let res;
   try {
-    res = await fetchFn(`${transferServer}/info`, { cache: "no-store" });
-  } catch {
+    res = await requestWithin(fetchFn, `${transferServer}/info`, { cache: "no-store" });
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal read its cash-out limits. Try again in a minute.", "anchor-info");
     throw new AnchorError("Caracal could not reach the test anchor to read its cash-out limits. Check your connection and try again.", "anchor-info");
   }
   if (!res.ok) throw new AnchorError(`The test anchor's cash-out details answered with an error (${res.status}). Try again in a minute.`, "anchor-info");
-  return parseInfo(await res.json().catch(() => null));
+  return parseInfo(jsonOf(res.text));
 }
 
 export type Preview =
@@ -96,19 +97,22 @@ export async function startWithdraw(
   amount: bigint,
   fetchFn: typeof fetch = fetch,
 ): Promise<{ id: string; url: string }> {
-  let res: Response;
+  let res;
   try {
-    res = await fetchFn(`${transferServer}/transactions/withdraw/interactive`, {
+    res = await requestWithin(fetchFn, `${transferServer}/transactions/withdraw/interactive`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ asset_code: CASHOUT_ASSET.code, account: wallet, amount: fromStroops(amount), lang: "en" }),
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof RequestTimeout) {
+      throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal asked it to start the cash-out. The anchor may have started it. No USDC has been sent. Try again.", "start", true);
+    }
     // The anchor may have received it: it is not safe to say nothing was started.
     throw new AnchorError("Caracal lost the connection while starting the cash-out. The anchor may or may not have started it. No USDC has been sent. Check your connection and try again.", "start");
   }
   if (!res.ok) throw new AnchorError(`The test anchor would not start the withdrawal (it answered ${res.status}). No USDC has been sent.`, "start");
-  const body: unknown = await res.json().catch(() => null);
+  const body = jsonOf(res.text);
   const o = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   if (typeof o.id !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(o.id)) throw new AnchorError("The test anchor's answer had no transaction id. No USDC has been sent.", "start");
   return { id: o.id, url: checkInteractiveUrl(o.url) };
@@ -154,15 +158,16 @@ export function parseTransaction(json: unknown): AnchorTxn {
 }
 
 export async function loadTransaction(transferServer: string, token: string, id: string, fetchFn: typeof fetch = fetch): Promise<AnchorTxn> {
-  let res: Response;
+  let res;
   try {
-    res = await fetchFn(`${transferServer}/transaction?id=${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
-  } catch {
+    res = await requestWithin(fetchFn, `${transferServer}/transaction?id=${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal checked the status. Trying again.", "status", true);
     throw new AnchorError("Caracal could not reach the test anchor to check the status.", "status", true);
   }
   if (res.status === 403 || res.status === 401) throw new AnchorError("The anchor no longer accepts this session, so its status cannot be read here. Your wallet's history shows whether the USDC left.", "status", true);
   if (!res.ok) throw new AnchorError(`The test anchor's status answered with an error (${res.status}).`, "status", true);
-  return parseTransaction(await res.json().catch(() => null));
+  return parseTransaction(jsonOf(res.text));
 }
 
 /** What a status means for the person, in plain English. Only "completed" counts as done. */

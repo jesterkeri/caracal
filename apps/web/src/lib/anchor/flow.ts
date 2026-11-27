@@ -11,6 +11,23 @@ import type { AnchorToml } from "./toml";
 const WEBAUTHN_CANCELLED = 4004;
 const TRANSACTION_TIMEOUT = 5004;
 
+/**
+ * Failures the kit raises before it submits anything (the passkey or the
+ * signing step): WebAuthn 4001 to 4004, simulation 5001, signing 5002.
+ */
+const BEFORE_SUBMIT = new Set([4001, 4002, 4003, 4004, 5001, 5002]);
+
+/**
+ * "Not sent" needs proof: the relay's own refusal text ("Nothing was sent",
+ * which it says only for refusals made before it sent anything), or a failure
+ * the kit raised before submitting. A relay that did not answer (code 5003
+ * with no hash) is not proof.
+ */
+function provenNotSent(code: number | undefined, message: string): boolean {
+  if (/Nothing was sent/i.test(message)) return true;
+  return code !== undefined && BEFORE_SUBMIT.has(code);
+}
+
 const codeOf = (e: unknown): number | undefined => (typeof e === "object" && e !== null ? (e as { code?: number }).code : undefined);
 
 export type BeginResult = { token: string; id: string; url: string };
@@ -69,8 +86,10 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
   if (r.success) return { kind: "sent", hash: r.hash };
   if (r.error.code === WEBAUTHN_CANCELLED) return { kind: "not-sent", message: "You cancelled the passkey prompt. Nothing was sent." };
   console.error("USDC payment failed:", r.error.message);
-  if (r.hash || r.error.code === TRANSACTION_TIMEOUT) {
-    return { kind: "unknown", hash: r.hash, message: "Caracal could not confirm the USDC payment. It may still go through. The anchor's status below shows whether it arrived. Do not send it again." };
+  const code = r.error.code;
+  if (!r.hash && code !== TRANSACTION_TIMEOUT && provenNotSent(code, r.error.message)) {
+    return { kind: "not-sent", message: "The USDC payment was not sent. Nothing left your wallet. Try again." };
   }
-  return { kind: "not-sent", message: "The USDC payment was not sent. Nothing left your wallet. Try again." };
+  // Everything else is unknown: a relay that did not answer (5003 with no hash) may have passed the payment on.
+  return { kind: "unknown", hash: r.hash, message: "Caracal could not confirm the USDC payment. It may still go through. The anchor's status below shows whether it arrived. Do not send it again." };
 }

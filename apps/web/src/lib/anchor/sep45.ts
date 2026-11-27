@@ -8,7 +8,7 @@
 //    never in a URL, a log or storage.
 
 import { Address, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { AnchorError } from "./errors";
+import { AnchorError, RequestTimeout, jsonOf, requestWithin } from "./errors";
 import { ANCHOR } from "./config";
 import type { AnchorToml } from "./toml";
 
@@ -75,14 +75,15 @@ export function checkChallenge(entriesBase64: string, wallet: string, toml: Anch
 /** Sign in. Returns the anchor's token. Needs one passkey confirmation. */
 export async function signInToAnchor(wallet: string, toml: AnchorToml, deps: Sep45Deps): Promise<string> {
   const query = new URLSearchParams({ account: wallet, home_domain: ANCHOR.homeDomain });
-  let challenge: Response;
+  let challenge;
   try {
-    challenge = await deps.fetchFn(`${toml.webAuthEndpoint}?${query}`, { cache: "no-store" });
-  } catch {
+    challenge = await requestWithin(deps.fetchFn, `${toml.webAuthEndpoint}?${query}`, { cache: "no-store" });
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal started the sign-in. Nothing was signed. Try again.", "sign-in");
     throw new AnchorError("Caracal could not reach the test anchor to sign in. Check your connection and try again.", "sign-in");
   }
   if (!challenge.ok) throw new AnchorError(`The test anchor refused to start a sign-in for your wallet (it answered ${challenge.status}). Try again in a minute.`, "sign-in");
-  const body: unknown = await challenge.json().catch(() => null);
+  const body = jsonOf(challenge.text);
   const text = typeof body === "object" && body !== null ? (body as Record<string, unknown>).authorization_entries : undefined;
   if (typeof text !== "string") throw new AnchorError("The test anchor's sign-in challenge was not in the expected shape. Nothing was signed.", "sign-in");
 
@@ -92,18 +93,19 @@ export async function signInToAnchor(wallet: string, toml: AnchorToml, deps: Sep
   // web_auth_verify call on another contract falls under its default context.
   entries[own] = await deps.signAuthEntry(entries[own]!, { expiration, contextRuleIds: [0] });
 
-  let answer: Response;
+  let answer;
   try {
-    answer = await deps.fetchFn(toml.webAuthEndpoint, {
+    answer = await requestWithin(deps.fetchFn, toml.webAuthEndpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ authorization_entries: encodeEntries(entries) }),
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal finished the sign-in. Nothing was started. Try again.", "sign-in");
     throw new AnchorError("Caracal could not reach the test anchor to finish signing in. Check your connection and try again.", "sign-in");
   }
   if (!answer.ok) throw new AnchorError(`The test anchor did not accept the signed sign-in (it answered ${answer.status}). Nothing was started. Try again.`, "sign-in");
-  const done: unknown = await answer.json().catch(() => null);
+  const done = jsonOf(answer.text);
   const token = typeof done === "object" && done !== null ? (done as Record<string, unknown>).token : undefined;
   if (typeof token !== "string" || token.length === 0) throw new AnchorError("The test anchor accepted the sign-in but sent no token. Try again.", "sign-in");
   return token;

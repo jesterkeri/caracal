@@ -16,3 +16,51 @@ export class AnchorError extends Error {
 export function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+
+/** How long any one request to the anchor may take, from sending it to reading its whole answer. */
+export const ANCHOR_REQUEST_MS = 20_000;
+
+/** A request to the anchor did not finish in time. */
+export class RequestTimeout extends Error {
+  constructor() {
+    super("request timed out");
+    this.name = "RequestTimeout";
+  }
+}
+
+export type Reply = { ok: boolean; status: number; text: string };
+
+/**
+ * Send a request and read the whole answer within a deadline. A fetch that
+ * ignores its abort signal is still cut off, so nothing waits for ever.
+ * Throws RequestTimeout on the deadline; any other failure is passed on.
+ */
+export async function requestWithin(fetchFn: typeof fetch, input: string, init: RequestInit = {}, ms: number = ANCHOR_REQUEST_MS): Promise<Reply> {
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ctl.abort();
+      reject(new RequestTimeout());
+    }, ms);
+  });
+  const run = (async (): Promise<Reply> => {
+    const res = await fetchFn(input, { ...init, signal: ctl.signal });
+    return { ok: res.ok, status: res.status, text: await res.text().catch(() => "") };
+  })();
+  run.catch(() => {}); // when the deadline wins, a later failure of the request is not an unhandled rejection
+  try {
+    return await Promise.race([run, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The JSON in an answer's text, or null when it is not JSON. */
+export function jsonOf(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}

@@ -108,9 +108,10 @@ describe("sending the USDC", () => {
     expect(await sendToAnchor(waiting, TWO, sendDeps({ signAndSubmit: async () => Promise.reject(cancelled) }))).toMatchObject({ kind: "not-sent", message: expect.stringMatching(/cancelled/) });
     expect(await sendToAnchor(waiting, TWO, sendDeps({ signAndSubmit: async () => ({ success: false, error: { code: 4004, message: "c" } }) }))).toMatchObject({ kind: "not-sent" });
   });
-  it("calls a failure with no transaction hash not sent, and never claims success", async () => {
+  it("calls a relay refusal that says 'Nothing was sent' not sent, and never claims success", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const r = await sendToAnchor(waiting, TWO, sendDeps({ signAndSubmit: async () => ({ success: false, error: { code: 5003, message: "relay refused" } }) }));
+    const refusal = "The fee relayer refused this transaction (POLICY). Nothing was sent.";
+    const r = await sendToAnchor(waiting, TWO, sendDeps({ signAndSubmit: async () => ({ success: false, error: { code: 5003, message: refusal } }) }));
     expect(r).toMatchObject({ kind: "not-sent", message: expect.stringMatching(/Nothing left your wallet/) });
     log.mockRestore();
   });

@@ -55,6 +55,23 @@ export default function CashoutPage() {
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
   const sendingFor = useRef<string | null>(null);
+  // The newest record from the anchor, read the moment Send is pressed.
+  const txnRef = useRef<AnchorTxn | null>(null);
+  const walletRef = useRef<string | null>(null);
+  const balanceRead = useRef(0);
+
+  // The wallet's USDC balance, read again whenever it may have changed. A slow
+  // older read never overwrites a newer one, and a failed read shows "not available"
+  // rather than an old number the preview would check against.
+  function refreshBalance() {
+    const kit = kitRef.current;
+    const wallet = walletRef.current;
+    if (!kit || !wallet) return;
+    const mine = ++balanceRead.current;
+    void readUsdcBalance(wallet, kit.rpc).then((b) => {
+      if (mine === balanceRead.current) setBalance(b);
+    });
+  }
 
   // The wallet: restored only for the signed-in account that created or connected it.
   useEffect(() => {
@@ -73,6 +90,7 @@ export default function CashoutPage() {
       const r = await within(kit.connectWallet(), RESTORE_MS);
       if (gone) return;
       if (!r) return setBoot({ kind: "no-wallet" });
+      walletRef.current = r.contractId;
       setBoot({ kind: "ready", wallet: r.contractId });
       // The anchor's details and the wallet's balance: each failure is named on its own.
       loadToml()
@@ -81,7 +99,7 @@ export default function CashoutPage() {
           setInfo(await loadInfo(t.transferServer));
         })
         .catch((e: unknown) => !gone && setInfoError(e instanceof AnchorError ? e.message : "Caracal could not read the test anchor's cash-out details. Reload the page to try again."));
-      readUsdcBalance(r.contractId, kit.rpc).then((b) => !gone && setBalance(b));
+      refreshBalance();
     })().catch((e: unknown) => {
       console.error("could not open the cash-out page:", messageOf(e));
       if (gone) return;
@@ -104,7 +122,10 @@ export default function CashoutPage() {
         const t = await loadTransaction(toml.transferServer, session.token, session.id);
         if (stop) return;
         setPollNote(null);
+        txnRef.current = t;
         setTxn(t);
+        // A "may still go through" warning from the send is settled once the anchor says it finished.
+        if (t.status === "completed" || t.status === "refunded") setProblem(null);
         if (phase === "form" && t.status === "pending_user_transfer_start") {
           setPhase("confirm");
           popupRef.current?.close();
@@ -123,6 +144,12 @@ export default function CashoutPage() {
       clearTimeout(timer);
     };
   }, [phase, session, toml]);
+
+  // The balance changes when the anchor's status changes (the USDC arrives, a refund lands).
+  useEffect(() => {
+    if (txn) refreshBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txn?.status]);
 
   const preview = info ? previewWithdraw(amountText, info, balance) : null;
 
@@ -156,6 +183,13 @@ export default function CashoutPage() {
   async function send() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !txn || confirmed === null || sendingFor.current === txn.id) return;
+    // The account and memo the person was shown must be the ones the anchor still has.
+    const latest = txnRef.current;
+    if (latest && (latest.withdrawAnchorAccount !== txn.withdrawAnchorAccount || latest.withdrawMemo !== txn.withdrawMemo || latest.withdrawMemoType !== txn.withdrawMemoType)) {
+      setTxn(latest);
+      setProblem("The anchor changed the account or memo to pay after you looked at it. Nothing was sent. Check the details above and confirm again.");
+      return;
+    }
     sendingFor.current = txn.id;
     setProblem(null);
     setPhase("sending");
@@ -164,6 +198,7 @@ export default function CashoutPage() {
       signAndSubmit: (tx) => kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>),
     };
     const r = await sendToAnchor(txn, confirmed, deps);
+    refreshBalance();
     if (r.kind === "sent") {
       setSentHash(r.hash);
       setPhase("watching");
@@ -177,6 +212,22 @@ export default function CashoutPage() {
       setProblem(r.message);
       setPhase("confirm");
     }
+  }
+
+  function startAgain() {
+    // A withdrawal that was not paid is never reused: the next one starts from a new sign-in.
+    popupRef.current?.close();
+    setSession(null);
+    setTxn(null);
+    txnRef.current = null;
+    setConfirmed(null);
+    setSentHash(null);
+    setProblem(null);
+    setPollNote(null);
+    setPopupBlocked(false);
+    sendingFor.current = null;
+    setPhase("preview");
+    refreshBalance();
   }
 
   const done = txn !== null && FINAL_STATUSES.has(txn.status);
@@ -241,15 +292,13 @@ export default function CashoutPage() {
           {phase === "form" && session && (
             <div className="flex flex-col gap-2 text-sm">
               <p>Finish the anchor&apos;s form in the pop-up window. This page moves on by itself when the anchor is ready for your USDC.</p>
-              {popupBlocked && (
-                <p>
-                  Your browser blocked the pop-up.{" "}
-                  <a className="underline" href={session.url} target="_blank" rel="noopener noreferrer">
-                    Open the anchor&apos;s form
-                  </a>
-                  .
-                </p>
-              )}
+              {popupBlocked && <p>Your browser blocked the pop-up.</p>}
+              <p>
+                <a className="underline" href={session.url} target="_blank" rel="noopener noreferrer">
+                  Open the anchor&apos;s form
+                </a>{" "}
+                if you closed the pop-up.
+              </p>
             </div>
           )}
 
@@ -262,11 +311,20 @@ export default function CashoutPage() {
                 <dd className="text-right">{txn.feeTotal ?? "not stated"} USDC</dd>
                 <dt>Arrives</dt>
                 <dd className="text-right">{txn.amountOut ?? "not stated"} (simulated)</dd>
+                <dt>Pay to account</dt>
+                <dd className="break-all text-right font-mono">{txn.withdrawAnchorAccount ?? "not stated"}</dd>
+                <dt>Memo ({txn.withdrawMemoType ?? "none"})</dt>
+                <dd className="break-all text-right font-mono">{txn.withdrawMemo ?? "not stated"}</dd>
               </dl>
               <button className="rounded-md bg-black px-4 py-3 text-white disabled:opacity-40" disabled={phase === "sending"} onClick={send}>
                 {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
               </button>
               <p className="text-xs opacity-80">Caracal pays the network fee. Your passkey confirms this one payment.</p>
+              {phase === "confirm" && (
+                <button className="rounded-md border px-4 py-3 text-sm" onClick={startAgain}>
+                  Start again
+                </button>
+              )}
             </div>
           )}
 
@@ -288,17 +346,7 @@ export default function CashoutPage() {
           {done && (
             <button
               className="rounded-md border px-4 py-3 text-sm"
-              onClick={() => {
-                // A finished withdrawal is never reused: the next one starts from a new sign-in.
-                setSession(null);
-                setTxn(null);
-                setConfirmed(null);
-                setSentHash(null);
-                setProblem(null);
-                setPollNote(null);
-                sendingFor.current = null;
-                setPhase("preview");
-              }}
+              onClick={startAgain}
             >
               Start another cash-out
             </button>

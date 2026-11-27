@@ -1,5 +1,5 @@
 import { ANCHOR } from "./config";
-import { AnchorError } from "./errors";
+import { AnchorError, RequestTimeout, requestWithin } from "./errors";
 
 /** What Caracal needs from the anchor's stellar.toml. */
 export type AnchorToml = {
@@ -52,12 +52,13 @@ export function readToml(text: string): AnchorToml {
 
 /** Fetch and read the toml. */
 export async function loadToml(fetchFn: typeof fetch = fetch): Promise<AnchorToml> {
-  let res: Response;
+  let res;
   try {
-    res = await fetchFn(ANCHOR.tomlUrl, { cache: "no-store" });
-  } catch {
+    res = await requestWithin(fetchFn, ANCHOR.tomlUrl, { cache: "no-store" });
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The test anchor did not answer within 20 seconds when Caracal read its details. Try again in a minute.", "anchor-info");
     throw new AnchorError("Caracal could not reach the test anchor to read its details. Check your connection and try again.", "anchor-info");
   }
   if (!res.ok) throw new AnchorError(`The test anchor's details page answered with an error (${res.status}). Try again in a minute.`, "anchor-info");
-  return readToml(await res.text());
+  return readToml(res.text);
 }
