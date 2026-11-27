@@ -79,6 +79,9 @@ export type SendDeps = {
 const EXPIRED_STATE =
   "Data this payment needs on Stellar testnet (your wallet or its USDC balance) has expired and must be restored before it can pay. Caracal cannot restore it yet, so nothing was sent, and trying again will not help.";
 
+const WALLET_NOT_FOUND =
+  "The fee relay could not find your wallet on Stellar testnet, so nothing was sent. A wallet not used for a long time may have expired and need restoring, which Caracal cannot do yet, so trying again will not help.";
+
 /** Whether a built transaction's simulation asks for a restore first. */
 function needsRestore(tx: unknown): boolean {
   const sim = (tx as { simulation?: unknown } | null)?.simulation;
@@ -122,6 +125,12 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
     return { kind: "not-sent", message: "The USDC payment failed on the network, so nothing left your wallet. Try again." };
   }
   if (!r.hash && code !== TRANSACTION_TIMEOUT && provenNotSent(code, r.error.message)) {
+    // The first simulation runs without signatures, so it cannot see the wallet's own expired data (its
+    // instance, rules or verifier, read only by __check_auth). The signed re-simulation and the relay can: the
+    // relay then refuses with its restore text (src/lib/relay/sponsor.ts, policy.ts), and the kit's own
+    // re-simulation may name the expired state. Retrying cannot help (adversary c21).
+    if (/must be restored first|ExpiredState|archived/i.test(r.error.message)) return { kind: "not-sent", message: EXPIRED_STATE };
+    if (/may need restoring/i.test(r.error.message)) return { kind: "not-sent", message: WALLET_NOT_FOUND };
     return { kind: "not-sent", message: "The USDC payment was not sent. Nothing left your wallet. Try again." };
   }
   // Everything else is unknown: a relay that did not answer (5003 with no hash) may have passed the payment on.
