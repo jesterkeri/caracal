@@ -46,9 +46,22 @@ function assetLabel(asset: string | null | undefined): string {
   return asset == null || asset === CASHOUT_ASSET.id ? "USDC" : `(in ${asset})`;
 }
 
-/** What a payment goes to: the anchor's account and memo. */
+/**
+ * What the person confirms on the confirm screen: where the payment goes (the anchor's account and memo) and
+ * the anchor's quote (the amount it wants and in what, its fee and in what, and what arrives). Send is refused
+ * when any of it changed after it was shown (c5 for the account and memo, adversary c11 for the quote).
+ */
 function payTo(t: AnchorTxn): string {
-  return JSON.stringify([t.withdrawAnchorAccount ?? null, t.withdrawMemoType ?? null, t.withdrawMemo ?? null]);
+  return JSON.stringify([
+    t.withdrawAnchorAccount ?? null,
+    t.withdrawMemoType ?? null,
+    t.withdrawMemo ?? null,
+    t.amountIn ?? null,
+    t.amountInAsset ?? null,
+    t.feeTotal ?? null,
+    t.feeAsset ?? null,
+    t.amountOut ?? null,
+  ]);
 }
 
 /** Statuses whose text tells the person to open the anchor's form. */
@@ -216,14 +229,14 @@ export default function CashoutPage() {
   async function send() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !txn || confirmed === null || sendingFor.current === txn.id) return;
-    // The account and memo the person was shown must be the ones the anchor still has.
+    // The account, memo and quote the person was shown must be the ones the anchor still has.
     // The poll keeps the screen on the anchor's latest record, so the comparison is with what was on screen
     // when the person reached this step, not with the record the poll last wrote.
     const latest = txnRef.current ?? txn;
     if (seenRef.current !== payTo(latest)) {
       seenRef.current = payTo(latest);
       setTxn(latest);
-      setProblem("The anchor changed the account or memo to pay after you looked at it. Nothing was sent. Check the details above and confirm again.");
+      setProblem("The anchor changed the account, memo or quote after you looked at it. Nothing was sent. Check the details above and confirm again.");
       return;
     }
     sendingFor.current = txn.id;
