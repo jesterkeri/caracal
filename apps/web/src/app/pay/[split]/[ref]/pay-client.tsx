@@ -168,27 +168,29 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
 
   const busy = pay.kind === "busy";
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-5 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Pay an invoice</h1>
-      {view.kind === "loading" && <p className="text-sm">Reading the invoice from Stellar.</p>}
-      {view.kind === "bad-link" && <p className="text-sm text-red-600">{BAD_LINK}</p>}
-      {view.kind === "error" && <p className="text-sm text-red-600">{view.message}</p>}
+    <main className="page">
+      <h1 className="h1">Pay an invoice</h1>
+      {view.kind === "loading" && <p className="small muted">Reading the invoice from Stellar.</p>}
+      {view.kind === "bad-link" && <p className="msg msg-bad">{BAD_LINK}</p>}
+      {view.kind === "error" && <p className="msg msg-bad">{view.message}</p>}
       {view.kind === "not-caracal" && (
-        <p className="text-sm text-red-600">This link does not point to a Caracal invoice contract, so Caracal will not take a payment for it. Nothing was sent.</p>
+        <p className="msg msg-bad">This link does not point to a Caracal invoice contract, so Caracal will not take a payment for it. Nothing was sent.</p>
       )}
-      {view.kind === "unknown-invoice" && <p className="text-sm text-red-600">This invoice does not exist on Stellar. Ask the person who sent the link to check it.</p>}
+      {view.kind === "unknown-invoice" && <p className="msg msg-bad">This invoice does not exist on Stellar. Ask the person who sent the link to check it.</p>}
       {view.kind === "invoice" && (
         <>
-          <p className="text-3xl font-semibold">{formatUsdc(view.invoice.amount)} USDC</p>
-          <p className="text-xs opacity-70">
+          <div className="card card-hero">
+          <p className="money-xl num">{formatUsdc(view.invoice.amount)} USDC</p>
+          <p className="small opacity-80">
             Read from the Stellar test network. Invoice <code>{invoiceRef.slice(0, 8)}</code>.
           </p>
-          {view.invoice.status === "cancelled" && <p className="text-sm">This invoice was cancelled by the person who sent it. Do not pay it.</p>}
+          </div>
+          {view.invoice.status === "cancelled" && <p className="msg msg-bad">This invoice was cancelled by the person who sent it. Do not pay it.</p>}
           {(view.invoice.status === "paid" || pay.kind === "paid") && (
-            <p className="text-sm">
+            <p className="msg msg-good">
               This invoice is paid.{" "}
               {(pay.kind === "paid" ? pay.hash : view.txHash) ? (
-                <a className="underline" href={`/receipt/${pay.kind === "paid" && pay.hash ? pay.hash : view.txHash}`}>
+                <a className="link" href={`/receipt/${pay.kind === "paid" && pay.hash ? pay.hash : view.txHash}`}>
                   View the receipt
                 </a>
               ) : (
@@ -199,25 +201,25 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
           {view.invoice.status === "open" && pay.kind !== "paid" && (
             <>
               {!wallet ? (
-                <div className="flex flex-col gap-3">
-                  <p className="text-sm">Pay from your Caracal wallet with your passkey. Caracal covers the network fee.</p>
-                  <button className="rounded border px-3 py-2 text-sm" disabled={busy} onClick={() => void connect()}>
+                <div className="card">
+                  <p className="lead">Pay from your Caracal wallet with your passkey. Caracal covers the network fee.</p>
+                  <button className="btn btn-primary btn-block" disabled={busy} onClick={() => void connect()}>
                     Use my existing wallet
                   </button>
-                  <p className="text-sm">
+                  <p className="small muted">
                     No wallet yet?{" "}
-                    <a className="underline" href="/wallet" target="_blank" rel="noopener">
+                    <a className="link" href="/wallet" target="_blank" rel="noopener">
                       Create one on the Caracal wallet page
                     </a>{" "}
                     (it opens in a new tab), then come back here and choose &quot;Use my existing wallet&quot;.
                   </p>
                 </div>
               ) : (
-                <div className="flex flex-col gap-3">
-                  <p className="break-all text-xs">
-                    Paying from <a className="underline" href={explorerLink("contract", wallet)}>{wallet}</a>
+                <div className="card">
+                  <p className="small muted">
+                    Paying from <a className="link addr" href={explorerLink("contract", wallet)}>{wallet}</a>
                   </p>
-                  <button className="rounded border px-3 py-2 text-sm" disabled={busy || (pay.kind === "message" && pay.checkFirst === true)} onClick={() => void payNow()}>
+                  <button className="btn btn-green btn-block" disabled={busy || (pay.kind === "message" && pay.checkFirst === true)} onClick={() => void payNow()}>
                     Pay {formatUsdc(view.invoice.amount)} USDC
                   </button>
                 </div>
@@ -226,12 +228,12 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
           )}
         </>
       )}
-      {pay.kind === "busy" && <p className="text-sm">{pay.label}.</p>}
+      {pay.kind === "busy" && <p className="small muted">{pay.label}.</p>}
       {pay.kind === "message" && (
-        <div className="flex flex-col gap-2 text-sm">
+        <div className={pay.checkFirst ? "msg msg-unsure flex flex-col gap-2" : "msg msg-bad flex flex-col gap-2"}>
           <p>{pay.text}</p>
           {pay.checkFirst && wallet && (
-            <button className="self-start underline" onClick={() => void checkAgain()}>
+            <button className="link self-start" onClick={() => void checkAgain()}>
               Check again
             </button>
           )}

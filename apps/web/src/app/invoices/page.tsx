@@ -117,6 +117,10 @@ async function restoreFailure(e: unknown, rpc: unknown): Promise<{ message: stri
   return { message: "Caracal could not reach the Stellar network to load your saved wallet. Check your connection and reload the page." };
 }
 
+/** good: it happened. bad: it did not (or the page cannot go on). unsure: it may have happened. */
+type Tone = "good" | "bad" | "unsure";
+const TONE_CLASS: Record<Tone, string> = { good: "msg msg-good", bad: "msg msg-bad", unsure: "msg msg-unsure" };
+
 /** What a person is told about a write that did not finish cleanly. */
 function outcomeText(o: Exclude<WriteOutcome, { kind: "done" }>, what: string): string {
   if (o.kind === "not-sent") return `${what} did not go through. ${o.message}`;
@@ -133,8 +137,15 @@ export default function InvoicesPage() {
   const [client, setClient] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNoticeText] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  // How the notice looks is set with its text, never guessed from the words.
+  const [noticeTone, setNoticeTone] = useState<Tone>("bad");
+
+  function setNotice(text: string | null, tone: Tone = "bad") {
+    setNoticeText(text);
+    setNoticeTone(tone);
+  }
 
   async function refresh(account: string, wallet: string, split: string) {
     // Reads can finish out of order (each row read may take up to 20 s): only the latest one started is shown,
@@ -256,7 +267,7 @@ export default function InvoicesPage() {
       setDescription("");
       said = "Invoice opened. Copy its pay link below and send it to your client.";
     }
-    setNotice(said);
+    setNotice(said, outcome.kind === "done" ? "good" : outcome.kind === "unknown" ? "unsure" : "bad");
     if (outcome.kind !== "not-sent" && outcome.kind !== "failed") await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
   }
 
@@ -273,7 +284,7 @@ export default function InvoicesPage() {
     const outcome = await cancelInvoice(kit, ready.split, ref);
     setBusy(null);
     const said = outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice");
-    setNotice(said);
+    setNotice(said, outcome.kind === "done" ? "good" : outcome.kind === "unknown" ? "unsure" : "bad");
     await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
   }
 
@@ -289,7 +300,7 @@ export default function InvoicesPage() {
 
   /** A list read that failed after a write: what the write did is kept, and the failed read is added to it. */
   function listFailed(said: string) {
-    return (e: unknown) => setNotice(`${said} The invoice list could not be refreshed, so it may be out of date. Reload the page. ${e instanceof Error ? e.message : String(e)}`);
+    return (e: unknown) => setNotice(`${said} The invoice list could not be refreshed, so it may be out of date. Reload the page. ${e instanceof Error ? e.message : String(e)}`, "unsure");
   }
 
   async function copy(link: string, ref: string) {
@@ -302,97 +313,99 @@ export default function InvoicesPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-xl flex-col gap-6 px-4 py-10">
-      <h1 className="text-2xl font-semibold">Invoices</h1>
-      {load.kind === "loading" && <p className="text-sm">Loading your invoices.</p>}
+    <main className="page page-wide">
+      <h1 className="h1">Invoices</h1>
+      {load.kind === "loading" && <p className="small muted">Loading your invoices.</p>}
       {load.kind === "error" && (
         <div className="flex flex-col gap-2">
-          <p className="text-sm text-red-600">{load.message}</p>
+          <p className="msg msg-bad">{load.message}</p>
           {load.signOut && (
-            <a className="text-sm underline" href="/signin">
+            <a className="link small self-start" href="/signin">
               Sign out on the sign-in page
             </a>
           )}
         </div>
       )}
       {load.kind === "no-wallet" && (
-        <p className="text-sm">
-          Invoices are opened from your Caracal wallet. <a className="underline" href="/wallet">Create or connect your wallet</a> first.
+        <p className="msg msg-info">
+          Invoices are opened from your Caracal wallet. <a className="link" href="/wallet">Create or connect your wallet</a> first.
         </p>
       )}
       {load.kind === "no-split" && (
-        <p className="text-sm">
-          Your split contract is not on Stellar yet, so there is nothing to open an invoice on. <a className="underline" href="/split">Set up your split</a> first.
+        <p className="msg msg-info">
+          Your split contract is not on Stellar yet, so there is nothing to open an invoice on. <a className="link" href="/split">Set up your split</a> first.
         </p>
       )}
       {load.kind === "ready" && (
         <>
           <form
-            className="flex flex-col gap-3"
+            className="card"
             onSubmit={(e) => {
               e.preventDefault();
               void create(load);
             }}
           >
-            <h2 className="text-lg font-medium">New invoice</h2>
-            <label className="flex flex-col gap-1 text-sm">
+            <h2 className="h2">New invoice</h2>
+            <label className="field">
               Client
-              <input className="rounded border px-2 py-1" value={client} maxLength={120} onChange={(e) => setClient(e.target.value)} />
+              <input className="input" value={client} maxLength={120} onChange={(e) => setClient(e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label className="field">
               What it is for (optional)
-              <input className="rounded border px-2 py-1" value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} />
+              <input className="input" value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} />
             </label>
-            <label className="flex flex-col gap-1 text-sm">
+            <label className="field">
               Amount in USDC
-              <input className="rounded border px-2 py-1" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              <input className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </label>
-            <p className="text-xs opacity-70">
+            <p className="small muted">
               Only an invoice id and the amount go on the blockchain. The client name and description stay in your Caracal account. The client pays exactly this amount, once.
             </p>
-            <button className="rounded border px-3 py-2 text-sm" type="submit" disabled={busy !== null}>
+            <button className="btn btn-primary btn-block" type="submit" disabled={busy !== null}>
               Open invoice
             </button>
           </form>
-          {busy && <p className="text-sm">{busy}</p>}
-          {notice && <p className="text-sm">{notice}</p>}
-          <section className="flex flex-col gap-3">
-            <h2 className="text-lg font-medium">Your invoices</h2>
-            {load.rows.length === 0 && <p className="text-sm">No invoices yet.</p>}
+          {busy && <p className="small muted">{busy}</p>}
+          {notice && <p className={TONE_CLASS[noticeTone]}>{notice}</p>}
+          <section className="list">
+            <h2 className="h2">Your invoices</h2>
+            {load.rows.length === 0 && <p className="small muted">No invoices yet.</p>}
             {load.rows.map((r) => {
               const link = `${window.location.origin}${payPath(r.split, r.invoice_ref)}`;
               return (
-                <article key={r.invoice_ref} className="flex flex-col gap-1 rounded border p-3 text-sm">
-                  <p>
+                <article key={r.invoice_ref} className="item">
+                  <p className="num">
                     <strong>{r.client_name}</strong>
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
-                  {r.description && <p className="opacity-80">{r.description}</p>}
+                  {r.description && <p className="small muted">{r.description}</p>}
+                  <div className={r.chain === "unreadable" || (r.chain === null && r.stillOpening) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
                   <p>{r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
+                  </div>
                   {r.chain === null && !r.stillOpening && (
                     <p>
-                      <button className="underline" onClick={() => void removeUnopened(load, r.invoice_ref)}>
+                      <button className="link small" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry
                       </button>
                     </p>
                   )}
                   {typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
                     <>
-                      <p className="break-all text-xs">{link}</p>
-                      <p className="flex gap-3">
-                        <button className="underline" onClick={() => void copy(link, r.invoice_ref)}>
+                      <p className="addr addr-box">{link}</p>
+                      <p className="flex flex-wrap gap-2">
+                        <button className="btn btn-secondary btn-sm" onClick={() => void copy(link, r.invoice_ref)}>
                           {copied === r.invoice_ref ? "Link copied" : "Copy pay link"}
                         </button>
-                        <button className="underline" disabled={busy !== null} onClick={() => void cancel(load, r.invoice_ref)}>
+                        <button className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => void cancel(load, r.invoice_ref)}>
                           Cancel invoice
                         </button>
                       </p>
                     </>
                   )}
                   {typeof r.chain === "object" && r.chain !== null && r.chain.status === "paid" && (
-                    <p>
+                    <p className="small muted">
                       {r.txHash ? (
-                        <a className="underline" href={`/receipt/${r.txHash}`}>
+                        <a className="link" href={`/receipt/${r.txHash}`}>
                           View receipt
                         </a>
                       ) : (
