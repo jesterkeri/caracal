@@ -162,6 +162,15 @@ export default function CashoutPage() {
     // The popup is opened now, inside the click, so the browser allows it. It
     // is pointed at the anchor's form once the anchor has started the withdrawal.
     popupRef.current = window.open("", "caracal-anchor", "popup,width=480,height=760");
+    // The popup is about to show the anchor's own site: it gets no handle back to this page.
+    // ("noopener" in the features would make window.open return null, and the popup could not be pointed at the form.)
+    if (popupRef.current) {
+      try {
+        popupRef.current.opener = null;
+      } catch {
+        // a browser that refuses this keeps the popup as it is
+      }
+    }
     try {
       const r = await beginCashout(boot.wallet, toml, preview.amount, {
         fetchFn: (input, init) => fetch(input, init),
@@ -231,6 +240,10 @@ export default function CashoutPage() {
   }
 
   const done = txn !== null && FINAL_STATUSES.has(txn.status);
+  // The anchor refused this sign-in for status reads: the page can no longer follow the withdrawal, so it offers a new one.
+  const lostSession = pollNote !== null && pollNote.startsWith("The anchor no longer accepts");
+  // Never while the USDC payment is being sent: starting again then would lose track of it.
+  const canStartAnother = (done || lostSession) && phase !== "sending";
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-4 py-10">
@@ -343,7 +356,7 @@ export default function CashoutPage() {
             </div>
           )}
           {pollNote && <p className="text-sm text-red-600">{pollNote}</p>}
-          {done && (
+          {canStartAnother && (
             <button
               className="rounded-md border px-4 py-3 text-sm"
               onClick={startAgain}

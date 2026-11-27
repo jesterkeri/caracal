@@ -40,8 +40,9 @@ export async function beginCashout(wallet: string, toml: AnchorToml, amount: big
   } catch (e) {
     if (e instanceof AnchorError) throw e;
     if (codeOf(e) === WEBAUTHN_CANCELLED) throw new AnchorError("You cancelled the passkey prompt, so Caracal did not sign in to the anchor. Nothing was started.", "sign-in");
+    // The passkey and network steps name themselves (sep45.ts); anything else is not put down to either.
     console.error("anchor sign-in failed:", messageOf(e));
-    throw new AnchorError("Your passkey could not sign the anchor's sign-in. Nothing was started. Try again.", "sign-in");
+    throw new AnchorError("Caracal could not sign in to the anchor. Nothing was started. Try again.", "sign-in");
   }
   const started = await startWithdraw(toml.transferServer, token, wallet, amount, deps.fetchFn);
   return { token, ...started };

@@ -56,6 +56,24 @@ export async function requestWithin(fetchFn: typeof fetch, input: string, init: 
   }
 }
 
+/**
+ * `p`, or RequestTimeout once `ms` has passed. For the Stellar RPC calls on the
+ * cash-out path: stellar-sdk has no timeout of its own, and a browser fetch can
+ * wait for ever.
+ */
+export async function within<T>(p: Promise<T>, ms: number = ANCHOR_REQUEST_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RequestTimeout()), ms);
+  });
+  p.catch(() => {}); // when the deadline wins, a later failure is not an unhandled rejection
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The JSON in an answer's text, or null when it is not JSON. */
 export function jsonOf(text: string): unknown {
   try {

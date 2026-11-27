@@ -8,9 +8,12 @@
 //    never in a URL, a log or storage.
 
 import { Address, scValToNative, xdr } from "@stellar/stellar-sdk";
-import { AnchorError, RequestTimeout, jsonOf, requestWithin } from "./errors";
+import { AnchorError, RequestTimeout, jsonOf, messageOf, requestWithin, within } from "./errors";
 import { ANCHOR } from "./config";
 import type { AnchorToml } from "./toml";
+
+/** smart-account-kit's code for a passkey prompt the person closed (SmartAccountErrorCode). */
+const WEBAUTHN_CANCELLED = 4004;
 
 /** Ledgers the signature stays valid for (about 8 minutes at 5 seconds a ledger). */
 export const SIGNATURE_LEDGERS = 100;
@@ -64,7 +67,9 @@ export function checkChallenge(entriesBase64: string, wallet: string, toml: Anch
     if (Address.fromScAddress(call.contractAddress()).toString() !== toml.webAuthContract || call.functionName().toString() !== "web_auth_verify" || call.args().length !== 1) {
       throw new AnchorError("The anchor's sign-in challenge is not for its sign-in contract. Nothing was signed.", "sign-in");
     }
-    const a = scValToNative(call.args()[0]!) as Record<string, unknown>;
+    const native = scValToNative(call.args()[0]!) as unknown;
+    if (typeof native !== "object" || native === null) throw new AnchorError("The anchor's sign-in challenge was not in the expected shape. Nothing was signed.", "sign-in");
+    const a = native as Record<string, unknown>;
     if (a.account !== wallet || a.home_domain !== ANCHOR.homeDomain || a.web_auth_domain !== ANCHOR.homeDomain || a.web_auth_domain_account !== toml.signingKey) {
       throw new AnchorError("The anchor's sign-in challenge names a different wallet or domain than expected. Nothing was signed.", "sign-in");
     }
@@ -88,10 +93,31 @@ export async function signInToAnchor(wallet: string, toml: AnchorToml, deps: Sep
   if (typeof text !== "string") throw new AnchorError("The test anchor's sign-in challenge was not in the expected shape. Nothing was signed.", "sign-in");
 
   const { entries, own } = checkChallenge(text, wallet, toml);
-  const expiration = (await deps.latestLedger()) + SIGNATURE_LEDGERS;
+  let latest: number;
+  try {
+    latest = await within(deps.latestLedger());
+  } catch (e) {
+    console.error("anchor sign-in: latest ledger:", messageOf(e));
+    throw new AnchorError(
+      e instanceof RequestTimeout
+        ? "The Stellar network did not answer within 20 seconds when Caracal started the sign-in. Nothing was signed. Try again."
+        : "Caracal could not reach the Stellar network to start the sign-in. Nothing was signed. Check your connection and try again.",
+      "sign-in",
+    );
+  }
+  const expiration = latest + SIGNATURE_LEDGERS;
   // Rule 0 is the default rule every Caracal wallet is created with; a
   // web_auth_verify call on another contract falls under its default context.
-  entries[own] = await deps.signAuthEntry(entries[own]!, { expiration, contextRuleIds: [0] });
+  try {
+    entries[own] = await deps.signAuthEntry(entries[own]!, { expiration, contextRuleIds: [0] });
+  } catch (e) {
+    // Only a failure of the passkey signing itself is put down to the passkey.
+    if (typeof e === "object" && e !== null && (e as { code?: number }).code === WEBAUTHN_CANCELLED) {
+      throw new AnchorError("You cancelled the passkey prompt, so Caracal did not sign in to the anchor. Nothing was started.", "sign-in");
+    }
+    console.error("anchor sign-in: passkey signing failed:", messageOf(e));
+    throw new AnchorError("Your passkey could not sign the anchor's sign-in. Nothing was started. Try again.", "sign-in");
+  }
 
   let answer;
   try {

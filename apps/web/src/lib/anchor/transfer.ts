@@ -9,7 +9,7 @@
 import { Account, Address, MuxedAccount, Operation, StrKey, TransactionBuilder, contract, nativeToScVal, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { NETWORK, TOKENS } from "../stellar/config";
 import { fromStroops, toStroops } from "./amount";
-import { AnchorError } from "./errors";
+import { AnchorError, RequestTimeout, within } from "./errors";
 import type { AnchorTxn } from "./sep24";
 
 const U64_MAX = BigInt("18446744073709551615");
@@ -73,15 +73,24 @@ export function transferHostFunction(wallet: string, payment: AnchorPayment): xd
  * refuses an M address, which is why this exists.
  */
 export async function buildAnchorTransfer(wallet: string, payment: AnchorPayment, server: rpc.Server): Promise<contract.AssembledTransaction<unknown>> {
-  const tx = await contract.AssembledTransaction.buildWithOp(Operation.invokeHostFunction({ func: transferHostFunction(wallet, payment), auth: [] }), {
-    contractId: TOKENS.usdc,
-    networkPassphrase: NETWORK.passphrase,
-    rpcUrl: server.serverURL.toString(),
-    server,
-    timeoutInSeconds: 60,
-    method: "transfer",
-    parseResultXdr: (value: xdr.ScVal) => value,
-  });
+  let tx: contract.AssembledTransaction<unknown>;
+  try {
+    // Building simulates on the network; nothing is signed or sent until it returns, so giving up on it sends nothing.
+    tx = await within(
+      contract.AssembledTransaction.buildWithOp(Operation.invokeHostFunction({ func: transferHostFunction(wallet, payment), auth: [] }), {
+        contractId: TOKENS.usdc,
+        networkPassphrase: NETWORK.passphrase,
+        rpcUrl: server.serverURL.toString(),
+        server,
+        timeoutInSeconds: 60,
+        method: "transfer",
+        parseResultXdr: (value: xdr.ScVal) => value,
+      }),
+    );
+  } catch (e) {
+    if (e instanceof RequestTimeout) throw new AnchorError("The Stellar network did not answer within 20 seconds while Caracal prepared the USDC payment, so nothing was sent. Try again.", "send");
+    throw e;
+  }
   const sim = tx.simulation;
   if (sim && rpc.Api.isSimulationError(sim)) {
     throw new AnchorError("The network rejected the USDC payment before it was signed, so nothing was sent. Your wallet may not hold enough USDC.", "send");
@@ -108,7 +117,7 @@ export async function readUsdcBalance(wallet: string, server: rpc.Server): Promi
       )
       .setTimeout(30)
       .build();
-    const sim = await server.simulateTransaction(tx);
+    const sim = await within(server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(sim) || !sim.result) return null;
     const v = scValToNative(sim.result.retval);
     return typeof v === "bigint" ? v : null;
