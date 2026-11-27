@@ -1,0 +1,27 @@
+{
+  "_note": "Real answer of GET https://testanchor.stellar.org/sep24/transaction?id=... captured 2026-11-27 by scripts/live-anchor-spike.mjs after the wallet sent 2 USDC (Stellar tx cb718a83...6b6d). The token in more_info_url is removed.",
+  "transaction": {
+    "withdraw_anchor_account": "GBN4NNCDGJO4XW4KQU3CBIESUJWFVBUZPOKUZHT7W7WRB7CWOA7BXVQF",
+    "withdraw_memo": "6604750969419921559",
+    "withdraw_memo_type": "id",
+    "id": "147a673a-618d-48f5-812e-f9828525d9b0",
+    "kind": "withdrawal",
+    "status": "completed",
+    "more_info_url": "https://anchor-ref-ui-testanchor.stellar.org/txn?transaction_id=147a673a-618d-48f5-812e-f9828525d9b0&token=<redacted>",
+    "amount_in": "2.0000000",
+    "amount_in_asset": "stellar:USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "amount_out": "1.8",
+    "amount_out_asset": "iso4217:USD",
+    "fee_details": {
+      "total": "0.2",
+      "asset": "stellar:USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+    },
+    "started_at": "2026-11-27T14:20:40.801444Z",
+    "completed_at": "2026-11-27T14:20:54.127125Z",
+    "stellar_transaction_id": "cb718a8337e23939e52d3c5f4588e000b23ed2f3614a16fca4838889510f6b6d",
+    "message": "pending external transfer",
+    "refunded": false,
+    "from": "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW",
+    "to": "GBN4NNCDGJO4XW4KQU3CBIESUJWFVBUZPOKUZHT7W7WRB7CWOA7BXVQF"
+  }
+}

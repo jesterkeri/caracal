@@ -1,0 +1,13 @@
+{
+  "_note": "Real answer of GET https://testanchor.stellar.org/sep24/transaction?id=... captured 2026-11-27, right after the interactive withdraw started and before the user finished the anchor's form. The token in more_info_url is removed.",
+  "transaction": {
+    "id": "2ea23fcd-4ff4-4ce2-bb2e-65b9cac4acef",
+    "kind": "withdrawal",
+    "status": "incomplete",
+    "more_info_url": "https://anchor-ref-ui-testanchor.stellar.org/txn?transaction_id=2ea23fcd-4ff4-4ce2-bb2e-65b9cac4acef&token=<redacted>",
+    "started_at": "2026-11-27T14:14:41.243128Z",
+    "refunded": false,
+    "from": "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW",
+    "to": "GBN4NNCDGJO4XW4KQU3CBIESUJWFVBUZPOKUZHT7W7WRB7CWOA7BXVQF"
+  }
+}
