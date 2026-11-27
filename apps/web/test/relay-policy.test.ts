@@ -5,6 +5,8 @@ import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { rpcWasmLookup } from "../src/lib/relay/wasm-lookup";
 import { NETWORK, SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 import { argsFor, ctorFor, lookupInstance } from "./relay-fixtures";
+// Fixture fix (2026-11-27, adversary s2): a sponsored split deploy uses Caracal's split salt, so it lands at the wallet's own split address.
+import { SPLIT_SALT } from "../src/lib/stellar/split-address";
 
 // Real testnet ids (README / contracts/split/README.md).
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
@@ -37,7 +39,7 @@ const createArgs = (wasmHex: string) =>
       contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
         new xdr.ContractIdPreimageFromAddress({
           address: Address.fromString(WALLET).toScAddress(),
-          salt: Buffer.alloc(32, 1),
+          salt: SPLIT_SALT,
         }),
       ),
       executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(wasmHex, "hex")),

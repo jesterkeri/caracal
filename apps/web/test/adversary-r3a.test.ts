@@ -5,6 +5,8 @@ import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 import { signOutEverywhere, bindWallet, WALLET_OWNER_KEY } from "../src/lib/auth/wallet-binding";
 import { SPLIT_ID, WALLET, splitCtorArgs, transferArgs } from "./relay-fixtures";
 import { fakeChannels } from "./setup-relay-server";
+// Fixture fix (2026-11-27, adversary s2): a sponsored split deploy uses Caracal's split salt, so it lands at the wallet's own split address.
+import { SPLIT_SALT } from "../src/lib/stellar/split-address";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -46,7 +48,7 @@ const transferBody = () => {
 function walletDeploysSplit() {
   const args = new xdr.CreateContractArgsV2({
     contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-      new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: Buffer.alloc(32, 5) }),
+      new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: SPLIT_SALT }),
     ),
     executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(SPLIT.wasmHash, "hex")),
     constructorArgs: splitCtorArgs(WALLET),

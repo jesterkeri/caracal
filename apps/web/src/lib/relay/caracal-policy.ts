@@ -14,6 +14,7 @@
 // Read-only functions are not listed: they are simulated, never submitted.
 
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../stellar/config";
+import { SPLIT_SALT } from "../stellar/split-address";
 import { scAddress, storageGet, type ArgsRule, type Policy, type StorageRule } from "./policy";
 
 const MAX_WALLET_SIGNERS = 4;
@@ -27,9 +28,16 @@ const walletArg =
     return (await ctx.isWallet(a)) ? null : `${what} must be a Caracal passkey wallet`;
   };
 
-/** Split constructor: (owner, token, tax_bps, goal_bps). */
-const splitConstructor: ArgsRule = async (args, ctx) => {
+/**
+ * Split constructor: (owner, token, tax_bps, goal_bps). One split per wallet,
+ * at the address the app derives (split-address.ts): the wallet deploys it
+ * itself, with Caracal's fixed salt, and owns it. Another salt would be a
+ * second split; another owner would take the wallet's own split address.
+ */
+const splitConstructor: ArgsRule = async (args, ctx, deployment) => {
   if (args.length !== 4) return "Split contract constructor must be (owner, token, tax_bps, goal_bps)";
+  if (!deployment || !deployment.salt.equals(SPLIT_SALT)) return "A split contract is sponsored only at its wallet's own split address";
+  if (scAddress(args[0]) !== deployment.deployer) return "A split contract must be owned by the wallet that deploys it";
   if (scAddress(args[1]) !== TOKENS.usdc) return "A split contract must hold USDC";
   return walletArg(0, "The split contract owner")(args, ctx);
 };

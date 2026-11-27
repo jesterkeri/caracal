@@ -19,6 +19,8 @@ import {
   transferArgs,
   walletCtorArgs,
 } from "./relay-fixtures";
+// Fixture fix (2026-11-27, adversary s2): a sponsored split deploy uses Caracal's split salt, so it lands at the wallet's own split address.
+import { SPLIT_SALT } from "../src/lib/stellar/split-address";
 
 const OUTSIDER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD"; // Soroswap testnet router
 
@@ -49,7 +51,7 @@ const contractFn = (c: string, fn: string, args: xdr.ScVal[]) =>
 function deployArgs(from: string, wasm: string, ctor: xdr.ScVal[]) {
   return new xdr.CreateContractArgsV2({
     contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-      new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(from).toScAddress(), salt: Buffer.alloc(32, 5) }),
+      new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(from).toScAddress(), salt: SPLIT_SALT }),
     ),
     executable: xdr.ContractExecutable.contractExecutableWasm(Buffer.from(wasm, "hex")),
     constructorArgs: ctor,

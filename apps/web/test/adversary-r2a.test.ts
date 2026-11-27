@@ -4,6 +4,8 @@ import { CARACAL_POLICY } from "../src/lib/relay/caracal-policy";
 import { checkPayload } from "../src/lib/relay/policy";
 import { SPLIT, TOKENS } from "../src/lib/stellar/config";
 import { lookupWasm } from "./relay-fixtures";
+// Fixture fix (2026-11-27, adversary s2): a sponsored split deploy uses Caracal's split salt, so it lands at the wallet's own split address.
+import { SPLIT_SALT } from "../src/lib/stellar/split-address";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
 // Soroswap testnet router: a real contract, not on the allowlist.
@@ -13,7 +15,7 @@ const lookup = lookupWasm;
 
 const preimage = () =>
   xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-    new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: Buffer.alloc(32, 3) }),
+    new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: SPLIT_SALT }),
   );
 const splitDeploy = (token: string) => {
   const args = [

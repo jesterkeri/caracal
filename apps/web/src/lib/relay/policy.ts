@@ -29,7 +29,9 @@ export type Ctx = {
   isWallet(address: string): Promise<boolean>;
 };
 /** Returns a refusal reason, or null when the arguments are acceptable. */
-export type ArgsRule = (args: xdr.ScVal[], ctx: Ctx) => Promise<string | null>;
+/** For a deployment's constructor rule: who deploys it, and with which salt (together they fix its address). */
+export type Deployment = { deployer: string; salt: Buffer };
+export type ArgsRule = (args: xdr.ScVal[], ctx: Ctx, deployment?: Deployment) => Promise<string | null>;
 /** Checks a deployed contract's instance storage. Returns a refusal reason or null. */
 export type StorageRule = (storage: xdr.ScMapEntry[], ctx: Ctx) => Promise<string | null>;
 
@@ -154,7 +156,7 @@ async function checkDeploy(c: xdr.CreateContractArgsV2, policy: Policy, ctx: Ctx
   }
   const rule = policy.deployable.get(exe.wasmHash().toString("hex"));
   if (!rule) throw new Denied("This contract code is not on the sponsorship allowlist");
-  const bad = await rule(c.constructorArgs(), ctx);
+  const bad = await rule(c.constructorArgs(), ctx, { deployer: from, salt: c.contractIdPreimage().fromAddress().salt() });
   if (bad) throw new Denied(bad);
 }
 
