@@ -8,7 +8,7 @@ Status: Stellar TESTNET only. Built with soroban-sdk 30.0.0.
 
 | Function | Who can call | What it does |
 |---|---|---|
-| `__constructor(owner, token, tax_bps, goal_bps)` | runs once at deploy | Sets the owner, the USDC token and the split. Rejects `tax_bps + goal_bps > 10000`. Being a constructor, it cannot be front-run. |
+| `__constructor(owner, token, tax_bps, goal_bps)` | runs once at deploy | Sets the owner, the USDC token and the split. Rejects `tax_bps + goal_bps > 10000`. Being a constructor, it cannot be front-run. Emits `created`. |
 | `create_invoice(invoice_ref, amount)` | owner only | Opens an invoice for an exact `amount` (above 0). `invoice_ref` must be 1 to 64 bytes. Fails with `InvoiceExists` if that ref was ever created, even if it was paid or cancelled. Emits `invoice_opened`. |
 | `cancel_invoice(invoice_ref)` | owner only | Cancels an invoice that is still Open. Paid or already cancelled invoices cannot be cancelled. Emits `invoice_cancelled`. |
 | `invoice(invoice_ref)` | anyone (read only) | `(amount, status)` or nothing if unknown. Status is 0 open, 1 paid, 2 cancelled. |
@@ -24,7 +24,7 @@ Status: Stellar TESTNET only. Built with soroban-sdk 30.0.0.
 
 Errors: `BpsTooHigh` (1), `InvalidAmount` (2), `InvalidInvoiceRef` (3), `InsufficientBalance` (4), `SamePot` (5), `InvoiceAlreadyPaid` (6), `Overflow` (7), `InvalidPayer` (8), `InvoiceExists` (9), `UnknownInvoice` (10), `WrongAmount` (11), `InvoiceCancelled` (12), `InvalidRecipient` (13, `withdraw` to the contract's own address).
 
-Events carry a version in their topics, for example `("split", "v1")`. The `split` event data holds the opaque `invoice_ref`, payer, token, owner and the amounts. No client names or tax details are ever put on chain: `invoice_ref` is just an opaque id chosen by the app. `withdraw` lowers the pot balance before it calls the token (checks, effects, then interaction), and a failed transfer reverts the whole call.
+Events carry a version in their topics, for example `("split", "v1")`. The constructor emits exactly one `created` event (topics `("created", "v1")`, data `owner`, `token`, `tax_bps`, `goal_bps`) when the contract is deployed. The ledger that closed that transaction is the contract's creation time, so a reader that finds it in the RPC's history window knows it has seen every event the contract ever emitted. The `split` event data holds the opaque `invoice_ref`, payer, token, owner and the amounts. No client names or tax details are ever put on chain: `invoice_ref` is just an opaque id chosen by the app. `withdraw` lowers the pot balance before it calls the token (checks, effects, then interaction), and a failed transfer reverts the whole call.
 
 Every call extends the instance storage lifetime, so the contract is not archived while it is in use.
 

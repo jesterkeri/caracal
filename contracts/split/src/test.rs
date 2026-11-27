@@ -511,3 +511,26 @@ fn withdraw_to_self_is_refused_and_changes_nothing() {
     assert_eq!(s.client.balances(), before);
     assert_eq!(tok.balance(&s.id), held);
 }
+
+#[test]
+fn constructor_emits_one_created_event() {
+    let s = setup(1000, 1500);
+    // `setup` registered the contract; the only event so far is the constructor's.
+    let evs = s.env.events().all().filter_by_contract(&s.id);
+    assert_eq!(
+        evs,
+        std::vec![Created { owner: s.owner.clone(), token: s.token.clone(), tax_bps: 1000, goal_bps: 1500 }.to_xdr(&s.env, &s.id)]
+    );
+}
+
+#[test]
+fn created_event_is_not_emitted_again_by_later_calls() {
+    let s = setup(1000, 1500);
+    open_inv(&s, 777, "INV-9");
+    let evs = s.env.events().all().filter_by_contract(&s.id);
+    assert_eq!(evs.events().len(), 1);
+    assert_eq!(
+        evs,
+        std::vec![InvoiceOpened { invoice_ref: r(&s.env, "INV-9"), amount: 777 }.to_xdr(&s.env, &s.id)]
+    );
+}

@@ -75,6 +75,17 @@ pub struct Split {
     pub spend: i128,
 }
 
+/// Emitted once, by the constructor: proves when this contract was created (the
+/// ledger that closed the deploy transaction), which lets a reader prove it has
+/// every event the contract ever emitted.
+#[contractevent(topics = ["created", "v1"])]
+pub struct Created {
+    pub owner: Address,
+    pub token: Address,
+    pub tax_bps: u32,
+    pub goal_bps: u32,
+}
+
 #[contractevent(topics = ["invoice_opened", "v1"])]
 pub struct InvoiceOpened {
     pub invoice_ref: Bytes,
@@ -181,6 +192,7 @@ impl SplitContract {
         s.set(&Key::TaxBps, &tax_bps);
         s.set(&Key::GoalBps, &goal_bps);
         bump(&env);
+        Created { owner, token, tax_bps, goal_bps }.publish(&env);
         Ok(())
     }
 
