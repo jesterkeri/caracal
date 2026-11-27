@@ -304,6 +304,9 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
   }
 }
 
+/** How many times the holdings pair is read before two reads at different ledgers are refused. */
+const HOLDINGS_ATTEMPTS = 3;
+
 type Scanned = { events: RawEvent[]; last: EventsPage; cursor: string };
 
 /** Reads the contract's events from the oldest retained ledger to the newest, page by page. */
@@ -472,15 +475,24 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
 
   return {
     async holdings(contract, token) {
-      const a = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
-      const b = await simulateRead(contract, "balances", []);
-      const held = a.value;
-      const pots = b.value;
-      if (typeof held !== "bigint" || !Array.isArray(pots) || pots.length !== 3 || !pots.every((x) => typeof x === "bigint")) {
-        throw new ChainReadError("The Stellar RPC sent the split contract's USDC in a form Caracal cannot read.");
+      // The balance and the pots are two simulations. Read at different ledgers they can disagree with no
+      // unrecorded USDC at any one ledger (a withdrawal between them: adversary t9), so the pair is read
+      // again until both name the same ledger, a bounded number of times.
+      for (let attempt = 1; ; attempt++) {
+        const a = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
+        const b = await simulateRead(contract, "balances", []);
+        const held = a.value;
+        const pots = b.value;
+        if (typeof held !== "bigint" || !Array.isArray(pots) || pots.length !== 3 || !pots.every((x) => typeof x === "bigint")) {
+          throw new ChainReadError("The Stellar RPC sent the split contract's USDC in a form Caracal cannot read.");
+        }
+        if (a.ledger !== undefined && b.ledger !== undefined && a.ledger !== b.ledger) {
+          if (attempt >= HOLDINGS_ATTEMPTS) throw new ChainReadError("The Stellar RPC kept reading the split contract's USDC and its pots at different ledgers, so Caracal cannot tell whether they agree. Try again.");
+          continue;
+        }
+        const ledger = a.ledger === undefined || b.ledger === undefined ? undefined : Math.min(a.ledger, b.ledger);
+        return { held, pots: (pots as bigint[]).reduce((x, y) => x + y, BigInt(0)), ledger };
       }
-      const ledger = a.ledger === undefined || b.ledger === undefined ? undefined : Math.min(a.ledger, b.ledger);
-      return { held, pots: (pots as bigint[]).reduce((x, y) => x + y, BigInt(0)), ledger };
     },
 
     async health() {

@@ -24,15 +24,22 @@ describe("t8 follow-ups", () => {
     await expect(readSplitPayments({ ...base, holdings: async () => ({ held: BigInt(0), pots: BigInt(0), ledger: at - 1 }) }, want)).rejects.toThrow(/older ledger than its payments/);
   });
 
-  it("the real reader names the older of its two simulations' ledgers", async () => {
-    const answers = [
-      { latestLedger: 91, v: zero() },
-      { latestLedger: 90, v: xdr.ScVal.scvVec([zero(), zero(), zero()]) },
-    ];
-    const real = rpcChainReader("https://rpc.example", (async () => {
-      const a = answers.shift()!;
+  // Changed with adversary t9 (decisions row "Adversary t9"): this test first asserted that a pair read at two
+  // ledgers (91, 90) is returned with the older one; t9 proved such a pair can disagree with no unrecorded USDC.
+  const reader = (ledgers: number[]) => {
+    const queue = ledgers.map((l, i) => ({ latestLedger: l, v: i % 2 === 0 ? zero() : xdr.ScVal.scvVec([zero(), zero(), zero()]) }));
+    return rpcChainReader("https://rpc.example", (async () => {
+      const a = queue.shift()!;
       return Response.json({ jsonrpc: "2.0", id: 1, result: { latestLedger: a.latestLedger, results: [{ xdr: a.v.toXDR("base64") }] } });
     }) as never);
-    expect(await real.holdings(CONTRACT, TOKENS.usdc)).toEqual({ held: BigInt(0), pots: BigInt(0), ledger: 90 });
+  };
+
+  it("the real reader names the ledger its two simulations were both made at", async () => {
+    expect(await reader([90, 90]).holdings(CONTRACT, TOKENS.usdc)).toEqual({ held: BigInt(0), pots: BigInt(0), ledger: 90 });
+  });
+
+  it("a pair read at two ledgers is read again, and refused if it keeps disagreeing", async () => {
+    expect(await reader([91, 92, 92, 92]).holdings(CONTRACT, TOKENS.usdc)).toEqual({ held: BigInt(0), pots: BigInt(0), ledger: 92 });
+    await expect(reader([1, 2, 3, 4, 5, 6]).holdings(CONTRACT, TOKENS.usdc)).rejects.toThrow(/at different ledgers/);
   });
 });
