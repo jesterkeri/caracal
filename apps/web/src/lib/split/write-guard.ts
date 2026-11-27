@@ -27,7 +27,7 @@ const KEY = (split: string) => `caracal.split.write.${split}`;
 export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unreadable" };
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-type Record_ = { id: string; beat: number };
+type Record_ = { id: string; beat: number; ahead?: boolean };
 
 function store(): Store | null {
   try {
@@ -44,8 +44,9 @@ function read(s: Store, split: string, now: number): Record_ | null | undefined 
     if (raw === null || raw === undefined) return undefined;
     const v = JSON.parse(raw) as Partial<Record_>;
     if (typeof v?.id !== "string" || typeof v.beat !== "number" || !Number.isFinite(v.beat)) throw new Error("bad record");
-    // A renewal time in the future (a changed clock) counts as now, so it cannot hold forever.
-    return { id: v.id, beat: Math.min(v.beat, now) };
+    // A renewal time in the future (a changed clock) counts as now; holdOn records it again as now, so it
+    // ages from the first time it is seen and cannot hold for longer than SETTLE_MS from there.
+    return { id: v.id, beat: Math.min(v.beat, now), ahead: v.beat > now };
   } catch {
     return null;
   }
@@ -70,6 +71,16 @@ export function holdOn(split: string, now: number = Date.now()): Hold {
       return { held: true, until: null, reason: "unreadable" };
     }
     return { held: true, until: now + SETTLE_MS, reason: "earlier-write" };
+  }
+  if (rec.ahead) {
+    // Renewed "in the future" (the clock was ahead, then set back): recorded again as renewed now, so it
+    // ages from here and holds for SETTLE_MS, not for as long as the clock was off (adversary s8). Same id,
+    // so a tab still holding this write keeps renewing it.
+    try {
+      s.setItem(KEY(split), JSON.stringify({ id: rec.id, beat: now }));
+    } catch {
+      return { held: true, until: null, reason: "unreadable" };
+    }
   }
   return now - rec.beat < SETTLE_MS ? { held: true, until: rec.beat + SETTLE_MS, reason: "earlier-write" } : { held: false };
 }
