@@ -16,8 +16,11 @@ import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
 import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
 
 /** `account` is the signed-in account the page loaded for: the details it saves go into that account's rows only. */
-/** A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago. */
-type ShownRow = Row & { stillOpening?: boolean };
+/**
+ * A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago;
+ * `ahead` marks one whose opening or cancelling this browser saw confirmed, which the read has not caught up with.
+ */
+type ShownRow = Row & { stillOpening?: boolean; ahead?: Confirmed };
 type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
@@ -62,6 +65,64 @@ function forgetOpening(ref: string) {
     // storage blocked: nothing was saved there
   }
 }
+
+/**
+ * Invoices whose opening or cancelling this browser saw confirmed ({ ref: "opened" | "cancelled" }, JSON).
+ * A read right after (an RPC node a ledger behind) can still show the invoice missing or open; the row then
+ * says what was confirmed and offers neither "Remove this entry" (on a live invoice) nor its pay link and
+ * Cancel (on a cancelled one). An entry is dropped once a read agrees. Kept until then: a confirmed
+ * transaction is on the ledger, so a read catches up.
+ */
+const CONFIRMED_KEY = "caracal.invoiceConfirmed";
+type Confirmed = "opened" | "cancelled";
+const confirmedHere = new Map<string, Confirmed | null>();
+
+function readConfirmed(): Record<string, unknown> {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(CONFIRMED_KEY) ?? "{}") as unknown;
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setConfirmed(ref: string, what: Confirmed | null) {
+  confirmedHere.set(ref, what);
+  try {
+    const saved = readConfirmed();
+    if (what === null) delete saved[ref];
+    else saved[ref] = what;
+    window.localStorage.setItem(CONFIRMED_KEY, JSON.stringify(saved));
+  } catch {
+    // storage blocked: this tab still remembers it
+  }
+}
+
+function confirmedOf(ref: string): Confirmed | null {
+  const here = confirmedHere.get(ref);
+  if (here !== undefined) return here;
+  const v = readConfirmed()[ref];
+  return v === "opened" || v === "cancelled" ? v : null;
+}
+
+/** The row as shown: a confirmed outcome the read has not caught up with is shown as confirmed, and dropped once it has. */
+function shown(r: Row): ShownRow {
+  const done = confirmedOf(r.invoice_ref);
+  const chain = typeof r.chain === "object" && r.chain !== null ? r.chain : null;
+  if (done === "opened") {
+    if (r.chain === null) return { ...r, ahead: "opened" };
+    if (chain) setConfirmed(r.invoice_ref, null);
+  } else if (done === "cancelled") {
+    if (chain?.status === "open") return { ...r, ahead: "cancelled" };
+    if (chain) setConfirmed(r.invoice_ref, null);
+  }
+  return r.chain === null && mayStillOpen(r.invoice_ref) ? { ...r, stillOpening: true } : r;
+}
+
+const AHEAD_TEXT: Record<Confirmed, string> = {
+  opened: "Opened. The network has not shown it yet: reload the page in a minute to see its pay link.",
+  cancelled: "Cancelled. The network has not shown it yet: reload the page in a minute.",
+};
 
 /** How often an opening on its way renews its record, so a page that goes away mid-send leaves a recent one. */
 const OPENING_HEARTBEAT_MS = 10_000;
@@ -162,7 +223,7 @@ export default function InvoicesPage() {
     const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
     const rows = await loadRows(kit.rpc, await bounded(listDetails(db()), "Reading your saved invoices"), split);
     if (mine !== listReads) return;
-    setLoad({ kind: "ready", account, wallet, split, rows: rows.map((r) => (r.chain === null && mayStillOpen(r.invoice_ref) ? { ...r, stillOpening: true } : r)) });
+    setLoad({ kind: "ready", account, wallet, split, rows: rows.map(shown) });
   }
 
   /** Another tab signed in as someone else (or signed out): this page's wallet and form belong to the old account, so it starts again. */
@@ -267,6 +328,8 @@ export default function InvoicesPage() {
     setBusy(null);
     if (outcome.kind === "unknown") rememberUnknownOpening(ref);
     else forgetOpening(ref);
+    // Confirmed on chain: a read that has not caught up must not call it unopened (shown()).
+    if (outcome.kind === "done") setConfirmed(ref, "opened");
     let said: string;
     if (outcome.kind !== "done") said = outcomeText(outcome, "Opening the invoice");
     else {
@@ -291,6 +354,8 @@ export default function InvoicesPage() {
     }
     const outcome = await cancelInvoice(kit, ready.split, ref);
     setBusy(null);
+    // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()).
+    if (outcome.kind === "done") setConfirmed(ref, "cancelled");
     const said = outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice");
     setNotice(said, outcome.kind === "done" ? "good" : outcome.kind === "unknown" ? "unsure" : "bad");
     await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
@@ -387,17 +452,17 @@ export default function InvoicesPage() {
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
                   {r.description && <p className="small muted">{r.description}</p>}
-                  <div className={r.chain === "unreadable" || (r.chain === null && r.stillOpening) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
-                  <p>{r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
+                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && r.stillOpening) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
+                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
                   </div>
-                  {r.chain === null && !r.stillOpening && (
+                  {r.chain === null && !r.stillOpening && !r.ahead && (
                     <p>
                       <button className="link small" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry
                       </button>
                     </p>
                   )}
-                  {typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
+                  {!r.ahead && typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
                     <>
                       <p className="addr addr-box">{link}</p>
                       <p className="flex flex-wrap gap-2">
