@@ -107,6 +107,8 @@ export default function CashoutPage() {
   const [stalled, setStalled] = useState(false);
   /** When the kit's signAndSubmit for this page's send settled (resolved or threw), on Date.now(). */
   const [sendSettledAt, setSendSettledAt] = useState<number | null>(null);
+  /** The USDC balance shown when Send was pressed, to compare with after an unknown send. */
+  const [balanceBeforeSend, setBalanceBeforeSend] = useState<bigint | null>(null);
   /** LAND_WINDOW_MS has passed since sendSettledAt (set by a timer, see unknownWaiting). */
   const [landingOver, setLandingOver] = useState(false);
   const kitRef = useRef<Kit | null>(null);
@@ -123,12 +125,13 @@ export default function CashoutPage() {
   // The wallet's USDC balance, read again whenever it may have changed. A slow
   // older read never overwrites a newer one, and a failed read shows "not available"
   // rather than an old number the preview would check against.
-  function refreshBalance() {
+  // Resolves once this read has finished (shown, or superseded by a newer one).
+  function refreshBalance(): Promise<void> {
     const kit = kitRef.current;
     const wallet = walletRef.current;
-    if (!kit || !wallet) return;
+    if (!kit || !wallet) return Promise.resolve();
     const mine = ++balanceRead.current;
-    void readUsdcBalance(wallet, kit.rpc).then((b) => {
+    return readUsdcBalance(wallet, kit.rpc).then((b) => {
       if (mine === balanceRead.current) setBalance(b);
     });
   }
@@ -273,6 +276,7 @@ export default function CashoutPage() {
     setStalled(false);
     setSendSettledAt(null);
     setLandingOver(false);
+    setBalanceBeforeSend(balance);
     setPhase("sending");
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
@@ -341,8 +345,20 @@ export default function CashoutPage() {
   }, [unknownSend, sendSettledAt]);
   useEffect(() => {
     if (sendSettledAt === null) return;
-    const t = setTimeout(() => setLandingOver(true), Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
-    return () => clearTimeout(t);
+    // The balance is read again once the payment can no longer land, and the page says so only after that
+    // read: the advice to compare balances must not stand over one read before a late landing (adversary c16).
+    let gone = false;
+    const t = setTimeout(() => {
+      void refreshBalance()
+        .catch(() => {})
+        .then(() => {
+          if (!gone) setLandingOver(true);
+        });
+    }, Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
+    return () => {
+      gone = true;
+      clearTimeout(t);
+    };
   }, [sendSettledAt]);
   // Never while the USDC payment is being sent: starting again then would lose track of it.
   const canStartAnother = (done || lostSession || pastLanding) && phase !== "sending";
@@ -521,7 +537,11 @@ export default function CashoutPage() {
           {unknownWaiting && (
             <p className="msg msg-unsure">
               {pastLanding
-                ? "The anchor still has not received the USDC, and the payment can no longer reach the network. If your USDC balance above did not drop, it did not go through and you can start another cash-out. If it did drop, ask the anchor about it with the transaction id."
+                ? `The anchor still has not received the USDC, and the payment can no longer reach the network. ${
+                    balanceBeforeSend !== null && balance !== null
+                      ? `Your USDC balance was ${fromStroops(balanceBeforeSend)} USDC when you pressed Send and is ${fromStroops(balance)} USDC now (read just now). `
+                      : "Caracal could not read your USDC balance just now, so check your wallet's history first. "
+                  }If it did not drop, the payment did not go through and you can start another cash-out. If it did drop, ask the anchor about it with the transaction id.`
                 : stalled && sendSettledAt === null
                   ? "The payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
                   : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
