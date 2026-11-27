@@ -385,6 +385,15 @@ export default function CashoutPage() {
                 <button className="btn btn-primary btn-block" disabled={phase === "sending"} onClick={send}>
                   {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
                 </button>
+              ) : session && (FORM_STATUSES.has(txn.status) || txn.status === "incomplete") ? (
+                // The anchor went back to its form (adversary c10): the form is the way forward, and once the anchor
+                // takes a payment again, Send is offered here again.
+                <>
+                  <p className="msg msg-bad">The anchor no longer takes a payment for this cash-out, and this page sent none. {statusText(txn)} When the anchor is ready for your USDC again, this page offers to send it.</p>
+                  <a className="btn btn-secondary btn-block" href={session.url} target="_blank" rel="noopener noreferrer">
+                    Open the anchor&apos;s form
+                  </a>
+                </>
               ) : (
                 <p className="msg msg-bad">The anchor no longer takes a payment for this cash-out, and this page sent none. {statusText(txn)} Start again for a new one.</p>
               )}
