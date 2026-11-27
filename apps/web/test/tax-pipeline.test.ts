@@ -15,7 +15,8 @@ import { splitAddressFor } from "../src/lib/stellar/split-address";
 import { SPLIT } from "../src/lib/stellar/config";
 import { parseNfemTable, RateSourceError } from "../src/lib/tax/cbn-rates";
 import type { ChainReader, EventsPage, RawEvent } from "../src/lib/tax/chain-payments";
-import { lagosDate, parseTaxRequest, runTaxEstimate, unitsToDecimal, type PipelineDeps, type TaxRequest } from "../src/lib/tax/pipeline";
+import { lagosDate, parseTaxRequest, unitsToDecimal, type PipelineDeps, type TaxRequest } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 
 const rates = parseNfemTable((JSON.parse(readFileSync(new URL("./fixtures/tax/cbn-nfem-rates.json", import.meta.url), "utf8")) as { rows: unknown[] }).rows);
 const realWindow = (JSON.parse(readFileSync(new URL("./fixtures/tax/soroban-testnet-split-events.json", import.meta.url), "utf8")) as { health: EventsPage }).health;
@@ -80,6 +81,7 @@ function chain(payments: ReturnType<typeof payment>[], oldest = "2025-12-01T00:0
     // Balanced: everything the contract holds is in its pots (holdings is a required read).
     holdings: async () => ({ held: BigInt(0), pots: BigInt(0) }),
     events: async () => ({ ...retention, events: payments.map((p) => p.event), cursor: cursorFor(6000000) }),
+    eventsAfter: async () => ({ ...retention, events: [], cursor: cursorFor(6000000) }),
     transaction: async (hash) => payments.find((p) => p.event.txHash === hash)!.tx,
     ...over,
   };
@@ -151,7 +153,7 @@ describe("the estimate, from payments the chain recorded (constructed) and real 
     let asked = false;
     const out = await runTaxEstimate(
       req,
-      deps({ ...base, health: async () => h, events: async (...a) => ({ ...(await base.events(...a)), latestLedgerCloseTime: h.latestLedgerCloseTime }) }, { now: () => new Date("2027-02-01T10:00:00Z"), rateTable: async () => ((asked = true), rates) }),
+      deps({ ...base, health: async () => h, events: async (...a) => ({ ...(await base.events(...a)), latestLedgerCloseTime: h.latestLedgerCloseTime }), eventsAfter: async (...a) => ({ ...(await base.eventsAfter(...a)), latestLedgerCloseTime: h.latestLedgerCloseTime }) }, { now: () => new Date("2027-02-01T10:00:00Z"), rateTable: async () => ((asked = true), rates) }),
     );
     expect(asked).toBe(false);
     expect(out.status).toBe("ok");
@@ -207,7 +209,7 @@ describe("refusing to guess", () => {
   it("refuses when the chain was last read more than a day ago", async () => {
     const stale = chain([]);
     const h = await stale.health();
-    const out = await runTaxEstimate(req, deps({ ...stale, health: async () => ({ ...h, latestLedgerCloseTime: unix("2026-11-26T10:00:00Z") }), events: async (...a) => ({ ...(await stale.events(...a)), latestLedgerCloseTime: unix("2026-11-26T10:00:00Z") }) }));
+    const out = await runTaxEstimate(req, deps({ ...stale, health: async () => ({ ...h, latestLedgerCloseTime: unix("2026-11-26T10:00:00Z") }), events: async (...a) => ({ ...(await stale.events(...a)), latestLedgerCloseTime: unix("2026-11-26T10:00:00Z") }), eventsAfter: async (...a) => ({ ...(await stale.eventsAfter(...a)), latestLedgerCloseTime: unix("2026-11-26T10:00:00Z") }) }));
     expect(out.status).toBe("refused");
   });
 

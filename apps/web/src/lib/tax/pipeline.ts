@@ -19,15 +19,26 @@ export type TaxRequest = {
   annualRentNgn?: string;
   /** Whether all income arrives in the split contract, or how much arrives elsewhere. */
   otherIncome: { kind: "all-in-caracal" } | { kind: "elsewhere"; amountNgn: string; note?: string };
+  /**
+   * The person's own answer for each in-year payment from someone other than their own wallet, by payment
+   * (event) id. An on-chain payment proves an amount and a sender, not what it was for, so Caracal never
+   * decides that: a payment without an answer means no estimate.
+   */
+  classifications?: Record<string, Classification>;
 };
 
+export type Classification = "income" | "not_income";
+
 const MAX_TEXT = 200;
+/** As many answers as there are payments Caracal will check (MAX_PAYMENTS). */
+const MAX_ANSWERS = 100;
+const MAX_ID = 64;
 
 /** Reads the request body. Anything unexpected is a plain message, never a guess. */
 export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | { ok: false; message: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { ok: false, message: "The request was not an object." };
   const b = body as Record<string, unknown>;
-  const allowed = new Set(["wallet", "annualRentNgn", "otherIncome"]);
+  const allowed = new Set(["wallet", "annualRentNgn", "otherIncome", "classifications"]);
   if (Object.keys(b).some((k) => !allowed.has(k))) return { ok: false, message: "The request has fields Caracal does not know." };
   if (!isContractId(b.wallet)) return { ok: false, message: "The wallet must be a Stellar contract address (it starts with C)." };
   let annualRentNgn: string | undefined;
@@ -35,36 +46,67 @@ export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | 
     if (typeof b.annualRentNgn !== "string" || b.annualRentNgn.length > MAX_TEXT) return { ok: false, message: "Annual rent must be text." };
     if (b.annualRentNgn.trim() !== "") annualRentNgn = b.annualRentNgn;
   }
+  let classifications: Record<string, Classification> | undefined;
+  if (b.classifications !== undefined) {
+    const c = b.classifications;
+    if (typeof c !== "object" || c === null || Array.isArray(c)) return { ok: false, message: "The payment answers must be a list of payment and answer pairs." };
+    const keys = Object.keys(c);
+    if (keys.length > MAX_ANSWERS) return { ok: false, message: "There are more payment answers than Caracal can check." };
+    classifications = {};
+    for (const k of keys) {
+      const v = (c as Record<string, unknown>)[k];
+      if (k.length === 0 || k.length > MAX_ID) return { ok: false, message: "A payment answer names a payment Caracal does not know." };
+      if (v !== "income" && v !== "not_income") return { ok: false, message: "Each payment answer must be income or not income." };
+      Object.defineProperty(classifications, k, { value: v, enumerable: true, writable: true, configurable: true });
+    }
+  }
+  const withAnswers = (r: Omit<TaxRequest, "classifications">): TaxRequest => (classifications === undefined ? r : { ...r, classifications });
   const o = b.otherIncome;
   if (typeof o !== "object" || o === null || Array.isArray(o)) return { ok: false, message: "Say whether all your income arrives in your Caracal wallet." };
   const oi = o as Record<string, unknown>;
   if (oi.kind === "all-in-caracal") {
     if (Object.keys(oi).length !== 1) return { ok: false, message: "The income answer has fields Caracal does not know." };
-    return { ok: true, req: { wallet: b.wallet, annualRentNgn, otherIncome: { kind: "all-in-caracal" } } };
+    return { ok: true, req: withAnswers({ wallet: b.wallet, annualRentNgn, otherIncome: { kind: "all-in-caracal" } }) };
   }
   if (oi.kind === "elsewhere") {
     if (Object.keys(oi).some((k) => !["kind", "amountNgn", "note"].includes(k))) return { ok: false, message: "The income answer has fields Caracal does not know." };
     if (typeof oi.amountNgn !== "string" || oi.amountNgn.length > MAX_TEXT) return { ok: false, message: "Say how much income arrives elsewhere, in naira." };
     if (oi.note !== undefined && (typeof oi.note !== "string" || oi.note.length > MAX_TEXT)) return { ok: false, message: "The note must be short text." };
-    return { ok: true, req: { wallet: b.wallet, annualRentNgn, otherIncome: { kind: "elsewhere", amountNgn: oi.amountNgn, ...(oi.note ? { note: oi.note } : {}) } } };
+    return { ok: true, req: withAnswers({ wallet: b.wallet, annualRentNgn, otherIncome: { kind: "elsewhere", amountNgn: oi.amountNgn, ...(oi.note ? { note: oi.note } : {}) } }) };
   }
   return { ok: false, message: "Say whether all your income arrives in your Caracal wallet." };
 }
 
 export type TaxOutcome =
   | { status: "ok"; estimate: Estimate; context: Context }
-  | { status: "refused"; reasons: string[]; disclaimer: string; context: Context | null }
+  | { status: "refused"; reasons: string[]; disclaimer: string; context: Context | null; /** Set when the refusal is about the person's payment answers: every in-year payment to answer for. */ payments?: PaymentRow[] }
   /** Nothing could be computed because a source could not be read. No numbers. */
   | { status: "unavailable"; message: string; disclaimer: string }
   /** The wallet has no split contract on this network, so there are no payments to estimate from. */
   | { status: "no-contract"; message: string; splitContract: string; disclaimer: string };
 
+/** One in-year payment, as the person sees it when they say whether it was income. */
+export type PaymentRow = {
+  id: string;
+  /** The Nigeria (Lagos) date of the payment. */
+  date: string;
+  occurredAt: string;
+  /** USDC, exact decimal text. */
+  amount: string;
+  asset: "USDC";
+  from: string;
+  invoiceRef: string;
+};
+
 /** What the estimate was built from, shown with it. */
 export type Context = {
   taxYear: number;
   splitContract: string;
+  /** When the estimate was computed. What it covers is `coverage`: payments recorded through its ledger, and none after. */
   asOf: string;
   coverage: Coverage;
+  /** Payments the person answered "not income" for: left out by their own answer, not checked on chain. */
+  excludedByAnswer: PaymentRow[];
   /** Payments the contract recorded in the history window, and how many fall in the tax year (Nigeria time). */
   paymentsInWindow: number;
   paymentsInTaxYear: number;
@@ -93,6 +135,8 @@ export function unitsToDecimal(units: bigint): string {
 /** A payment the owner made from their own wallet into their own split contract is not income. */
 const isOwnPayment = (p: Payment, owner: string) => p.from === owner;
 
+const rowOf = (p: Payment): PaymentRow => ({ id: p.eventId, date: lagosDate(p.occurredAt), occurredAt: p.occurredAt, amount: unitsToDecimal(p.units), asset: "USDC", from: p.from, invoiceRef: p.invoiceRef });
+
 const unavailable = (message: string): TaxOutcome => ({ status: "unavailable", message, disclaimer: DISCLAIMER });
 
 export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networkPassphrase?: string): Promise<TaxOutcome> {
@@ -118,11 +162,34 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
   const inYear = (p: Payment) => lagosDate(p.occurredAt).startsWith(`${TAX_YEAR}-`);
   const yearPayments = read.payments.filter(inYear);
 
-  // CBN rates, only for the days that have an in-year income payment. The owner's own transfers are
-  // never income and are never valued, so a day with only those needs no rate (and no rate table).
+  // Whether a payment is income is the person's answer, never a guess from its sender: an on-chain payment
+  // proves an amount and a sender, not what it was for (it may be a refund, or a transfer from another
+  // wallet of their own). Every in-year payment that is not from the owner's wallet needs an answer first.
+  const answers = req.classifications ?? {};
+  const has = (id: string) => Object.prototype.hasOwnProperty.call(answers, id);
+  const answerable = yearPayments.filter((p) => !isOwnPayment(p, req.wallet));
+  const known = new Set(answerable.map((p) => p.eventId));
+  const unknownAnswers = Object.keys(answers).filter((id) => !known.has(id));
+  const unanswered = answerable.filter((p) => !has(p.eventId));
+  if (unknownAnswers.length > 0 || unanswered.length > 0) {
+    const reasons: string[] = [];
+    if (unanswered.length > 0) {
+      reasons.push(
+        `${unanswered.length} of your ${TAX_YEAR} payments ${unanswered.length === 1 ? "has" : "have"} not been marked as income or not income. A payment on chain shows an amount and who sent it, not what it was for (it could be a refund, or a transfer from another wallet of yours), so Caracal will not guess. Answer for each payment and estimate again.`,
+      );
+    }
+    if (unknownAnswers.length > 0) {
+      reasons.push(`${unknownAnswers.length} of the answers sent name a payment that is not one of your ${TAX_YEAR} payments into this split contract (the list may have changed). Answer again from the list below.`);
+    }
+    return { status: "refused", reasons, disclaimer: DISCLAIMER, context: null, payments: answerable.map(rowOf) };
+  }
+  const notIncome = new Set(answerable.filter((p) => answers[p.eventId] === "not_income").map((p) => p.eventId));
+
+  // CBN rates, only for the days that have an in-year income payment. The owner's own transfers and the
+  // payments the person says are not income are never valued, so a day with only those needs no rate.
   const ownReasons: string[] = [];
   const quotes = new Map<string, FxQuote>();
-  const days = [...new Set(yearPayments.filter((p) => !isOwnPayment(p, req.wallet)).map((p) => lagosDate(p.occurredAt)))].sort();
+  const days = [...new Set(answerable.filter((p) => !notIncome.has(p.eventId)).map((p) => lagosDate(p.occurredAt)))].sort();
   if (days.length > 0) {
     let table: RateTable;
     try {
@@ -139,7 +206,8 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     }
   }
 
-  const entries: LedgerEntry[] = read.payments.map((p) => ({
+  // Payments answered "not income" are not given to the engine: they are listed in the result as left out by the person's answer.
+  const entries: LedgerEntry[] = read.payments.filter((p) => !notIncome.has(p.eventId)).map((p) => ({
     id: p.eventId,
     accountId: splitContract,
     txHash: p.txHash,
@@ -167,6 +235,7 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     splitContract,
     asOf,
     coverage: read.coverage,
+    excludedByAnswer: answerable.filter((p) => notIncome.has(p.eventId)).map(rowOf),
     paymentsInWindow: read.payments.length,
     paymentsInTaxYear: yearPayments.length,
   };
@@ -179,6 +248,8 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
       asOf,
       entries,
       accounts: [account],
+      // The account's sync time is the stable ledger's close time (read.coverage.to); the estimate may not be much later.
+      staleAfterHours: 1,
       profile: {
         ...(req.annualRentNgn !== undefined ? { annualRentNgn: req.annualRentNgn } : {}),
         incomeScope:

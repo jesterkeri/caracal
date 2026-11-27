@@ -5,7 +5,7 @@
 
 import { explorerLink } from "@/lib/stellar/config";
 import type { Estimate } from "@caracal/tax";
-import type { Context, TaxOutcome } from "@/lib/tax/pipeline";
+import type { Context, PaymentRow, TaxOutcome } from "@/lib/tax/pipeline";
 
 export const NOT_ADVICE = "Estimate, not tax advice.";
 
@@ -14,6 +14,19 @@ export function group(amount: string): string {
   const [whole = "", frac] = amount.split(".");
   const g = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return frac === undefined ? g : `${g}.${frac}`;
+}
+
+/**
+ * A rate written as a fraction ("0.1000", "0.075") shown as a percentage ("10%", "7.5%"). The text is shifted by
+ * two decimal places as text, so no float rounding can touch it; anything that is not a plain decimal is shown as is.
+ */
+export function pct(rate: string): string {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(rate);
+  if (!m) return rate;
+  const frac = (m[2] ?? "").padEnd(2, "0");
+  const whole = `${m[1]}${frac.slice(0, 2)}`.replace(/^0+(?=\d)/, "");
+  const rest = frac.slice(2).replace(/0+$/, "");
+  return `${whole}${rest === "" ? "" : `.${rest}`}%`;
 }
 
 const naira = (s: string) => `N${group(s)}`;
@@ -31,25 +44,29 @@ function Coverage({ c }: { c: Context }) {
         , read from Stellar testnet.
       </p>
       <p>
-        History checked: {time(c.coverage.from)} to {time(c.coverage.to)} (ledgers {c.coverage.fromLedger} to {c.coverage.toLedger}). The public Stellar RPC keeps only a short window of
-        history, so nothing earlier could be read. An estimate is made only when this window covers {c.taxYear} from its start, or from the day your
-        split contract was created (its creation record is in the window), so no payment of the year can be missing.
+        Covers payments your split contract recorded through ledger {c.coverage.toLedger}, which closed at {time(c.coverage.to)}. A payment recorded after that ledger is not in this
+        estimate. Caracal checked that no new event arrived in the contract between reading its payments and fixing that ledger.
       </p>
       <p>
-        Payments found in that window: {c.paymentsInWindow}, of which {c.paymentsInTaxYear} fall in {c.taxYear} (Nigeria time). Estimate made {time(c.asOf)}.
+        History checked from {time(c.coverage.from)} (ledger {c.coverage.fromLedger}). The public Stellar RPC keeps only a short window of history, so nothing earlier could be read. An
+        estimate is made only when this window covers {c.taxYear} from its start, or from the day your split contract was created (its creation record is in the window), so no
+        payment recorded up to that ledger is missing.
+      </p>
+      <p>
+        Payments found in that window: {c.paymentsInWindow}, of which {c.paymentsInTaxYear} fall in {c.taxYear} (Nigeria time). Computed {time(c.asOf)}.
       </p>
     </section>
   );
 }
 
-function Money({ e }: { e: Estimate }) {
+function Money({ e, excluded }: { e: Estimate; excluded: PaymentRow[] }) {
   return (
     <div className="flex flex-col gap-5 text-sm">
       <section className="card card-hero gap-2 bg-none bg-[var(--c-brown)]">
         <h2 className="h3 opacity-80">Your {e.taxYear} estimate</h2>
         <p className="money-xl num break-words">{naira(e.totalTaxNgn)}</p>
         <p className="opacity-90 leading-relaxed">
-          Estimated tax on {naira(e.taxableIncomeNgn)} taxable income ({naira(e.grossIncomeNgn)} income). Effective rate {e.effectiveRate}. {NOT_ADVICE}
+          Estimated tax on {naira(e.taxableIncomeNgn)} taxable income ({naira(e.grossIncomeNgn)} income). Effective rate {pct(e.effectiveRate)}. {NOT_ADVICE}
         </p>
       </section>
 
@@ -75,6 +92,16 @@ function Money({ e }: { e: Estimate }) {
             </p>
           </div>
         ))}
+        {excluded.length > 0 && (
+          <div className="item card-sunken shadow-none">
+            <p className="font-medium">Left out by your own answer (you said these are not income; Caracal did not check this on chain):</p>
+            {excluded.map((p) => (
+              <p key={p.id} className="kv-row num text-sm">
+                {p.date}: {group(p.amount)} {p.asset} from <span className="addr">{p.from}</span>, invoice reference {p.invoiceRef || "none"}
+              </p>
+            ))}
+          </div>
+        )}
         {e.declaredIncomeLines.map((l, i) => (
           <div key={i} className="item card-sunken shadow-none">
             <p className="num">
@@ -94,7 +121,7 @@ function Money({ e }: { e: Estimate }) {
         {e.reliefs.length === 0 && <p>No reliefs applied.</p>}
         {e.bands.map((b) => (
           <p key={b.ruleId} className="kv-row num text-sm">
-            {naira(b.from)} to {b.to === null ? "no limit" : naira(b.to)} at {b.rate}: {naira(b.taxableInBand)} taxed, {naira(b.taxInBand)} tax (rule {b.ruleId})
+            {naira(b.from)} to {b.to === null ? "no limit" : naira(b.to)} at {pct(b.rate)}: {naira(b.taxableInBand)} taxed, {naira(b.taxInBand)} tax (rule {b.ruleId})
           </p>
         ))}
       </section>
@@ -137,7 +164,7 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
       <p className="notice notice-strong">{NOT_ADVICE}</p>
       {outcome.status === "ok" && (
         <>
-          <Money e={outcome.estimate} />
+          <Money e={outcome.estimate} excluded={outcome.context.excludedByAnswer} />
           <Coverage c={outcome.context} />
         </>
       )}

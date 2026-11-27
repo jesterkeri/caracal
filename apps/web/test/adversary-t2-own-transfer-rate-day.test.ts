@@ -7,7 +7,7 @@
 // day cannot be valued", although the only income (a third party's payment on
 // 2026-11-25) has its CBN rate and nothing needs valuing on the 21st.
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment, req } from "./adversary-t1-harness";
 
 const THIRD_PARTY_ON_WEDNESDAY = payment("2026-11-25T21:17:43Z", 10_000_000_000);

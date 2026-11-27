@@ -47,6 +47,11 @@ export type ChainReader = {
   health(): Promise<Retention>;
   instance(contract: string): Promise<InstanceCode>;
   events(contract: string, from: { startLedger: number } | { cursor: string }, limit: number): Promise<EventsPage>;
+  /**
+   * The events recorded after a cursor the scan ended on, read again after the holdings: any event here that the
+   * scan did not see means a payment arrived while the read ran. Also says the newest ledger now.
+   */
+  eventsAfter(contract: string, cursor: string, limit: number): Promise<EventsPage>;
   transaction(hash: string): Promise<{ status: string; ledger: number; createdAt: string }>;
   /**
    * What the split contract holds of the token, and the sum of its three pots
@@ -74,7 +79,7 @@ export type Coverage = {
   /** Events from this instant on are all included. ISO with Z. */
   from: string;
   toLedger: number;
-  /** The close time of the newest ledger scanned. ISO with Z. */
+  /** The close time of that ledger: the cutoff. Payments recorded after it are not in the estimate. ISO with Z. */
   to: string;
 };
 
@@ -104,6 +109,8 @@ export type SplitExpectation = {
 
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 100;
+/** How many times the read is repeated when a new event arrives while it runs. */
+const MAX_ATTEMPTS = 3;
 /** Each payment is checked against its transaction; more than this is refused rather than half-checked. */
 export const MAX_PAYMENTS = 100;
 
@@ -237,8 +244,8 @@ export function decodeCreatedEvent(e: RawEvent, want: SplitExpectation): Created
  * proves. Throws ChainReadError when anything cannot be relied on.
  */
 export async function readSplitPayments(chain: ChainReader, want: SplitExpectation): Promise<PaymentRead> {
-  const health = await chain.health();
-  checkRetention(health);
+  const first = await chain.health();
+  checkRetention(first);
 
   const code = await chain.instance(want.contract);
   if (code.kind === "absent") return { kind: "no-contract" };
@@ -246,8 +253,46 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     throw new ChainReadError("The split contract at this wallet's address does not run Caracal's split code, so its payments cannot be trusted.");
   }
 
+  // The estimate states one ledger it covers. A payment can land after the events were read and before (or
+  // while) the holdings are read, and the holdings check alone cannot see it. So after the holdings are read
+  // the events are asked for again from where the scan ended: only when nothing new arrived is the scan a
+  // stable boundary (the events and the holdings agree up to that ledger). Otherwise the whole read is
+  // repeated, a bounded number of times, and then refused.
+  let attempt = 0;
+  let health = first;
+  for (;;) {
+    attempt++;
+    if (attempt > 1) {
+      health = await chain.health();
+      checkRetention(health);
+    }
+    const scanned = await scanEvents(chain, want, health);
+    const decoded = decodeScan(scanned, want, health.oldestLedger);
+    // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
+    const { held, pots } = await chain.holdings(want.contract, want.token);
+    if (held > pots) {
+      throw new ChainReadError(
+        "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
+      );
+    }
+    const tail = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
+    checkRetention(tail);
+    if (tail.latestLedger < scanned.last.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
+    const seenIds = new Set(scanned.events.map((e) => e.id));
+    const arrived = tail.events.some((e) => !seenIds.has(e.id));
+    if (arrived) {
+      if (attempt >= MAX_ATTEMPTS) throw new ChainReadError("New events kept arriving in the split contract while Caracal was reading it, so it could not fix the ledger the estimate covers. Try again.");
+      continue;
+    }
+    return finish(chain, want, health, decoded, { toLedger: tail.latestLedger, to: isoFromUnix(tail.latestLedgerCloseTime) });
+  }
+}
+
+type Scanned = { events: RawEvent[]; last: EventsPage; cursor: string };
+
+/** Reads the contract's events from the oldest retained ledger to the newest, page by page. */
+async function scanEvents(chain: ChainReader, want: SplitExpectation, health: Retention): Promise<Scanned> {
   const startLedger = health.oldestLedger;
-  const coverageFrom = isoFromUnix(health.oldestLedgerCloseTime);
   const events: RawEvent[] = [];
   let page = await chain.events(want.contract, { startLedger }, PAGE_LIMIT);
   let last: EventsPage = page;
@@ -280,7 +325,13 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
     page = next;
   }
+  return { events, last, cursor: last.cursor };
+}
 
+type Decoded = { payments: Payment[]; createdEvents: CreatedEvent[] };
+
+function decodeScan(scan: Scanned, want: SplitExpectation, startLedger: number): Decoded {
+  const { events, last } = scan;
   const seen = new Set<string>();
   const payments: Payment[] = [];
   const createdEvents: CreatedEvent[] = [];
@@ -304,13 +355,11 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
       `The split contract credited USDC that was sent to it directly (a "reconciled" event, ${reconciledId}). Caracal cannot tell what that USDC was, so it cannot show a tax estimate from this wallet's payments.`,
     );
   }
-  // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
-  const { held, pots } = await chain.holdings(want.contract, want.token);
-  if (held > pots) {
-    throw new ChainReadError(
-      "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
-    );
-  }
+  return { payments, createdEvents };
+}
+
+async function finish(chain: ChainReader, want: SplitExpectation, health: Retention, d: Decoded, boundary: { toLedger: number; to: string }): Promise<PaymentRead> {
+  const { payments, createdEvents } = d;
   if (payments.length > MAX_PAYMENTS) throw new ChainReadError(`There are more than ${MAX_PAYMENTS} payments, more than Caracal can check one by one today.`);
 
   // Each payment's transaction must be a successful one, in the ledger the
@@ -332,7 +381,7 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
   }
 
-  return { kind: "read", payments, created, coverage: { fromLedger: startLedger, from: coverageFrom, toLedger: last.latestLedger, to: isoFromUnix(last.latestLedgerCloseTime) } };
+  return { kind: "read", payments, created, coverage: { fromLedger: health.oldestLedger, from: isoFromUnix(health.oldestLedgerCloseTime), toLedger: boundary.toLedger, to: boundary.to } };
 }
 
 // ---- the real RPC ----
@@ -392,6 +441,16 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
     }
   }
 
+  async function getEvents(contract: string, from: { startLedger: number } | { cursor: string }, limit: number): Promise<EventsPage> {
+    const r = await call("getEvents", {
+      ...("startLedger" in from ? { startLedger: from.startLedger } : {}),
+      filters: [{ type: "contract", contractIds: [contract] }],
+      pagination: { ...("cursor" in from ? { cursor: from.cursor } : {}), limit },
+    });
+    if (!Array.isArray(r.events) || typeof r.cursor !== "string") throw new ChainReadError("The Stellar RPC sent events Caracal cannot read.");
+    return { ...retention(r), events: r.events as RawEvent[], cursor: r.cursor };
+  }
+
   return {
     async holdings(contract, token) {
       const held = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
@@ -433,15 +492,8 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
       }
     },
 
-    async events(contract, from, limit) {
-      const r = await call("getEvents", {
-        ...("startLedger" in from ? { startLedger: from.startLedger } : {}),
-        filters: [{ type: "contract", contractIds: [contract] }],
-        pagination: { ...("cursor" in from ? { cursor: from.cursor } : {}), limit },
-      });
-      if (!Array.isArray(r.events) || typeof r.cursor !== "string") throw new ChainReadError("The Stellar RPC sent events Caracal cannot read.");
-      return { ...retention(r), events: r.events as RawEvent[], cursor: r.cursor };
-    },
+    events: getEvents,
+    eventsAfter: (contract, cursor, limit) => getEvents(contract, { cursor }, limit),
 
     async transaction(hash) {
       const r = await call("getTransaction", { hash });

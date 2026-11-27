@@ -7,7 +7,7 @@
 // config.ts), inside the window the real RPC reported on 2026-11-27 (it starts
 // 2026-11-20, fixtures/tax/soroban-testnet-split-events.json).
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { chain, deps, payment, req } from "./adversary-t1-harness";
 
 describe("adversary t1: wrong reason for a refusal", () => {

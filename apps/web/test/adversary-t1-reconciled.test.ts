@@ -5,7 +5,7 @@
 // split contract". Either counting it or refusing is acceptable; a number that
 // leaves it out is not.
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { chain, deps, payment, reconciled, req } from "./adversary-t1-harness";
 
 describe("adversary t1: reconciled income", () => {

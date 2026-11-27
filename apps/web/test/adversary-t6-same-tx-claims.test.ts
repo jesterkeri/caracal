@@ -16,7 +16,7 @@
 // event list (getEvents) names a ledger and time for the second event that the
 // transaction record (getTransaction) for the same hash contradicts.
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment, type Item } from "./adversary-t1-harness";
 
 const req = { wallet: WALLET, otherIncome: { kind: "all-in-caracal" as const } };

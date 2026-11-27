@@ -21,7 +21,7 @@
 // Events are CONSTRUCTED in the real RPC wire format by the t1 harness; the
 // CBN rates are the real captured rows.
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment, type Item } from "./adversary-t1-harness";
 
 /** `second` rewritten to sit in the same transaction (same hash, ledger and close time) as `first`, as a batch call would. */

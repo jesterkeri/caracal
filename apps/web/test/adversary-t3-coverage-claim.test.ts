@@ -12,7 +12,7 @@ import { Address, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "../src/lib/stellar/config";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { ResultView } from "../src/app/tax/result-view";
 import { WALLET, CONTRACT, chain, deps, payment, req, unix, type Item } from "./adversary-t1-harness";
 

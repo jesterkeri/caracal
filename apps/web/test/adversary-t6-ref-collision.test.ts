@@ -17,7 +17,7 @@
 import { Address, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "../src/lib/stellar/config";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment, type Item } from "./adversary-t1-harness";
 
 const i128 = (n: bigint) => nativeToScVal(n, { type: "i128" });

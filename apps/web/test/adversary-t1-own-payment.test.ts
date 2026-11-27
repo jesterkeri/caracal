@@ -2,7 +2,7 @@
 // person moving their own money, not income (packages/tax README: `own_transfer`
 // is never income). The pipeline labels every split event `income`.
 import { describe, expect, it } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment, req } from "./adversary-t1-harness";
 
 describe("adversary t1: own payment", () => {

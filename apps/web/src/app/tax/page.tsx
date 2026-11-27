@@ -5,8 +5,8 @@ import { followAccount, readSignInState } from "@/lib/auth/account";
 import { browserStore, rememberedWallet } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
-import type { TaxOutcome } from "@/lib/tax/pipeline";
-import { ResultView } from "./result-view";
+import type { Classification, PaymentRow, TaxOutcome } from "@/lib/tax/pipeline";
+import { ResultView, group } from "./result-view";
 
 type Who = { kind: "checking" } | { kind: "error"; message: string } | { kind: "no-wallet" } | { kind: "ready"; wallet: string };
 type Run = { kind: "idle" } | { kind: "running" } | { kind: "failed"; message: string } | { kind: "done"; outcome: TaxOutcome };
@@ -26,6 +26,9 @@ export default function TaxPage() {
   const [elsewhere, setElsewhere] = useState("");
   const [rent, setRent] = useState("");
   const [run, setRun] = useState<Run>({ kind: "idle" });
+  // The in-year payments the server listed, and the person's answer for each (nothing is preselected).
+  const [listed, setListed] = useState<PaymentRow[] | null>(null);
+  const [answers, setAnswers] = useState<Record<string, Classification>>({});
 
   useEffect(() => {
     let gone = false;
@@ -42,6 +45,8 @@ export default function TaxPage() {
       unfollow = followAccount(auth, now.id, () => {
         asked++;
         setRun({ kind: "idle" });
+        setListed(null);
+        setAnswers({});
         setWho({ kind: "checking" });
         window.location.reload();
       });
@@ -79,12 +84,20 @@ export default function TaxPage() {
           wallet: who.wallet,
           annualRentNgn: rent,
           otherIncome: scope === "all" ? { kind: "all-in-caracal" } : { kind: "elsewhere", amountNgn: elsewhere },
+          // Only answers for payments on the list on screen are sent.
+          classifications: Object.fromEntries(Object.entries(answers).filter(([id]) => listed?.some((p) => p.id === id))),
         }),
       });
       const body = (await res.json()) as TaxOutcome | { error: string };
       if (!current()) return;
       if ("error" in body) return setRun({ kind: "failed", message: body.error });
       if (!res.ok || typeof body.status !== "string") return setRun({ kind: "failed", message: FAILED });
+      if (body.status === "refused" && body.payments !== undefined) {
+        // The server's list replaces ours: an answer for a payment no longer on it is dropped.
+        const ids = new Set(body.payments.map((p) => p.id));
+        setListed(body.payments);
+        setAnswers((a) => Object.fromEntries(Object.entries(a).filter(([id]) => ids.has(id))));
+      }
       setRun({ kind: "done", outcome: body });
     } catch {
       if (current()) setRun({ kind: "failed", message: stop.signal.aborted ? TOO_SLOW : FAILED });
@@ -141,6 +154,34 @@ export default function TaxPage() {
           </button>
           {scope === null && <p className="small muted">Answer the income question first: Caracal cannot see income that arrives elsewhere unless you say so.</p>}
           </div>
+          {listed !== null && (
+            <fieldset className="card gap-4 text-sm">
+              <legend className="h3 mb-3">Was each payment income?</legend>
+              <p className="muted">
+                A payment on chain shows an amount and who sent it, not what it was for. Say whether each one is income for you. A transfer from another wallet of yours, or a
+                refund, is not income. Caracal makes no estimate until every payment has an answer, and payments you mark as not income are left out by your own answer and are not checked on chain.
+              </p>
+              {listed.length === 0 && <p>There are no payments in 2026 to answer for.</p>}
+              {listed.map((p) => (
+                <div key={p.id} className="item kv gap-1 py-2">
+                  <p className="kv-row num text-base">
+                    {p.date}: <strong>{group(p.amount)} {p.asset}</strong>
+                  </p>
+                  <p className="kv-row muted text-sm">
+                    From <span className="addr">{p.from}</span>. Invoice reference: {p.invoiceRef || "none"}.
+                  </p>
+                  <label className="choice py-2 has-checked:bg-[var(--c-green-soft)] has-checked:text-[var(--c-on-green-soft)]">
+                    <input type="radio" name={`pay-${p.id}`} checked={answers[p.id] === "income"} onChange={() => (setAnswers((a) => ({ ...a, [p.id]: "income" })), edited())} />
+                    Income
+                  </label>
+                  <label className="choice py-2 has-checked:bg-[var(--c-green-soft)] has-checked:text-[var(--c-on-green-soft)]">
+                    <input type="radio" name={`pay-${p.id}`} checked={answers[p.id] === "not_income"} onChange={() => (setAnswers((a) => ({ ...a, [p.id]: "not_income" })), edited())} />
+                    Not income
+                  </label>
+                </div>
+              ))}
+            </fieldset>
+          )}
         </div>
       )}
 

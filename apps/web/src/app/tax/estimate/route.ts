@@ -13,7 +13,7 @@ import { fetchNfemTable } from "@/lib/tax/cbn-rates";
 import { rpcChainReader } from "@/lib/tax/chain-payments";
 import { parseTaxRequest, runTaxEstimate } from "@/lib/tax/pipeline";
 
-const MAX_BODY_BYTES = 2_000;
+const MAX_BODY_BYTES = 16_000;
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 

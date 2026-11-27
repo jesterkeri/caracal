@@ -15,7 +15,7 @@
 // runs. The server answer is the repo's own pipeline run on a constructed
 // payment (the t1 harness), served from a stubbed fetch: no network.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runTaxEstimate } from "../src/lib/tax/pipeline";
+import { runTaxEstimate } from "./tax-classify-harness";
 import { WALLET, chain, deps, payment } from "./adversary-t1-harness";
 import { cleanUp, mountTaxPage, walk } from "./adversary-t2-page-harness";
 

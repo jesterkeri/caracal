@@ -53,6 +53,7 @@ function fakeChain(over: Partial<ChainReader> = {}): ChainReader {
     // Balanced: everything the contract holds is in its pots (holdings is a required read).
     holdings: async () => ({ held: BigInt(0), pots: BigInt(0) }),
     events: async () => (calls++ === 0 ? real.eventsPage : lastPage()),
+    eventsAfter: async () => lastPage(),
     transaction: async () => realTx.transaction,
     ...over,
   };
