@@ -21,11 +21,11 @@ const time = (iso: string) => iso.replace("T", " ").replace("Z", " UTC");
 
 function Coverage({ c }: { c: Context }) {
   return (
-    <section className="flex flex-col gap-1 text-sm">
-      <h2 className="font-semibold">What this is based on</h2>
+    <section className="card text-sm leading-relaxed">
+      <h2 className="h2">What this is based on</h2>
       <p>
         Payments into your split contract{" "}
-        <a className="break-all font-mono underline" href={explorerLink("contract", c.splitContract)}>
+        <a className="link addr" href={explorerLink("contract", c.splitContract)}>
           {c.splitContract}
         </a>
         , read from Stellar testnet.
@@ -44,31 +44,31 @@ function Coverage({ c }: { c: Context }) {
 
 function Money({ e }: { e: Estimate }) {
   return (
-    <div className="flex flex-col gap-6 text-sm">
-      <section className="flex flex-col gap-1">
-        <h2 className="font-semibold">Your {e.taxYear} estimate</h2>
-        <p className="text-2xl font-semibold">{naira(e.totalTaxNgn)}</p>
-        <p>
+    <div className="flex flex-col gap-5 text-sm">
+      <section className="card card-hero gap-2 bg-none bg-[var(--c-brown)]">
+        <h2 className="h3 opacity-80">Your {e.taxYear} estimate</h2>
+        <p className="money-xl num break-words">{naira(e.totalTaxNgn)}</p>
+        <p className="opacity-90 leading-relaxed">
           Estimated tax on {naira(e.taxableIncomeNgn)} taxable income ({naira(e.grossIncomeNgn)} income). Effective rate {e.effectiveRate}. {NOT_ADVICE}
         </p>
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="font-semibold">Income, payment by payment</h2>
+      <section className="list">
+        <h2 className="h2 mb-1">Income, payment by payment</h2>
         {e.incomeLines.length === 0 && <p>No income payments in {e.taxYear} were found in the history window.</p>}
         {e.incomeLines.map((l) => (
-          <div key={l.entryId} className="flex flex-col gap-1 rounded-md border p-3">
-            <p>
+          <div key={l.entryId} className="item kv gap-0 py-1.5">
+            <p className="kv-row num text-base">
               {group(l.amount)} {l.asset} = <strong>{naira(l.ngnValue)}</strong>
             </p>
-            <p>
+            <p className="kv-row muted text-sm">
               Rate: {group(l.ngnPerUnit)} naira per US dollar ({l.ratePair}), {l.rateProvider}, dated {l.rateDate}.{" "}
-              <a className="underline" href={l.rateSourceUrl}>
+              <a className="link shrink-0" href={l.rateSourceUrl}>
                 Rate source
               </a>
             </p>
-            <p>
-              <a className="underline" href={explorerLink("tx", l.txHash)}>
+            <p className="kv-row block muted text-sm">
+              <a className="link" href={explorerLink("tx", l.txHash)}>
                 Transaction
               </a>
               . Rule {l.ruleId}. Valuation basis: {l.valuationBasis}. Notes: {l.assumptionIds.join(", ") || "none"}.
@@ -76,54 +76,54 @@ function Money({ e }: { e: Estimate }) {
           </div>
         ))}
         {e.declaredIncomeLines.map((l, i) => (
-          <div key={i} className="rounded-md border p-3">
-            <p>
+          <div key={i} className="item card-sunken shadow-none">
+            <p className="num">
               {l.label}: <strong>{naira(l.amountNgn)}</strong> ({l.source}, not checked on chain)
             </p>
           </div>
         ))}
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="font-semibold">How the tax is worked out</h2>
+      <section className="card kv gap-0">
+        <h2 className="h2 mb-1">How the tax is worked out</h2>
         {e.reliefs.map((r) => (
-          <p key={r.ruleId}>
+          <p key={r.ruleId} className="kv-row num text-sm">
             Relief, {r.label}: {naira(r.amountNgn)} (rule {r.ruleId})
           </p>
         ))}
         {e.reliefs.length === 0 && <p>No reliefs applied.</p>}
         {e.bands.map((b) => (
-          <p key={b.ruleId}>
+          <p key={b.ruleId} className="kv-row num text-sm">
             {naira(b.from)} to {b.to === null ? "no limit" : naira(b.to)} at {b.rate}: {naira(b.taxableInBand)} taxed, {naira(b.taxInBand)} tax (rule {b.ruleId})
           </p>
         ))}
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="font-semibold">Notes and assumptions</h2>
-        <ul className="flex list-disc flex-col gap-1 pl-5">
+      <section className="card">
+        <h2 className="h2">Notes and assumptions</h2>
+        <ul className="flex list-disc flex-col gap-2 pl-5 leading-relaxed">
           {e.informational.map((n) => (
             <li key={n.id}>
-              {n.message} <span className="opacity-70">({n.id})</span>
+              {n.message} <span className="muted font-mono text-xs">({n.id})</span>
             </li>
           ))}
         </ul>
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="font-semibold">Sources</h2>
-        <ul className="flex list-disc flex-col gap-1 pl-5">
+      <section className="card">
+        <h2 className="h2">Sources</h2>
+        <ul className="flex list-disc flex-col gap-2 pl-5 leading-relaxed">
           {e.sources.map((s) => (
             <li key={s.ruleId}>
               {s.ruleId}: {s.citation}.{" "}
-              <a className="break-all underline" href={s.url}>
+              <a className="link break-all" href={s.url}>
                 {s.url}
               </a>{" "}
               (confidence: {s.confidence})
             </li>
           ))}
         </ul>
-        <p>
+        <p className="notice">
           Most of these figures come from secondary sources (summaries by accounting and law firms), not the gazetted law. Check them before relying on them.
         </p>
       </section>
@@ -133,8 +133,8 @@ function Money({ e }: { e: Estimate }) {
 
 export function ResultView({ outcome }: { outcome: TaxOutcome }) {
   return (
-    <div className="flex flex-col gap-6">
-      <p className="rounded-md border px-3 py-2 text-sm font-semibold">{NOT_ADVICE}</p>
+    <div className="flex flex-col gap-5">
+      <p className="notice notice-strong">{NOT_ADVICE}</p>
       {outcome.status === "ok" && (
         <>
           <Money e={outcome.estimate} />
@@ -143,10 +143,10 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
       )}
       {outcome.status === "refused" && (
         <>
-          <section className="flex flex-col gap-2 text-sm">
-            <h2 className="font-semibold">No estimate: Caracal refused to guess</h2>
+          <section className="card text-sm leading-relaxed">
+            <h2 className="h2">No estimate: Caracal refused to guess</h2>
             <p>The estimate was not made, because a number built on missing or unproven data could lead to a wrong decision. Reasons:</p>
-            <ul className="flex list-disc flex-col gap-1 pl-5">
+            <ul className="flex list-disc flex-col gap-2 pl-5">
               {outcome.reasons.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
@@ -156,16 +156,16 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
         </>
       )}
       {outcome.status === "unavailable" && (
-        <section className="flex flex-col gap-2 text-sm">
-          <h2 className="font-semibold">No estimate</h2>
+        <section className="msg msg-bad flex flex-col gap-1">
+          <h2 className="h3">No estimate</h2>
           <p>{outcome.message}</p>
         </section>
       )}
       {outcome.status === "no-contract" && (
-        <section className="flex flex-col gap-2 text-sm">
-          <h2 className="font-semibold">No estimate</h2>
+        <section className="msg msg-info flex flex-col gap-2">
+          <h2 className="h3">No estimate</h2>
           <p>{outcome.message}</p>
-          <p className="break-all font-mono">{outcome.splitContract}</p>
+          <p className="addr addr-box bg-[var(--c-card)]">{outcome.splitContract}</p>
         </section>
       )}
     </div>
