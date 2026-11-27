@@ -1,3 +1,4 @@
+import { rpc } from "@stellar/stellar-sdk";
 // The two steps of a cash-out that need the wallet, with their dependencies
 // passed in so they are tested without a browser, a passkey or a network.
 
@@ -75,6 +76,15 @@ export type SendDeps = {
   signAndSubmit(tx: unknown): Promise<{ success: true; hash: string } | { success: false; hash?: string; error: { code?: number; message: string } }>;
 };
 
+const EXPIRED_STATE =
+  "Data this payment needs on Stellar testnet (your wallet or its USDC balance) has expired and must be restored before it can pay. Caracal cannot restore it yet, so nothing was sent, and trying again will not help.";
+
+/** Whether a built transaction's simulation asks for a restore first. */
+function needsRestore(tx: unknown): boolean {
+  const sim = (tx as { simulation?: unknown } | null)?.simulation;
+  return typeof sim === "object" && sim !== null && rpc.Api.isSimulationRestore(sim as rpc.Api.SimulateTransactionResponse);
+}
+
 /** Send exactly the amount the person confirmed, once, to the anchor's account. */
 export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: SendDeps): Promise<SendResult> {
   let payment: AnchorPayment;
@@ -89,6 +99,9 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
   } catch (e) {
     return { kind: "not-sent", message: e instanceof AnchorError ? e.message : "Caracal could not prepare the USDC payment. Nothing was sent. Try again." };
   }
+  // Data the payment needs (the wallet, or its USDC balance entry) has expired: the simulation asks for a restore,
+  // which the kit refuses before sending and the relay does not pay for yet, so retrying cannot help (adversary c17).
+  if (needsRestore(tx)) return { kind: "not-sent", message: EXPIRED_STATE };
   let r: Awaited<ReturnType<SendDeps["signAndSubmit"]>>;
   try {
     r = await within(deps.signAndSubmit(tx), SEND_TIMEOUT_MS);
