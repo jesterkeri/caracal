@@ -152,7 +152,12 @@ export type WriteOutcome =
   // The answer was lost or unclear. It may have landed.
   | { kind: "unknown"; message: string; hash?: string };
 
-const NOT_SENT_CODES = new Set([2001, 4001, 4002, 4003, 4004, 5001, 10000]);
+/**
+ * Kit codes that prove nothing left: 5002 is what smart-account-kit 0.10.0's signAndSubmit returns for any
+ * failure before it sends (a closed passkey prompt, a re-simulation that fails, an expired contract);
+ * failures of the send itself reach here as 5003 or 5004, or as a throw.
+ */
+const NOT_SENT_CODES = new Set([2001, 4001, 4002, 4003, 4004, 5001, 5002, 10000]);
 
 type Submitter = Pick<SmartAccountKit, "signAndSubmit" | "rpc">;
 

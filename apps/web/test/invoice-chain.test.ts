@@ -139,7 +139,8 @@ describe("telling a write's answer apart", () => {
   });
   it("a timeout, a lost answer or an unclear signing error is unknown: it may have landed", async () => {
     expect((await payInvoice(kitAnswering(fail("Transaction confirmation timed out", 5003, "c".repeat(64))), SPLIT, WALLET, BigInt(5), REF)).kind).toBe("unknown");
-    expect((await payInvoice(kitAnswering(fail("Relayer request failed with status 504", 5002)), SPLIT, WALLET, BigInt(5), REF)).kind).toBe("unknown");
+    // Fixture fix (2026-11-27, adversary i3): the real kit reports a relayer failure from its send step as 5003; 5002 comes only from before sending.
+    expect((await payInvoice(kitAnswering(fail("Relayer request failed with status 504", 5003)), SPLIT, WALLET, BigInt(5), REF)).kind).toBe("unknown");
     const throwing = { rpc: {}, signAndSubmit: vi.fn(async () => Promise.reject(new Error("socket hang up"))) } as never;
     vi.spyOn(contract.AssembledTransaction, "build").mockResolvedValue({} as never);
     expect((await payInvoice(throwing, SPLIT, WALLET, BigInt(5), REF)).kind).toBe("unknown");
