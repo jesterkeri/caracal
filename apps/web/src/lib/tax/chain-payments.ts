@@ -48,17 +48,19 @@ export type ChainReader = {
   instance(contract: string): Promise<InstanceCode>;
   events(contract: string, from: { startLedger: number } | { cursor: string }, limit: number): Promise<EventsPage>;
   /**
-   * The events recorded after a cursor the scan ended on, read again after the holdings: any event here that the
-   * scan did not see means a payment arrived while the read ran. Also says the newest ledger now.
+   * The events recorded after a cursor the scan ended on, read again after the scan: any event here that the
+   * scan did not see means a payment arrived while the read ran. Its newest ledger is the ledger the estimate covers.
    */
   eventsAfter(contract: string, cursor: string, limit: number): Promise<EventsPage>;
   transaction(hash: string): Promise<{ status: string; ledger: number; createdAt: string }>;
   /**
    * What the split contract holds of the token, and the sum of its three pots
-   * (tax, goal, spend), both read now. Always checked: USDC held above the
-   * pots arrived without a recorded payment.
+   * (tax, goal, spend), both read now, after the covered ledger is fixed, so
+   * USDC sent straight to the contract up to that ledger is in `held`. Always
+   * checked: USDC held above the pots arrived without a recorded payment.
+   * `ledger`: the oldest ledger the two reads were made at, when the RPC's answers name it.
    */
-  holdings(contract: string, token: string): Promise<{ held: bigint; pots: bigint }>;
+  holdings(contract: string, token: string): Promise<{ held: bigint; pots: bigint; ledger?: number }>;
 };
 
 /** One payment into the split contract, as it recorded it. */
@@ -253,11 +255,13 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     throw new ChainReadError("The split contract at this wallet's address does not run Caracal's split code, so its payments cannot be trusted.");
   }
 
-  // The estimate states one ledger it covers. A payment can land after the events were read and before (or
-  // while) the holdings are read, and the holdings check alone cannot see it. So after the holdings are read
-  // the events are asked for again from where the scan ended: only when nothing new arrived is the scan a
-  // stable boundary (the events and the holdings agree up to that ledger). Otherwise the whole read is
-  // repeated, a bounded number of times, and then refused.
+  // The estimate states one ledger it covers. A payment can land after the events were read, so the events
+  // are asked for again from where the scan ended: only when nothing new arrived is the scan a stable boundary,
+  // and the RPC's newest ledger then is the covered ledger. Otherwise the whole read is repeated, a bounded
+  // number of times, and then refused. USDC sent straight to the contract records no event, so the holdings
+  // are read only after that ledger is fixed (adversary t8), at that ledger or later: then the events and the
+  // holdings agree up to it. The events are read once more after the holdings, so a payment recorded while
+  // they were read is in the result, not left out (Codex tax R1 #3).
   let attempt = 0;
   let health = first;
   for (;;) {
@@ -268,20 +272,32 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
     const scanned = await scanEvents(chain, want, health);
     const decoded = decodeScan(scanned, want, health.oldestLedger);
+    const tail = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
+    checkRetention(tail);
+    if (tail.latestLedger < scanned.last.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
+    const seenIds = new Set(scanned.events.map((e) => e.id));
+    const kept = () => {
+      if (attempt >= MAX_ATTEMPTS) throw new ChainReadError("New events kept arriving in the split contract while Caracal was reading it, so it could not fix the ledger the estimate covers. Try again.");
+    };
+    if (tail.events.some((e) => !seenIds.has(e.id))) {
+      kept();
+      continue;
+    }
     // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
-    const { held, pots } = await chain.holdings(want.contract, want.token);
+    const { held, pots, ledger } = await chain.holdings(want.contract, want.token);
+    if (ledger !== undefined && ledger < tail.latestLedger) {
+      throw new ChainReadError("The Stellar RPC read the split contract's USDC at an older ledger than its payments, so Caracal cannot tell whether they agree. Try again.");
+    }
     if (held > pots) {
       throw new ChainReadError(
         "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
       );
     }
-    const tail = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
-    checkRetention(tail);
-    if (tail.latestLedger < scanned.last.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
-    const seenIds = new Set(scanned.events.map((e) => e.id));
-    const arrived = tail.events.some((e) => !seenIds.has(e.id));
-    if (arrived) {
-      if (attempt >= MAX_ATTEMPTS) throw new ChainReadError("New events kept arriving in the split contract while Caracal was reading it, so it could not fix the ledger the estimate covers. Try again.");
+    const after = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
+    checkRetention(after);
+    if (after.latestLedger < tail.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
+    if (after.events.some((e) => !seenIds.has(e.id))) {
+      kept();
       continue;
     }
     return finish(chain, want, health, decoded, { toLedger: tail.latestLedger, to: isoFromUnix(tail.latestLedgerCloseTime) });
@@ -426,7 +442,7 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
   };
 
   /** A read-only contract call, simulated. The source account is a placeholder: a simulation does not need it to exist. */
-  async function simulateRead(contract: string, fn: string, args: xdr.ScVal[]): Promise<unknown> {
+  async function simulateRead(contract: string, fn: string, args: xdr.ScVal[]): Promise<{ value: unknown; ledger: number | undefined }> {
     const source = new Account(StrKey.encodeEd25519PublicKey(Buffer.alloc(32)), "0");
     const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: passphrase }).addOperation(new Contract(contract).call(fn, ...args)).setTimeout(30).build();
     const r = await call("simulateTransaction", { transaction: tx.toXDR() });
@@ -434,8 +450,11 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
     if (r.error !== undefined || !Array.isArray(results) || results.length !== 1) throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
     const out = (results[0] as { xdr?: unknown } | null)?.xdr;
     if (typeof out !== "string") throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
+    // The ledger it was read at (a simulation answer names it): the caller checks it is not older than the
+    // ledger the estimate covers. An answer without one cannot be checked that way and is taken as read now.
+    const ledger = typeof r.latestLedger === "number" && Number.isSafeInteger(r.latestLedger) ? r.latestLedger : undefined;
     try {
-      return scValToNative(xdr.ScVal.fromXDR(out, "base64"));
+      return { value: scValToNative(xdr.ScVal.fromXDR(out, "base64")), ledger };
     } catch {
       throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
     }
@@ -453,12 +472,15 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
 
   return {
     async holdings(contract, token) {
-      const held = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
-      const pots = await simulateRead(contract, "balances", []);
+      const a = await simulateRead(token, "balance", [Address.fromString(contract).toScVal()]);
+      const b = await simulateRead(contract, "balances", []);
+      const held = a.value;
+      const pots = b.value;
       if (typeof held !== "bigint" || !Array.isArray(pots) || pots.length !== 3 || !pots.every((x) => typeof x === "bigint")) {
         throw new ChainReadError("The Stellar RPC sent the split contract's USDC in a form Caracal cannot read.");
       }
-      return { held, pots: (pots as bigint[]).reduce((a, b) => a + b, BigInt(0)) };
+      const ledger = a.ledger === undefined || b.ledger === undefined ? undefined : Math.min(a.ledger, b.ledger);
+      return { held, pots: (pots as bigint[]).reduce((x, y) => x + y, BigInt(0)), ledger };
     },
 
     async health() {
