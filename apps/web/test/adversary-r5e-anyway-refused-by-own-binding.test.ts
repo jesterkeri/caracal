@@ -55,7 +55,7 @@ afterEach(() => {
 const A = { id: "A", email: "a@x.ng" };
 // A valid contract strkey (the repo's WALLET fixture): this account's first wallet.
 const W1 = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
-type S = { kind: string; message?: string; createAllowed?: boolean; checkFirst?: boolean; remembered?: string };
+type S = { kind: string; message?: string; createAllowed?: boolean; checkFirst?: boolean; remembered?: string; knownWallet?: boolean };
 
 /** One browser: a localStorage that lives across re-renders, and a kit whose Create attempts are counted. */
 function browser(local: Map<string, string>) {
