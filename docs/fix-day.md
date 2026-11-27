@@ -28,6 +28,7 @@ when they are found, not saved for this day.
 | Day 1 adversary r4r (suspicion) | `apps/web/src/app/wallet/page.tsx` (`storageBlocked`) | smart-account-kit's IndexedDB storage can fail with "Failed to get session: ..." or "Failed to save session: ..." without naming IndexedDB, so blocked storage may be shown as "check your connection" | Not proven |
 | Day 1 adversary r4r (suspicion) | `apps/web/src/app/wallet/page.tsx` (`connect`, `create`) | `getKit()` has no time limit there, so a stalled first load of the kit leaves the busy label until Sign out or a reload (close to the r4l suspicion) | Not proven |
 | Day 1 adversary r4r (suspicion) | `apps/web/src/app/wallet/page.tsx` | A new account that presses "I already have a wallet" and finds none loses Create until a reload (deliberate since r4i), and nothing on screen says to reload | Not proven; a copy question |
+| Day 1 adversary r5a (suspicion) | `apps/web/src/app/wallet/page.tsx` | A sign-in as another account completed in another tab by the server callback (cookies) may fire no auth event in this tab, which keeps showing the earlier account's wallet until a reload (binding re-checks the account first) | Not proven; check in a real browser |
 
 Promoted out of this list by Codex R5 and fixed on 27 Nov (decisions rows of that date): the r4h hint after signing in again, the r4l relay queue deadline, and the r4q "no wallet" judged on the ledger endpoint alone.
 

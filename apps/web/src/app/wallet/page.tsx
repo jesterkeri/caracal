@@ -109,7 +109,7 @@ const CREATION_TOO_RECENT =
 const CREATION_IN_PROGRESS =
   "An earlier wallet creation for this account could not be confirmed.";
 const CREATION_UNDER_WAY =
-  "A wallet creation is already under way in another tab of this browser. Wait for it to finish, then reload this page.";
+  "A wallet creation is already under way in another tab of this browser, or in this one. Wait for it to finish, then reload this page.";
 const LOCKS_UNSUPPORTED =
   "This browser cannot make sure that only one tab creates your wallet. Use a current version of Chrome, Edge, Safari or Firefox to create it.";
 
@@ -267,11 +267,12 @@ export default function WalletPage() {
    * Creates a wallet, holding this browser's creation lock throughout, so no
    * other tab can start one until this attempt's outcome is recorded.
    * anyway: the person chose to start a new wallet after an unknown outcome.
+   * secondTo: the person chose a second wallet, having been shown this one.
    */
-  async function create(anyway = false) {
+  async function create(choice: { anyway?: boolean; secondTo?: string } = {}) {
     if (!account) return; // a wallet is always bound to its signed-in owner
     const me = account;
-    const out = await withCreationLock(browserLocks(), () => createHoldingLock(me, anyway));
+    const out = await withCreationLock(browserLocks(), () => createHoldingLock(me, choice));
     if (out.ran) return;
     setState(
       out.why === "busy"
@@ -280,7 +281,7 @@ export default function WalletPage() {
     );
   }
 
-  async function createHoldingLock(me: Account, anyway: boolean) {
+  async function createHoldingLock(me: Account, { anyway = false, secondTo }: { anyway?: boolean; secondTo?: string }) {
     if (anyway) {
       // Only once the last attempt cannot still finish (creation-marker.ts).
       if (creationAge() < CREATION_SETTLE_MS) {
@@ -302,7 +303,12 @@ export default function WalletPage() {
     } catch {
       // storage blocked: nothing can have been recorded by another tab either
     }
-    if (recordedOwner === me.id) {
+    // The person who chose a second wallet, shown this account's wallet, has
+    // a binding left from it (after Disconnect, or an expired session): that
+    // is the wallet they were shown, not one made elsewhere since, unless the
+    // remembered wallet changed meanwhile.
+    const chosenSecond = secondTo !== undefined && rememberedWallet(browserStore, me.id) === secondTo;
+    if (recordedOwner === me.id && !chosenSecond) {
       setState({ kind: "error", message: WALLET_RECORDED_ELSEWHERE });
       return;
     }
@@ -331,6 +337,10 @@ export default function WalletPage() {
     // While the attempt runs, its start time is renewed, so if this tab
     // closes mid-attempt the wait counts from its last sign of life.
     const beat = setInterval(() => markCreation(me.id, true), CREATION_HEARTBEAT_MS);
+    // A background tab's timers can be slowed to once a minute, so closing or
+    // leaving the page renews the start time too.
+    const leaving = () => markCreation(me.id, true);
+    window.addEventListener?.("pagehide", leaving);
     let r: Awaited<ReturnType<typeof kit.createWallet>>;
     try {
       r = await kit.createWallet("Caracal", passkeyName(name), { autoSubmit: true });
@@ -342,6 +352,7 @@ export default function WalletPage() {
       return;
     } finally {
       clearInterval(beat);
+      window.removeEventListener?.("pagehide", leaving);
       stop?.();
     }
     if (r.submitResult && !r.submitResult.success) {
@@ -369,7 +380,7 @@ export default function WalletPage() {
 
   /** After an unknown outcome, the person checked with Connect and found no wallet. */
   function createAnyway() {
-    return create(true);
+    return create({ anyway: true });
   }
 
   async function connect() {
@@ -415,7 +426,8 @@ export default function WalletPage() {
         kind: "error",
         message,
         checkFirst: !proven && creationUnconfirmedFor(account.id),
-        remembered: rememberedWallet(browserStore, account.id) ?? undefined,
+        // Not where a wallet is proven to exist: no second wallet is offered there.
+        remembered: proven ? undefined : (rememberedWallet(browserStore, account.id) ?? undefined),
       });
     }
   }
@@ -492,7 +504,7 @@ export default function WalletPage() {
                 This browser was last connected to your wallet <span className="break-all font-mono">{state.remembered}</span>. Use &quot;I
                 already have a wallet&quot; to open it with your passkey.
               </p>
-              <button className="text-left underline" onClick={() => create()}>
+              <button className="text-left underline" onClick={() => create({ secondTo: state.remembered })}>
                 Make a second, new wallet instead (your first wallet stays as it is)
               </button>
             </div>
