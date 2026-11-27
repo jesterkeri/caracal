@@ -42,6 +42,13 @@ const EMPTY_FORM: Form = { deployTax: "", deployGoal: "", wdPot: "Spend", wdAmou
 
 type Note = { busy?: string; said?: Said };
 
+// Reads and writes are ordered by these, not by render state (which a click can
+// outrun). Each read takes a number; a write takes one when it starts. A read
+// that finishes after a newer read or write began is dropped, so an older,
+// slower read never puts earlier pots on screen or clears a write's note.
+let readSeq = 0;
+let writing = false;
+
 export default function SplitPage() {
   const [view, setView] = useState<View>({ kind: "checking" });
   const [form, setForm] = useState<Form>(EMPTY_FORM);
@@ -97,31 +104,43 @@ export default function SplitPage() {
 
   /** Re-reads the contract from the network, keeping what was last said. */
   async function reread(wallet: string, said?: Said) {
+    // A Refresh while a write runs would race it; the write reads afterwards itself.
+    if (writing && said === undefined) return;
+    const mine = ++readSeq;
     try {
       const kit = await getKit();
       const loaded = await loadSplit(kit.rpc as unknown as LedgerReader & SimulatingRpc, wallet);
+      if (mine !== readSeq) return;
       setView({ kind: "ready", wallet, loaded });
       setNote({ said });
     } catch (e) {
+      if (mine !== readSeq) return;
       setNote({ said: { tone: "bad", text: `Caracal could not read the network: ${e instanceof Error ? e.message : String(e)}` } });
     }
   }
 
   /** One write: passkey, fee relay, then the chain read again (unless the outcome proves nothing changed). */
   async function run(what: string, send: (kit: WriteKit) => Promise<SendOutcome>) {
-    if (view.kind !== "ready" || note.busy) return;
+    if (view.kind !== "ready" || note.busy || writing) return;
     const wallet = view.wallet;
-    setNote({ busy: "Waiting for your passkey" });
-    let outcome: SendOutcome;
+    writing = true;
+    // Any read already under way began before this write: it is dropped.
+    readSeq++;
     try {
-      outcome = await send((await getKit()) as unknown as WriteKit);
-    } catch (e) {
-      outcome = { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
+      setNote({ busy: "Waiting for your passkey" });
+      let outcome: SendOutcome;
+      try {
+        outcome = await send((await getKit()) as unknown as WriteKit);
+      } catch (e) {
+        outcome = { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
+      }
+      const said = say(outcome, what);
+      if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
+      setNote({ busy: "Reading the result from the network", said });
+      await reread(wallet, said);
+    } finally {
+      writing = false;
     }
-    const said = say(outcome, what);
-    if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
-    setNote({ busy: "Reading the result from the network", said });
-    await reread(wallet, said);
   }
 
   function deploy() {

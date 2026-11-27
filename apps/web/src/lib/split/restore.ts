@@ -22,6 +22,18 @@ export type Restored =
 /** The part of the passkey kit used to restore. */
 export type RestoringKit = { disconnect(): Promise<void>; connectWallet(): Promise<{ contractId: string } | null> };
 
+/** Longest wait for loading the wallet kit, and for restoring the saved wallet: the wallet page's limit (decisions 2026-11-26, r4e). */
+export const RESTORE_TIMEOUT_MS = 30_000;
+
+/** `p`, or a rejection once the limit has passed: a restore that never answers ends in "failed", not endless checking. */
+function within<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${RESTORE_TIMEOUT_MS / 1000} s`)), RESTORE_TIMEOUT_MS);
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 export async function restoreWallet(deps: {
   auth: AccountAuth;
   getKit: () => Promise<RestoringKit>;
@@ -38,11 +50,11 @@ export async function restoreWallet(deps: {
   const account: Account = { id: now.id, email: now.email };
   deps.onAccount?.(account);
   try {
-    const kit = await deps.getKit();
+    const kit = await within(deps.getKit(), "Loading the wallet kit");
     if (deps.stale()) return null;
     if (!(await mayRestoreWallet(deps.store, kit, account.id))) return { kind: "no-wallet", account };
     if (deps.stale()) return null;
-    const r = await kit.connectWallet();
+    const r = await within(kit.connectWallet(), "Restoring your saved wallet");
     if (deps.stale()) return null;
     return r ? { kind: "wallet", account, wallet: r.contractId } : { kind: "no-wallet", account };
   } catch (error) {
