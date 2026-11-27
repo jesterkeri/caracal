@@ -11,7 +11,12 @@ import { sendSplitCall, type BuildTx, type SendOutcome, type WriteKit } from "./
 import type { LedgerReader } from "../stellar/wallet-lookup";
 
 export type Loaded =
-  /** The wallet's split contract does not exist yet: it can be deployed. */
+  /**
+   * The network returned no split contract at the wallet's split address: none
+   * was deployed, or (Codex R6 #2) one whose data expired and that the RPC does
+   * not return. Deploying is offered: in the second case the network refuses a
+   * deployment at an address that is taken, so nothing is made or sent.
+   */
   | { kind: "absent"; split: string }
   /** It exists and was read. */
   | { kind: "present"; split: string; pots: Pots; config: SplitConfig }
@@ -30,7 +35,7 @@ const stopped = (message: string): SendOutcome => ({ kind: "stopped", message })
 export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefined, wallet: string): Promise<Loaded> {
   const split = splitAddressFor(wallet);
   const { status } = await splitStatus(server, wallet);
-  if (status === "absent") return { kind: "absent", split };
+  if (status === "not-found") return { kind: "absent", split };
   if (status === "archived") return { kind: "archived", split };
   if (status === "unknown" || !server) return { kind: "error", split, message: "Caracal could not reach the Stellar network to look for your split contract. Check your connection and try again." };
   try {

@@ -217,7 +217,8 @@ export default function SplitPage() {
         <section className="flex flex-col gap-3 text-sm">
           <h2 className="text-lg font-semibold">Set up your split</h2>
           <p>
-            You have no split contract yet. Choose how each payment is divided. Spend is always what is left, so rounding is never lost. You can change this later.
+            No split contract was found for your wallet on Stellar testnet. Choose how each payment is divided. Spend is always what is left, so rounding is never lost. You can change this later.
+            If you deployed one before and its data has expired, the deployment is stopped before it is sent, so nothing is made twice.
           </p>
           <label className="flex flex-col gap-1">
             Tax pot, percent of each payment
