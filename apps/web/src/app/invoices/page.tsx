@@ -7,6 +7,8 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
 import { HTTPS_RPC_REQUIRED, getKit } from "@/lib/stellar/kit";
 import { splitAddressFor } from "@/lib/stellar/split-address";
+import { NETWORK } from "@/lib/stellar/config";
+import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc, parseUsdc } from "@/lib/invoices/amount";
 import { bounded, cancelInvoice, createInvoice, isCaracalSplit, readConfig, type WriteOutcome } from "@/lib/invoices/chain";
 import { checkDetails, deleteDetails, listDetails, saveDetails, type Db } from "@/lib/invoices/details";
@@ -19,7 +21,7 @@ type ShownRow = Row & { stillOpening?: boolean };
 type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; signOut?: boolean }
   | { kind: "no-wallet" }
   | { kind: "no-split"; split: string }
   | ({ kind: "ready" } & Ready);
@@ -85,6 +87,36 @@ const ACCOUNT_CHANGED = "The signed-in account changed in another tab, so nothin
 /** Longest wait for loading the wallet kit and restoring the saved wallet: the wallet page's limit (decisions 2026-11-26, r4e). */
 const RESTORE_TIMEOUT_MS = 30_000;
 
+const SIGN_IN_UNCHECKED = "Caracal could not verify your sign-in. Check your connection and reload the page, or sign out and sign in again.";
+
+/**
+ * Why the saved wallet could not be restored, in true words (decisions r4p, r4q). smart-account-kit 0.10.0
+ * says "not found on-chain" for any failed lookup, a network failure included, so the wallet's contract is
+ * looked up on the network itself, as the wallet page does. An answer with no entry does not prove the wallet
+ * is gone (an RPC may leave out archived data). Null for an error that is not the kit's lookup failure.
+ */
+async function restoreFailure(e: unknown, rpc: unknown): Promise<{ message: string; signOut?: boolean } | null> {
+  const credential = credentialInKitError(e);
+  if (!credential) return null;
+  let contractId: string;
+  try {
+    contractId = walletAddressFor(credential, NETWORK.passphrase);
+  } catch {
+    contractId = "";
+  }
+  const status = contractId ? await walletStatus(rpc as LedgerReader | undefined, contractId) : "unknown";
+  if (status === "not-found") {
+    return {
+      message:
+        "Your saved wallet was not found on Stellar testnet. That does not prove it is gone: if you created it in the last few minutes the network may not show it yet, so wait a minute and reload; its data may also have expired, which the network does not always show. If the test network was reset, sign out and sign in again, then set up your wallet on the Wallet page.",
+      signOut: true,
+    };
+  }
+  if (status === "archived") return { message: "Your wallet exists on Stellar testnet, but its data has expired and must be restored before it can be used. Caracal cannot restore it yet. Do not create another wallet." };
+  if (status === "present") return { message: "Your wallet exists on Stellar testnet, but Caracal could not load it just now. Reload the page in a moment." };
+  return { message: "Caracal could not reach the Stellar network to load your saved wallet. Check your connection and reload the page." };
+}
+
 /** What a person is told about a write that did not finish cleanly. */
 function outcomeText(o: Exclude<WriteOutcome, { kind: "done" }>, what: string): string {
   if (o.kind === "not-sent") return `${what} did not go through. ${o.message}`;
@@ -123,15 +155,17 @@ export default function InvoicesPage() {
   useEffect(() => {
     let gone = false;
     let unfollow = () => {};
+    let loadedKit: { rpc?: unknown } | undefined;
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
       const me = await readSignInState(auth);
       if (me.kind === "signed-out") return window.location.replace("/signin");
-      if (me.kind === "unverified") throw new Error("Caracal could not verify your sign-in. Check your connection and reload the page.");
+      if (me.kind === "unverified") return setLoad({ kind: "error", message: SIGN_IN_UNCHECKED, signOut: true });
       if (gone) return;
       unfollow = followAccount(auth, me.id, accountChanged);
       const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
+      loadedKit = kit;
       // Only a wallet this account connected on this browser is used (the same rule as the wallet page).
       const wallet = (await mayRestoreWallet(browserStore, kit, me.id)) ? await bounded(kit.connectWallet(), "Restoring your saved wallet", RESTORE_TIMEOUT_MS) : null;
       if (gone) return;
@@ -144,9 +178,12 @@ export default function InvoicesPage() {
         throw new Error("The contract at your split address is not a Caracal split owned by your wallet, so Caracal will not use it.");
       }
       await refresh(me.id, wallet.contractId, split);
-    })().catch((e: unknown) => {
+    })().catch(async (e: unknown) => {
       console.error("invoices page:", e instanceof Error ? e.message : String(e));
       if (gone) return;
+      const failure = await restoreFailure(e, loadedKit?.rpc);
+      if (gone) return;
+      if (failure) return setLoad({ kind: "error", message: `Caracal could not load your invoices. ${failure.message}`, signOut: failure.signOut });
       const text = e instanceof Error ? e.message : String(e);
       setLoad({ kind: "error", message: text === HTTPS_RPC_REQUIRED ? text : `Caracal could not load your invoices. ${text}` });
     });
@@ -264,7 +301,16 @@ export default function InvoicesPage() {
     <main className="mx-auto flex min-h-dvh w-full max-w-xl flex-col gap-6 px-4 py-10">
       <h1 className="text-2xl font-semibold">Invoices</h1>
       {load.kind === "loading" && <p className="text-sm">Loading your invoices.</p>}
-      {load.kind === "error" && <p className="text-sm text-red-600">{load.message}</p>}
+      {load.kind === "error" && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-red-600">{load.message}</p>
+          {load.signOut && (
+            <a className="text-sm underline" href="/signin">
+              Sign out on the sign-in page
+            </a>
+          )}
+        </div>
+      )}
       {load.kind === "no-wallet" && (
         <p className="text-sm">
           Invoices are opened from your Caracal wallet. <a className="underline" href="/wallet">Create or connect your wallet</a> first.
