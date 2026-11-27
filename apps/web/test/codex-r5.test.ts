@@ -390,3 +390,39 @@ describe("Codex R5 #4: 'no wallet' only when the network says that contract is a
     }
   });
 });
+
+describe("adversary r5b follow-up: only the attempt's own wallet confirms it", () => {
+  const W2 = "CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M";
+  it("the marker keeps the attempt's wallet through renewals, and drops it when cleared", async () => {
+    const { creationMarker } = await import("../src/lib/auth/creation-marker");
+    const local = new Map<string, string>();
+    const store = { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => void local.set(k, v), removeItem: (k: string) => void local.delete(k) };
+    const m = creationMarker(store);
+    m.markCreation("A", true, W2);
+    m.markCreation("A", true); // a heartbeat
+    expect(m.pendingWalletFor("A")).toBe(W2);
+    m.markCreation("A", false);
+    expect(m.pendingWalletFor("A")).toBeNull();
+    expect(local.has("caracal.creationPendingWallet")).toBe(false);
+  });
+  it("connecting the attempt's own wallet confirms it and clears the note", async () => {
+    const b = browser(() => null);
+    b.local.set(MARK, "A");
+    b.local.set("caracal.creationPendingWallet", JSON.stringify({ A: W2 }));
+    b.kit.connectWallet = async () => ({ contractId: W2, credentialId: "x" });
+    const page = await render(b, A, [{ kind: "idle", knownWallet: true, checkFirst: true }, "", A]);
+    await click(page.tree, "I already have a wallet")!();
+    await settle();
+    expect(b.local.has(MARK)).toBe(false);
+  });
+  it("connecting an older wallet keeps the note", async () => {
+    const b = browser(() => null);
+    b.local.set(MARK, "A");
+    b.local.set("caracal.creationPendingWallet", JSON.stringify({ A: W2 }));
+    b.kit.connectWallet = async () => ({ contractId: WALLET_A, credentialId: "x" });
+    const page = await render(b, A, [{ kind: "idle", knownWallet: true, checkFirst: true }, "", A]);
+    await click(page.tree, "I already have a wallet")!();
+    await settle();
+    expect(b.local.get(MARK)).toBe("A");
+  });
+});

@@ -11,6 +11,8 @@ import { rpcContractLookup } from "../src/lib/relay/wasm-lookup";
 import { SMART_ACCOUNT, SPLIT, TOKENS } from "../src/lib/stellar/config";
 import { OLD_SPLIT_ID, SPLIT_ID, WALLET, splitStorage, transferArgs } from "./relay-fixtures";
 import { simulated } from "./setup-relay-server";
+// Wording change (2026-11-27, adversary i2): every relay refusal made before sending now says "Nothing was sent", calls included; status and cause are unchanged.
+import { refusalText } from "../src/lib/relay/refusal";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -66,7 +68,7 @@ describe("codex r4 #4: a wallet the RPC does not return", () => {
     ledger({});
     const r = await relay(invoke(TOKENS.usdc, "transfer", transferArgs(WALLET, SPLIT_ID)));
     expect(r.status).toBe(409);
-    expect(r.body).toEqual({ success: false, error: WALLET_NOT_FOUND });
+    expect(r.body).toEqual({ success: false, error: refusalText(WALLET_NOT_FOUND) });
     expect(r.body.error).not.toMatch(/Only Caracal/);
   });
 
@@ -86,14 +88,14 @@ describe("codex r4 #4: a wallet the RPC does not return", () => {
     ledger({ [WALLET]: { wasm: "aa".repeat(32), liveUntil: LATEST + 1000 } });
     const r = await relay(invoke(TOKENS.usdc, "transfer", transferArgs(WALLET, SPLIT_ID)));
     expect(r.status).toBe(403);
-    expect(r.body.error).toBe("Only Caracal passkey wallets can sign sponsored calls");
+    expect(r.body.error).toBe(refusalText("Only Caracal passkey wallets can sign sponsored calls"));
   });
 
   it("a call to a split contract the RPC does not return: 409 that names no cause", async () => {
     ledger({ [WALLET]: { wasm: SMART_ACCOUNT.accountWasmHash, liveUntil: LATEST + 1000 } });
     const r = await relay(invoke(SPLIT_ID, "withdraw", [xdr.ScVal.scvU32(0)]));
     expect(r.status).toBe(409);
-    expect(r.body.error).toBe(CONTRACT_NOT_FOUND);
+    expect(r.body.error).toBe(refusalText(CONTRACT_NOT_FOUND));
   });
 
   it("a split whose owner wallet the RPC does not return: 409, not 'not owned by a Caracal wallet'", async () => {
@@ -103,7 +105,7 @@ describe("codex r4 #4: a wallet the RPC does not return", () => {
     });
     const r = await relay(invoke(SPLIT_ID, "withdraw", [xdr.ScVal.scvU32(0)]));
     expect(r.status).toBe(409);
-    expect(r.body.error).toBe(WALLET_NOT_FOUND);
+    expect(r.body.error).toBe(refusalText(WALLET_NOT_FOUND));
   });
 });
 
