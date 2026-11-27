@@ -137,10 +137,16 @@ export function cursorLedger(cursor: string): number {
 
 const isSym = (v: xdr.ScVal, s: string) => v.switch().name === "scvSymbol" && v.sym().toString() === s;
 
-/** Printable ASCII as is, anything else as 0x-prefixed hex. */
+/**
+ * Printable ASCII as is, anything else as 0x-prefixed hex. A printable
+ * reference that itself reads like that hex form ("0x0102") is shown as hex
+ * too, so two different references never give the same text: the text is the
+ * payment's key in the duplicate check (pipeline.ts, paymentRef).
+ */
 function refText(b: Uint8Array): string {
-  const printable = b.length > 0 && b.every((c) => c >= 0x20 && c <= 0x7e);
-  return printable ? Buffer.from(b).toString("latin1") : `0x${Buffer.from(b).toString("hex")}`;
+  const ascii = Buffer.from(b).toString("latin1");
+  const printable = b.length > 0 && b.every((c) => c >= 0x20 && c <= 0x7e) && !/^0x[0-9a-f]*$/i.test(ascii);
+  return printable ? ascii : `0x${Buffer.from(b).toString("hex")}`;
 }
 
 /**
@@ -311,11 +317,15 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
   // event names, closed at the time the event names.
   if (createdEvents.length > 1) throw new ChainReadError("The contract has more than one creation event, so its creation time cannot be proven and no estimate can be made.");
   const created = createdEvents[0] ?? null;
-  const checked = new Set<string>();
+  // Every event is compared, not only the first of each transaction: two
+  // events of one transaction must both name its ledger and close time.
+  const txOf = new Map<string, Awaited<ReturnType<typeof chain.transaction>>>();
   for (const p of created ? [created, ...payments] : payments) {
-    if (checked.has(p.txHash)) continue;
-    checked.add(p.txHash);
-    const tx = await chain.transaction(p.txHash);
+    let tx = txOf.get(p.txHash);
+    if (!tx) {
+      tx = await chain.transaction(p.txHash);
+      txOf.set(p.txHash, tx);
+    }
     const closed = Date.parse(p.occurredAt);
     if (tx.status !== "SUCCESS" || tx.ledger !== p.ledger || Number(tx.createdAt) * 1000 !== closed) {
       throw new ChainReadError(`Transaction ${p.txHash} could not be confirmed as a successful transaction in the ledger its event names.`);
