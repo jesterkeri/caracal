@@ -77,6 +77,8 @@ function unpayable(t: AnchorTxn, confirmed: bigint | null): string | null {
 
 /** After the kit's send settled, how long an unconfirmed payment can still land (see unknownWaiting). */
 const LAND_WINDOW_MS = 90_000;
+/** How long Send waits to read the balance at the press before sending without it (adversary c19). */
+const BALANCE_AT_SEND_MS = 10_000;
 
 /** Statuses whose text tells the person to open the anchor's form. */
 const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
@@ -276,8 +278,12 @@ export default function CashoutPage() {
     setStalled(false);
     setSendSettledAt(null);
     setLandingOver(false);
-    setBalanceBeforeSend(balance);
+    setBalanceBeforeSend(null);
     setPhase("sending");
+    // The balance at the press, read now: the last one on screen may predate USDC that arrived since, and the
+    // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
+    // then says to check the wallet's history instead.
+    setBalanceBeforeSend(await within(readUsdcBalance(boot.wallet, kit.rpc), BALANCE_AT_SEND_MS).catch(() => null));
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
       signAndSubmit: (tx) =>
@@ -551,7 +557,7 @@ export default function CashoutPage() {
                     balanceBeforeSend !== null && balance !== null
                       ? `Your USDC balance was ${fromStroops(balanceBeforeSend)} USDC when you pressed Send and is ${fromStroops(balance)} USDC now (read just now). `
                       : "Caracal could not read your USDC balance just now, so check your wallet's history first. "
-                  }If it did not drop, the payment did not go through and you can start another cash-out. If it did drop, ask the anchor about it with the transaction id.`
+                  }If it did not drop and no other USDC came in meanwhile, the payment did not go through and you can start another cash-out. If it dropped, or other USDC came in, check your wallet's history first, and ask the anchor about a payment it did not record with the transaction id.`
                 : stalled && sendSettledAt === null
                   ? "The payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
                   : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
