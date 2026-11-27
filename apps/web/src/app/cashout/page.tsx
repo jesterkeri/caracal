@@ -267,6 +267,12 @@ export default function CashoutPage() {
     }
     sendingFor.current = txn.id;
     setProblem(null);
+    // Each attempt has its own landing window: an earlier attempt's (proven not sent, so the lock was released)
+    // must not count for this one (adversary c15).
+    setUnknownSend(false);
+    setStalled(false);
+    setSendSettledAt(null);
+    setLandingOver(false);
     setPhase("sending");
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
