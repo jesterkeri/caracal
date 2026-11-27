@@ -14,7 +14,9 @@ import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
 import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
 
 /** `account` is the signed-in account the page loaded for: the details it saves go into that account's rows only. */
-type Ready = { account: string; wallet: string; split: string; rows: Row[] };
+/** A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago. */
+type ShownRow = Row & { stillOpening?: boolean };
+type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -23,6 +25,45 @@ type Load =
   | ({ kind: "ready" } & Ready);
 
 const db = () => supabaseBrowser() as unknown as Db;
+
+/**
+ * How long after a lost answer an invoice opening may still land. The relay builds each transaction with a
+ * 25 s time bound (TX_TIMEOUT_S) within 60 s of receiving it, so one that has not landed by then never will;
+ * this leaves a wide margin, like the wallet page's 3 minutes for a creation.
+ */
+const OPENING_SETTLE_MS = 3 * 60_000;
+const OPENING_UNKNOWN_KEY = "caracal.invoiceOpeningUnknown";
+/** Invoice ids whose opening answer was lost, and when: kept in this tab, and in localStorage across a reload. */
+const openingUnknown = new Map<string, number>();
+
+function rememberUnknownOpening(ref: string) {
+  const at = Date.now();
+  openingUnknown.set(ref, at);
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(OPENING_UNKNOWN_KEY) ?? "{}") as Record<string, unknown>;
+    // Old entries are dropped so the record stays small.
+    const kept = Object.fromEntries(Object.entries(saved).filter(([, t]) => typeof t === "number" && at - t < OPENING_SETTLE_MS));
+    window.localStorage.setItem(OPENING_UNKNOWN_KEY, JSON.stringify({ ...kept, [ref]: at }));
+  } catch {
+    // storage blocked: this tab still remembers it
+  }
+}
+
+/** Whether an invoice that is not on chain may still appear: its opening's answer was lost less than OPENING_SETTLE_MS ago. */
+function mayStillOpen(ref: string): boolean {
+  let at = openingUnknown.get(ref);
+  if (at === undefined) {
+    try {
+      const t = (JSON.parse(window.localStorage.getItem(OPENING_UNKNOWN_KEY) ?? "{}") as Record<string, unknown>)[ref];
+      if (typeof t === "number") at = t;
+    } catch {
+      // nothing saved
+    }
+  }
+  return at !== undefined && Date.now() - at < OPENING_SETTLE_MS;
+}
+
+const STILL_OPENING = "Not on chain yet. Its opening's answer was lost, so it may still appear: reload the page in a few minutes before removing it.";
 
 const ACCOUNT_CHANGED = "The signed-in account changed in another tab, so nothing was opened. Reloading for the account signed in now.";
 
@@ -48,7 +89,7 @@ export default function InvoicesPage() {
   async function refresh(account: string, wallet: string, split: string) {
     const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
     const rows = await loadRows(kit.rpc, await bounded(listDetails(db()), "Reading your saved invoices"), split);
-    setLoad({ kind: "ready", account, wallet, split, rows });
+    setLoad({ kind: "ready", account, wallet, split, rows: rows.map((r) => (r.chain === null && mayStillOpen(r.invoice_ref) ? { ...r, stillOpening: true } : r)) });
   }
 
   /** Another tab signed in as someone else (or signed out): this page's wallet and form belong to the old account, so it starts again. */
@@ -133,6 +174,7 @@ export default function InvoicesPage() {
       }
     }
     setBusy(null);
+    if (outcome.kind === "unknown") rememberUnknownOpening(ref);
     if (outcome.kind !== "done") setNotice(outcomeText(outcome, "Opening the invoice"));
     else {
       setAmount("");
@@ -240,8 +282,8 @@ export default function InvoicesPage() {
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
                   {r.description && <p className="opacity-80">{r.description}</p>}
-                  <p>{statusText(r.chain)}</p>
-                  {r.chain === null && (
+                  <p>{r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
+                  {r.chain === null && !r.stillOpening && (
                     <p>
                       <button className="underline" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry

@@ -26,13 +26,17 @@ const SPLIT_ERRORS: Record<number, string> = {
  * "insufficient balance" (#10) is named as that.
  */
 export function splitErrorText(text: string, split: string, usdc: string = TOKENS.usdc): string | null {
-  for (const line of text.split("\n")) {
-    const m = /Error\(Contract,\s*#(\d+)\)/.exec(line);
-    if (!m) continue;
-    const from = /contract:(C[A-Z2-7]{55})/.exec(line)?.[1];
-    if (from === usdc) return m[1] === "10" ? "The wallet does not hold enough USDC to pay this invoice." : null;
-    if (from !== undefined && from !== split) return null;
-    return SPLIT_ERRORS[Number(m[1])] ?? null;
-  }
-  return null;
+  const found = text
+    .split("\n")
+    .map((line) => ({ m: /Error\(Contract,\s*#(\d+)\)/.exec(line), from: /contract:(C[A-Z2-7]{55})/.exec(line)?.[1] }))
+    .filter((x): x is { m: RegExpExecArray; from: string | undefined } => x.m !== null);
+  // The event log is newest first, and a contract error passes up through every caller: the oldest line that
+  // names a contract is the one that raised it. The bare "HostError: Error(Contract, #N)" summary names none,
+  // so it is used only when no line says which contract raised the error.
+  const named = found.filter((x) => x.from !== undefined);
+  const origin = named.length > 0 ? named[named.length - 1]! : found[0];
+  if (!origin) return null;
+  if (origin.from === usdc) return origin.m[1] === "10" ? "The wallet does not hold enough USDC to pay this invoice." : null;
+  if (origin.from !== undefined && origin.from !== split) return null;
+  return SPLIT_ERRORS[Number(origin.m[1])] ?? null;
 }
