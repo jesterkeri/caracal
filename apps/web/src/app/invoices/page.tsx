@@ -77,7 +77,15 @@ function mayStillOpen(ref: string): boolean {
       // nothing saved
     }
   }
-  return at !== undefined && Date.now() - at < OPENING_SETTLE_MS;
+  if (at === undefined) return false;
+  const now = Date.now();
+  if (at > now) {
+    // Stamped in the future (the clock was ahead, then set back): recorded again as now, so the
+    // wait is the full 3 minutes from here, not as long as the clock was off (as the wallet page, r4l).
+    rememberUnknownOpening(ref);
+    return true;
+  }
+  return now - at < OPENING_SETTLE_MS;
 }
 
 const STILL_OPENING = "Not on chain yet. Its opening's answer was lost, so it may still appear: reload the page in a few minutes before removing it.";
