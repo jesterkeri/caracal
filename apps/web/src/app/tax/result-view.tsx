@@ -32,7 +32,8 @@ function Coverage({ c }: { c: Context }) {
       </p>
       <p>
         History checked: {time(c.coverage.from)} to {time(c.coverage.to)} (ledgers {c.coverage.fromLedger} to {c.coverage.toLedger}). The public Stellar RPC keeps only a short window of
-        history, so nothing earlier could be read. The estimate is only made when this window covers the whole of {c.taxYear}.
+        history, so nothing earlier could be read. An estimate is made only when this window covers {c.taxYear} from its start, or from the day your
+        split contract was created (its creation record is in the window), so no payment of the year can be missing.
       </p>
       <p>
         Payments found in that window: {c.paymentsInWindow}, of which {c.paymentsInTaxYear} fall in {c.taxYear} (Nigeria time). Estimate made {time(c.asOf)}.

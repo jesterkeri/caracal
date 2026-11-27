@@ -244,16 +244,18 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
   const events: RawEvent[] = [];
   let page = await chain.events(want.contract, { startLedger }, PAGE_LIMIT);
   let last: EventsPage = page;
+  // The ledger the scan has read up to. The RPC's window moves forward a ledger at a time while the pages
+  // are read; that loses nothing unless it moves past this point (on the first page, past the start).
+  let readTo = startLedger;
   for (let n = 1; ; n++) {
     checkRetention(page);
-    // History older than the first page's start is not covered; if the RPC's
-    // window moved past our start while reading, what was read has a hole.
-    if (page.oldestLedger > startLedger) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
+    if (page.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
     events.push(...page.events);
     last = page;
     const reached = cursorLedger(page.cursor);
     // A cursor past the newest ledger is not a real scan position; believing it would end the scan early.
     if (reached > page.latestLedger) throw new ChainReadError("The RPC sent a page cursor Caracal cannot read.");
+    readTo = reached;
     // A full page that stops inside the newest ledger may leave events of that ledger unread: ask again.
     const full = page.events.length >= PAGE_LIMIT;
     if (reached >= page.latestLedger && !full) break;
@@ -263,7 +265,7 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
       // Nothing after a full page that already reached the newest ledger: the scan is complete.
       if (reached >= page.latestLedger && next.events.length === 0) {
         checkRetention(next);
-        if (next.oldestLedger > startLedger) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
+        if (next.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
         last = next;
         break;
       }
