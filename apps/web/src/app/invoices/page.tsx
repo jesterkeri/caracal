@@ -20,7 +20,7 @@ import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
  * A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago;
  * `ahead` marks one whose opening or cancelling this browser saw confirmed, which the read has not caught up with.
  */
-type ShownRow = Row & { stillOpening?: boolean; ahead?: Confirmed };
+type ShownRow = Row & { stillOpening?: boolean; startedRecently?: boolean; ahead?: Confirmed };
 type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
@@ -116,8 +116,29 @@ function shown(r: Row): ShownRow {
     if (chain?.status === "open") return { ...r, ahead: "cancelled" };
     if (chain) setConfirmed(r.invoice_ref, null);
   }
-  return r.chain === null && mayStillOpen(r.invoice_ref) ? { ...r, stillOpening: true } : r;
+  if (r.chain !== null) return r;
+  if (mayStillOpen(r.invoice_ref)) return { ...r, stillOpening: true };
+  return startedRecently(r.created_at) ? { ...r, startedRecently: true } : r;
 }
+
+/**
+ * How long after its details were saved an opening may still land, whichever device started it. The details are
+ * saved (with the server's created_at) before anything is sent; then come the passkey prompt (the kit's WebAuthn
+ * timeout, 1 minute), the send (SEND_TIMEOUT_MS, 5 minutes, after which the relay's own 60 s send deadline and
+ * the transaction's validity still apply). 15 minutes is well past that. Another device has no record in this
+ * browser (mayStillOpen), so without this its row read "the opening did not finish" and offered Remove while the
+ * opening could still land (adversary i12).
+ */
+const STARTED_RECENTLY_MS = 15 * 60_000;
+
+/** Whether the details were saved within STARTED_RECENTLY_MS of now (either way, so a clock a little off still counts). */
+function startedRecently(createdAt: string): boolean {
+  const at = Date.parse(createdAt);
+  return Number.isFinite(at) && Math.abs(Date.now() - at) < STARTED_RECENTLY_MS;
+}
+
+const STARTED_RECENTLY =
+  "Not on chain yet. It was started in the last few minutes, here or on another device, so it may still appear: reload the page in a few minutes before removing it.";
 
 const AHEAD_TEXT: Record<Confirmed, string> = {
   opened: "Opened. The network has not shown it yet: reload the page in a minute to see its pay link.",
@@ -452,10 +473,10 @@ export default function InvoicesPage() {
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
                   {r.description && <p className="small muted">{r.description}</p>}
-                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && r.stillOpening) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
-                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : statusText(r.chain)}</p>
+                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && (r.stillOpening || r.startedRecently)) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
+                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : r.chain === null && r.startedRecently ? STARTED_RECENTLY : statusText(r.chain)}</p>
                   </div>
-                  {r.chain === null && !r.stillOpening && !r.ahead && (
+                  {r.chain === null && !r.stillOpening && !r.startedRecently && !r.ahead && (
                     <p>
                       <button className="link small" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry
