@@ -9,7 +9,7 @@ const PAYER_KIT = { saveSession: false } as const;
 import { NETWORK, explorerLink } from "@/lib/stellar/config";
 import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc } from "@/lib/invoices/amount";
-import { findPaymentTx, isCaracalSplit, payInvoice, readConfig, readInvoice, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
+import { bounded, findPaymentTx, isCaracalSplit, payInvoice, readConfig, readInvoice, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
 import { refBytes } from "@/lib/invoices/ref";
 
 type View =
@@ -45,6 +45,9 @@ async function connectFailure(e: unknown, rpc: LedgerReader | undefined): Promis
   if (status === "present") return "Your wallet exists on Stellar testnet, but Caracal could not open it. Reload the page and try again.";
   return "Caracal could not reach the Stellar network to check whether a wallet exists for this passkey. Check your connection and try again.";
 }
+
+/** The passkey prompt (the kit's WebAuthn timeout is 1 minute) plus the wallet lookup, with room to spare. */
+const CONNECT_TIMEOUT_MS = 3 * 60_000;
 
 /** What the page knows about paying, kept apart from what it knows about the invoice. */
 type Pay =
@@ -91,9 +94,11 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     setPay({ kind: "busy", label: "Waiting for your passkey" });
     let kit: Awaited<ReturnType<typeof getKit>> | undefined;
     try {
-      kit = await getKit(PAYER_KIT);
-      // fresh: always ask for this person's passkey, never reuse what this browser last had.
-      const r = await kit.connectWallet({ fresh: true });
+      kit = await bounded(getKit(PAYER_KIT), "Loading the wallet kit");
+      // fresh: always ask for this person's passkey, never reuse what this browser last had. Bounded: after the
+      // passkey answers, the kit looks the wallet up on a node it reads with no time limit (adversary i13).
+      // Connecting moves nothing, so an answer that arrives later is simply not used.
+      const r = await bounded(kit.connectWallet({ fresh: true }), "Connecting your wallet", CONNECT_TIMEOUT_MS);
       if (!r) return setPay({ kind: "message", text: NO_WALLET_FOR_PASSKEY });
       setWallet(r.contractId);
       setPay({ kind: "idle" });
