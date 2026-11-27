@@ -55,6 +55,14 @@ function parseCbnDate(s: unknown): string | null {
 /** A positive plain decimal with at most 6 decimal places (the tax engine's limit). */
 const RATE_FORMAT = /^(?!0+(\.0+)?$)\d{1,9}(\.\d{1,6})?$/;
 
+/** A RATE_FORMAT decimal in one written form: no leading zeros before the point, no trailing zeros after it. */
+function sameDecimal(rate: string): string {
+  const [whole, frac = ""] = rate.split(".");
+  const w = whole!.replace(/^0+(?=\d)/, "");
+  const f = frac.replace(/0+$/, "");
+  return f === "" ? w : `${w}.${f}`;
+}
+
 /**
  * Reads CBN's NFEM list. Refuses the whole list when it is not a list of rows
  * with a readable date: a change of format must not turn into rates. A row
@@ -74,8 +82,9 @@ export function parseNfemTable(json: unknown): RateTable {
       continue;
     }
     const seen = byDate.get(date);
-    if (seen !== undefined && seen !== weightedAvgRate) conflicting.add(date);
-    else byDate.set(date, weightedAvgRate);
+    // The same rate written two ways ("1500.5", "1500.50") is one rate (adversary t10); only different numbers conflict.
+    if (seen === undefined) byDate.set(date, weightedAvgRate);
+    else if (sameDecimal(seen) !== sameDecimal(weightedAvgRate)) conflicting.add(date);
   }
   return { byDate, conflicting };
 }
