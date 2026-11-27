@@ -77,6 +77,9 @@ function outcomeText(o: Exclude<WriteOutcome, { kind: "done" }>, what: string): 
   return `${what}: the answer was lost, so it may have gone through. Do not repeat it yet. Reload this page and check the list first. ${o.message}`;
 }
 
+/** Bumped by every list read: a read that finishes after a newer one began is dropped. */
+let listReads = 0;
+
 export default function InvoicesPage() {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [amount, setAmount] = useState("");
@@ -87,8 +90,12 @@ export default function InvoicesPage() {
   const [copied, setCopied] = useState<string | null>(null);
 
   async function refresh(account: string, wallet: string, split: string) {
+    // Reads can finish out of order (each row read may take up to 20 s): only the latest one started is shown,
+    // so an older read never puts back a row a newer one saw change (a cancelled invoice shown as open again).
+    const mine = ++listReads;
     const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
     const rows = await loadRows(kit.rpc, await bounded(listDetails(db()), "Reading your saved invoices"), split);
+    if (mine !== listReads) return;
     setLoad({ kind: "ready", account, wallet, split, rows: rows.map((r) => (r.chain === null && mayStillOpen(r.invoice_ref) ? { ...r, stillOpening: true } : r)) });
   }
 
@@ -107,6 +114,7 @@ export default function InvoicesPage() {
       const me = await readSignInState(auth);
       if (me.kind === "signed-out") return window.location.replace("/signin");
       if (me.kind === "unverified") throw new Error("Caracal could not verify your sign-in. Check your connection and reload the page.");
+      if (gone) return;
       unfollow = followAccount(auth, me.id, accountChanged);
       const kit = await bounded(getKit(), "Loading the wallet kit", RESTORE_TIMEOUT_MS);
       // Only a wallet this account connected on this browser is used (the same rule as the wallet page).
