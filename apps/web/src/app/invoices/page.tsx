@@ -49,6 +49,21 @@ function rememberUnknownOpening(ref: string) {
   }
 }
 
+/** An opening whose outcome is known (on chain, or proven not sent): it no longer holds back "Remove this entry". */
+function forgetOpening(ref: string) {
+  openingUnknown.delete(ref);
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(OPENING_UNKNOWN_KEY) ?? "{}") as Record<string, unknown>;
+    delete saved[ref];
+    window.localStorage.setItem(OPENING_UNKNOWN_KEY, JSON.stringify(saved));
+  } catch {
+    // storage blocked: nothing was saved there
+  }
+}
+
+/** How often an opening on its way renews its record, so a page that goes away mid-send leaves a recent one. */
+const OPENING_HEARTBEAT_MS = 10_000;
+
 /** Whether an invoice that is not on chain may still appear: its opening's answer was lost less than OPENING_SETTLE_MS ago. */
 function mayStillOpen(ref: string): boolean {
   let at = openingUnknown.get(ref);
@@ -172,7 +187,19 @@ export default function InvoicesPage() {
       setBusy(null);
       return setNotice(`Caracal could not save the client's name, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
     }
-    const outcome = await createInvoice(kit, ready.split, ref, stroops);
+    // Recorded before anything is sent and renewed while the opening is on its way, so a reload or a closed tab
+    // mid-send still holds back "Remove this entry" until the opening can no longer land.
+    rememberUnknownOpening(ref);
+    const beat = setInterval(() => rememberUnknownOpening(ref), OPENING_HEARTBEAT_MS);
+    const leaving = () => rememberUnknownOpening(ref);
+    window.addEventListener?.("pagehide", leaving);
+    let outcome: Awaited<ReturnType<typeof createInvoice>>;
+    try {
+      outcome = await createInvoice(kit, ready.split, ref, stroops);
+    } finally {
+      clearInterval(beat);
+      window.removeEventListener?.("pagehide", leaving);
+    }
     if (outcome.kind === "not-sent" || outcome.kind === "failed") {
       // Nothing is on chain: the saved details are removed again.
       try {
@@ -183,6 +210,7 @@ export default function InvoicesPage() {
     }
     setBusy(null);
     if (outcome.kind === "unknown") rememberUnknownOpening(ref);
+    else forgetOpening(ref);
     if (outcome.kind !== "done") setNotice(outcomeText(outcome, "Opening the invoice"));
     else {
       setAmount("");
