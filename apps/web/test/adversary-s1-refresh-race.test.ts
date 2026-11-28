@@ -73,7 +73,8 @@ async function render(actions: Record<string, unknown>) {
     };
   });
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: {} }) }));
-  const kit = { rpc: {}, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }) };
+  // rpc names its latest ledger: a write reads it first to fix its last ledger (Codex split R3 fixture)
+  const kit = { rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }) };
   vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
   vi.doMock("@/lib/split/actions", async () => ({ ...(await vi.importActual<object>("@/lib/split/actions")), ...actions }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");

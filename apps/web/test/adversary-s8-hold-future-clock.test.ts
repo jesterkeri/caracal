@@ -15,8 +15,12 @@
 // - attacker goal 5: "a hold that never lifts";
 // - write-guard.ts header: "SETTLE_MS is 3 minutes after the last renewal";
 // - write-guard.ts read(): the sentence quoted above.
+// Rewritten with Codex split R3 (disclosed in docs/decisions.md): the hold no longer reads the clock at all,
+// so its promise is restated in ledgers: a write is held until the network passes its closeBy, and a clock set
+// back or forward changes nothing (s8 proved a clock set back held it too long; Codex R3 proved one set forward
+// released it too early).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SETTLE_MS, beginWrite, holdOn, holdText } from "../src/lib/split/write-guard";
+import { WRITE_LEDGERS, beginWrite, holdOn, holdText } from "../src/lib/split/write-guard";
 import { splitAddressFor } from "../src/lib/stellar/split-address";
 import { WALLET } from "./relay-fixtures";
 
@@ -31,33 +35,33 @@ function stubStorage(): Map<string, string> {
   return store;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
-describe("adversary s8: a record dated in the future", () => {
-  it("control: a record from 4 minutes ago has lifted, and one from 1 minute ago holds", () => {
+describe("adversary s8: a changed clock", () => {
+  it("control: held up to closeBy, lifted past it", () => {
     stubStorage();
-    const T = 1_800_000_000_000;
-    const begun = beginWrite(SPLIT, () => T);
+    const begun = beginWrite(SPLIT, 1000);
     if (!begun.ok) throw new Error("the write should start");
     begun.guard.finish({ kind: "unknown", message: "no answer" });
-    expect(holdOn(SPLIT, T + MIN).held).toBe(true);
-    expect(holdOn(SPLIT, T + SETTLE_MS + MIN).held).toBe(false);
+    expect(holdOn(SPLIT, 1000 + WRITE_LEDGERS).held).toBe(true);
+    expect(holdOn(SPLIT, 1001 + WRITE_LEDGERS).held).toBe(false);
   });
 
-  it("a write recorded while the clock was an hour ahead is held for 3 minutes once the clock is right, not for an hour", () => {
-    stubStorage();
+  it("a clock set back an hour after the write does not hold it past closeBy, and the text names the ledgers left", () => {
+    vi.useFakeTimers();
     const real = 1_800_000_000_000;
-    const ahead = real + 60 * MIN;
-    const begun = beginWrite(SPLIT, () => ahead); // the device clock was an hour fast when it wrote
+    vi.setSystemTime(real + 60 * MIN); // the device clock was an hour fast when it wrote
+    stubStorage();
+    const begun = beginWrite(SPLIT, 1000);
     if (!begun.ok) throw new Error("the write should start");
-    begun.guard.finish({ kind: "unknown", message: "no answer" }); // renewed at `ahead`
-    // The clock is corrected. First read: the record counts as written now.
-    const first = holdOn(SPLIT, real);
+    begun.guard.finish({ kind: "unknown", message: "no answer" });
+    vi.setSystemTime(real); // corrected
+    const first = holdOn(SPLIT, 1000 + WRITE_LEDGERS - 11, real);
     expect(first.held).toBe(true);
-    expect(first.held && holdText(first, real)).toMatch(/about 3 minutes/);
-    // Four minutes later nothing has been renewed (no write pending in this tab): the hold must have lifted.
-    const later = holdOn(SPLIT, real + SETTLE_MS + MIN);
-    // Defect: still held, with the same "about 3 minutes" text, until `ahead` + 3 minutes.
-    expect(later.held).toBe(false);
+    expect(first.held && holdText(first, real)).toMatch(/about 1 minute/);
+    expect(holdOn(SPLIT, 1001 + WRITE_LEDGERS, real).held).toBe(false);
   });
 });

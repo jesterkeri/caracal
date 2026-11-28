@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { acquireWrite, holdOn, holdText } from "@/lib/split/write-guard";
+import { acquireWrite, hasWriteRecord, holdOn, holdText, readLedger } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -58,6 +58,9 @@ export default function SplitPage() {
   const [account, setAccount] = useState<Account | null>(null);
   // Bumped every few seconds so the hold on writes (below) is read again and lifts on its own.
   const [, setTick] = useState(0);
+  // The latest ledger read while this browser holds a write record: the hold lifts once it passes the record's
+  // closeBy (write-guard.ts). null until read, or when it cannot be read, and the hold then stays.
+  const [seenLedger, setSeenLedger] = useState<number | null>(null);
 
   useEffect(() => {
     let unfollow: (() => void) | undefined;
@@ -103,10 +106,23 @@ export default function SplitPage() {
     };
   }, []);
 
+  const shownSplit = view.kind === "ready" ? splitAddressFor(view.wallet) : null;
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 5_000);
-    return () => clearInterval(t);
-  }, []);
+    let gone = false;
+    const t = setInterval(() => {
+      setTick((n) => n + 1);
+      const split = shownSplit;
+      if (!split || !hasWriteRecord(split)) return;
+      getKit()
+        .then((kit) => readLedger(kit.rpc))
+        .then((n) => !gone && setSeenLedger(n))
+        .catch(() => !gone && setSeenLedger(null));
+    }, 5_000);
+    return () => {
+      gone = true;
+      clearInterval(t);
+    };
+  }, [shownSplit]);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
   const refused = (text: string) => setNote({ said: { tone: "bad", text } });
@@ -136,7 +152,17 @@ export default function SplitPage() {
     try {
       // An earlier write that may still land, or one another tab is making, holds back every new write on
       // this split (write-guard.ts).
-      const begun = await acquireWrite(splitAddressFor(wallet));
+      // The write's last ledger is fixed from the ledger read now, before anything is signed (write-guard.ts).
+      let kit: WriteKit;
+      let ledger: number;
+      try {
+        kit = (await getKit()) as unknown as WriteKit;
+        ledger = await readLedger(kit.rpc);
+      } catch (e) {
+        return setNote({ said: { tone: "bad", text: `Caracal could not read the Stellar network, so nothing was signed or sent. Check your connection and try again. (${e instanceof Error ? e.message : String(e)})` } });
+      }
+      setSeenLedger(ledger);
+      const begun = await acquireWrite(splitAddressFor(wallet), ledger);
       if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) } });
       const guard = begun.guard;
       // Any read already under way began before this write: it is dropped.
@@ -144,7 +170,7 @@ export default function SplitPage() {
       setNote({ busy: "Waiting for your passkey" });
       let outcome: SendOutcome;
       try {
-        outcome = await send(guard.kit((await getKit()) as unknown as WriteKit));
+        outcome = await send(guard.kit(kit));
       } catch (e) {
         outcome = { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
       }
@@ -197,7 +223,7 @@ export default function SplitPage() {
   const busy = note.busy !== undefined;
   const loaded = view.kind === "ready" ? view.loaded : null;
   // Read from storage on every render (not remembered), so a write in another tab or before a reload counts.
-  const hold = view.kind === "ready" && loaded?.kind !== "error" ? holdOn(splitAddressFor(view.wallet)) : ({ held: false } as const);
+  const hold = view.kind === "ready" && loaded?.kind !== "error" ? holdOn(splitAddressFor(view.wallet), seenLedger) : ({ held: false } as const);
   const blocked = busy || hold.held;
 
   return (

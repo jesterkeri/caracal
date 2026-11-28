@@ -77,7 +77,8 @@ async function render(opts: {
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  const kit = { rpc: {}, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }), ...opts.kit };
+  // rpc names its latest ledger: a write reads it first to fix its last ledger (Codex split R3 fixture)
+  const kit = { rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }), ...opts.kit };
   vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
   if (opts.actions) {
     vi.doMock("@/lib/split/actions", async () => ({ ...(await vi.importActual<object>("@/lib/split/actions")), ...opts.actions }));

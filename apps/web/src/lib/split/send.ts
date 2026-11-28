@@ -29,7 +29,8 @@ export type WriteKit = {
   rpc: unknown;
   rpcUrl: string;
   networkPassphrase: string;
-  signAndSubmit(tx: contract.AssembledTransaction<unknown>): Promise<TransactionResult>;
+  /** `expiration` is the last ledger the wallet's signature is valid in (write-guard.ts sets it to the write's closeBy). */
+  signAndSubmit(tx: contract.AssembledTransaction<unknown>, options?: { expiration?: number }): Promise<TransactionResult>;
 };
 
 export type SendOutcome =

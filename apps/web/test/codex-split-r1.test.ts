@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSplit } from "../src/lib/split/actions";
 import { splitErrorText } from "../src/lib/split/errors";
 import { readPots } from "../src/lib/split/chain";
-import { HEARTBEAT_MS, SETTLE_MS, beginWrite, holdOn } from "../src/lib/split/write-guard";
+import { KIT_DEFAULT_LEDGERS, WRITE_LEDGERS, beginWrite, holdOn } from "../src/lib/split/write-guard";
 import { SPLIT as SPLIT_CFG, TOKENS } from "../src/lib/stellar/config";
 import { splitAddressFor } from "../src/lib/stellar/split-address";
 import { WALLET } from "./relay-fixtures";
@@ -35,63 +35,64 @@ function stubStorage(kept = new Map<string, string>(), overrides: Partial<Storag
 }
 
 // ---- 1. an uncertain write holds back every new write ----
+// Rewritten with Codex split R3 (disclosed in docs/decisions.md): the hold was measured in minutes on the
+// browser's clock (SETTLE_MS after the last renewal); it is now measured in ledgers. Each write signs with
+// expiration closeBy = the ledger read + WRITE_LEDGERS and is held until an RPC shows a ledger past closeBy.
+// Each test keeps its promise, restated in ledgers.
 describe("finding 1: an unknown write cannot be repeated while it may still land", () => {
-  beforeEach(() => vi.useFakeTimers());
+  const L = 1000;
 
-  it("while the first signAndSubmit is still pending, the hold is renewed far past the page's 5 minute wait", () => {
+  it("while the first signAndSubmit is still pending, the hold stays up to its closeBy, and that signature expires at closeBy", () => {
     stubStorage();
-    const first = beginWrite(SPLIT);
+    const first = beginWrite(SPLIT, L);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    const kit = { rpc: {}, rpcUrl: "", networkPassphrase: "", signAndSubmit: () => new Promise<never>(() => {}) };
-    const watched = first.guard.kit(kit as never);
+    expect(first.guard.closeBy).toBe(L + WRITE_LEDGERS);
+    const signAndSubmit = vi.fn((_tx: unknown, _o?: { expiration?: number }) => new Promise<never>(() => {}));
+    const watched = first.guard.kit({ rpc: {}, rpcUrl: "", networkPassphrase: "", signAndSubmit } as never);
     void watched.signAndSubmit({} as never); // never settles: sendSplitCall gave up at 5 minutes
+    expect(signAndSubmit.mock.calls[0]![1]).toEqual({ expiration: L + WRITE_LEDGERS });
     first.guard.finish({ kind: "unknown", message: "no answer within 5 minutes" });
-    vi.advanceTimersByTime(20 * MIN);
-    expect(holdOn(SPLIT).held).toBe(true);
-    expect(beginWrite(SPLIT).ok).toBe(false);
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS).held).toBe(true);
+    expect(beginWrite(SPLIT, L + WRITE_LEDGERS).ok).toBe(false);
+    // past closeBy the network refuses that signature, pending or not
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS + 1).held).toBe(false);
   });
 
-  it("once the first has settled, the hold lifts after the settle window and not before", () => {
+  it("once the first has settled, the hold lifts when the network passes closeBy and not before", async () => {
     stubStorage();
     let settle!: () => void;
-    const first = beginWrite(SPLIT);
+    const first = beginWrite(SPLIT, L);
     if (!first.ok) throw new Error("should begin");
     const kit = { rpc: {}, rpcUrl: "", networkPassphrase: "", signAndSubmit: () => new Promise<void>((r) => (settle = r)) };
     void first.guard.kit(kit as never).signAndSubmit({} as never);
     first.guard.finish({ kind: "unknown", message: "x" });
-    vi.advanceTimersByTime(6 * MIN);
-    expect(holdOn(SPLIT).held).toBe(true);
+    expect(holdOn(SPLIT, L + 1).held).toBe(true);
     settle();
-    return Promise.resolve().then(() => {
-      vi.advanceTimersByTime(SETTLE_MS - HEARTBEAT_MS);
-      expect(holdOn(SPLIT).held).toBe(true);
-      vi.advanceTimersByTime(2 * HEARTBEAT_MS);
-      expect(holdOn(SPLIT).held).toBe(false);
-    });
+    await Promise.resolve();
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS).held).toBe(true);
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS + 1).held).toBe(false);
   });
 
-  it("a reload does not release it: another page reading the same storage is held, then released after the window", () => {
+  it("a reload does not release it: another page reading the same storage is held until closeBy has passed", () => {
     const kept = stubStorage();
-    const first = beginWrite(SPLIT);
+    const first = beginWrite(SPLIT, L);
     if (!first.ok) throw new Error("should begin");
     first.guard.finish({ kind: "unknown", message: "x" });
-    // The tab is gone (no more renewals); a new page reads the same storage.
-    vi.advanceTimersByTime(SETTLE_MS - 1_000);
     stubStorage(kept);
-    expect(holdOn(SPLIT).held).toBe(true);
-    expect(beginWrite(SPLIT).ok).toBe(false);
-    vi.advanceTimersByTime(2_000);
-    expect(holdOn(SPLIT).held).toBe(false);
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS).held).toBe(true);
+    expect(beginWrite(SPLIT, L + WRITE_LEDGERS).ok).toBe(false);
+    expect(holdOn(SPLIT, null).held).toBe(true); // no ledger read: it stays
+    expect(holdOn(SPLIT, L + WRITE_LEDGERS + 1).held).toBe(false);
   });
 
   it("a certain outcome releases at once", () => {
     stubStorage();
-    const g = beginWrite(SPLIT);
+    const g = beginWrite(SPLIT, L);
     if (!g.ok) throw new Error("should begin");
-    expect(holdOn(SPLIT).held).toBe(true);
+    expect(holdOn(SPLIT, L).held).toBe(true);
     g.guard.finish({ kind: "done", hash: "ab" });
-    expect(holdOn(SPLIT).held).toBe(false);
+    expect(holdOn(SPLIT, L).held).toBe(false);
   });
 
   it("storage that cannot be read holds back, and storage that cannot be written refuses to start", () => {
@@ -100,24 +101,25 @@ describe("finding 1: an unknown write cannot be repeated while it may still land
         throw new Error("blocked");
       },
     });
-    expect(holdOn(SPLIT).held).toBe(true);
-    expect(beginWrite(SPLIT).ok).toBe(false);
+    expect(holdOn(SPLIT, L).held).toBe(true);
+    expect(beginWrite(SPLIT, L).ok).toBe(false);
     stubStorage(new Map(), {
       setItem: () => {
         throw new Error("full");
       },
     });
-    expect(beginWrite(SPLIT).ok).toBe(false);
+    expect(beginWrite(SPLIT, L).ok).toBe(false);
     vi.stubGlobal("window", {});
-    expect(holdOn(SPLIT).held).toBe(true);
+    expect(holdOn(SPLIT, L).held).toBe(true);
   });
 
-  it("a record that cannot be parsed holds for the window, then lifts", () => {
+  it("a record that cannot be parsed holds past the kit's default expiry from the ledger it is first seen at, then lifts", () => {
     const kept = stubStorage();
     kept.set(`caracal.split.write.${SPLIT}`, "{not json");
-    expect(holdOn(SPLIT).held).toBe(true);
-    vi.advanceTimersByTime(SETTLE_MS + 1_000);
-    expect(holdOn(SPLIT).held).toBe(false);
+    expect(holdOn(SPLIT, null).held).toBe(true);
+    expect(holdOn(SPLIT, L).held).toBe(true);
+    expect(holdOn(SPLIT, L + KIT_DEFAULT_LEDGERS).held).toBe(true);
+    expect(holdOn(SPLIT, L + KIT_DEFAULT_LEDGERS + 1).held).toBe(false);
   });
 
   it("the page: after an unknown withdrawal, a second click sends nothing and says the first may still go through", async () => {
@@ -145,7 +147,8 @@ describe("finding 1: an unknown write cannot be repeated while it may still land
       };
     });
     vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: {} }) }));
-    const kit = { rpc: {}, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }) };
+    // a kit RPC that names its latest ledger (Codex split R3: a write reads it to fix its last ledger)
+    const kit = { rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, disconnect: async () => {}, connectWallet: async () => ({ contractId: WALLET }) };
     vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
     const withdrawToWallet = vi.fn(async () => ({ kind: "unknown", message: "no answer within 5 minutes" }));
     const loadSplitFake = vi.fn(async () => states[0]);

@@ -63,9 +63,9 @@ describe("finding 1: only one tab takes the write hold", () => {
     let second: ReturnType<typeof acquireWrite> | undefined;
     // Tab B starts its whole attempt while tab A is reading the record (after A's check began, before A's write).
     sharedStorage(() => {
-      second = acquireWrite(SPLIT, locks);
+      second = acquireWrite(SPLIT, 1000, locks);
     });
-    const first = await acquireWrite(SPLIT, locks);
+    const first = await acquireWrite(SPLIT, 1000, locks);
     const b = await second!;
     expect([first.ok, b.ok].filter(Boolean)).toHaveLength(1);
     expect(first.ok).toBe(true);
@@ -75,38 +75,38 @@ describe("finding 1: only one tab takes the write hold", () => {
   it("two tabs starting at the same moment: exactly one goes on", async () => {
     const locks = sharedLocks();
     sharedStorage();
-    const both = await Promise.all([acquireWrite(SPLIT, locks), acquireWrite(SPLIT, locks)]);
+    const both = await Promise.all([acquireWrite(SPLIT, 1000, locks), acquireWrite(SPLIT, 1000, locks)]);
     expect(both.filter((r) => r.ok)).toHaveLength(1);
   });
 
   it("while the first tab's passkey and relay call is still pending, another tab is refused even if the record were gone", async () => {
     const locks = sharedLocks();
     const kept = sharedStorage();
-    const first = await acquireWrite(SPLIT, locks);
+    const first = await acquireWrite(SPLIT, 1000, locks);
     if (!first.ok) throw new Error("first should begin");
     void first.guard.kit(pendingKit() as never).signAndSubmit({} as never);
     first.guard.finish({ kind: "unknown", message: "no answer" });
     kept.clear(); // storage cleared by the person, or by the browser
-    const second = await acquireWrite(SPLIT, locks);
+    const second = await acquireWrite(SPLIT, 1000, locks);
     expect(second.ok).toBe(false);
   });
 
   it("after a certain outcome the lock is let go and the next write may start", async () => {
     const locks = sharedLocks();
     sharedStorage();
-    const first = await acquireWrite(SPLIT, locks);
+    const first = await acquireWrite(SPLIT, 1000, locks);
     if (!first.ok) throw new Error("first should begin");
     first.guard.finish({ kind: "done", hash: "ab".repeat(32) } as never);
     await first.guard.released;
     await Promise.resolve();
-    const second = await acquireWrite(SPLIT, locks);
+    const second = await acquireWrite(SPLIT, 1000, locks);
     expect(second.ok).toBe(true);
   });
 
   it("after an unknown outcome the lock is let go once the kit call settles, and the record still holds", async () => {
     const locks = sharedLocks();
     sharedStorage();
-    const first = await acquireWrite(SPLIT, locks);
+    const first = await acquireWrite(SPLIT, 1000, locks);
     if (!first.ok) throw new Error("first should begin");
     let settle!: () => void;
     const kit = { ...pendingKit(), signAndSubmit: () => new Promise<void>((r) => (settle = r)) };
@@ -115,8 +115,8 @@ describe("finding 1: only one tab takes the write hold", () => {
     settle();
     await first.guard.released;
     await Promise.resolve();
-    expect(holdOn(SPLIT).held).toBe(true);
-    const second = await acquireWrite(SPLIT, locks);
+    expect(holdOn(SPLIT, 1000).held).toBe(true);
+    const second = await acquireWrite(SPLIT, 1000, locks);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.hold.reason).toBe("earlier-write");
   });
@@ -124,7 +124,7 @@ describe("finding 1: only one tab takes the write hold", () => {
   it("a browser without Web Locks sends nothing, and says why", async () => {
     sharedStorage();
     vi.stubGlobal("navigator", {});
-    const r = await acquireWrite(SPLIT);
+    const r = await acquireWrite(SPLIT, 1000);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.hold.reason).toBe("unsupported");
@@ -135,7 +135,7 @@ describe("finding 1: only one tab takes the write hold", () => {
   it("a browser that refuses the lock request sends nothing", async () => {
     sharedStorage();
     const refusing: Locks = { request: () => Promise.reject(new DOMException("blocked", "SecurityError")) };
-    const r = await acquireWrite(SPLIT, refusing);
+    const r = await acquireWrite(SPLIT, 1000, refusing);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.hold.reason).toBe("unreadable");
   });
