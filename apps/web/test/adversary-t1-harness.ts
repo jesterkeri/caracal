@@ -62,7 +62,7 @@ export function chain(items: Item[], oldest = "2025-12-01T00:00:00Z"): ChainRead
     health: async () => retention,
     instance: async () => ({ kind: "wasm", hash: SPLIT.wasmHash }),
     // Balanced: everything the contract holds is in its pots (holdings is a required read).
-    holdings: async () => ({ held: BigInt(0), pots: BigInt(0) }),
+    holdings: async () => ({ held: BigInt(0), pots: BigInt(0), ledger: 6000000 }),
     events: async () => ({ ...retention, events: items.map((p) => p.event), cursor: cursorFor(6000000) }),
     eventsAfter: async () => ({ ...retention, events: [], cursor: cursorFor(6000000) }),
     transaction: async (hash) => items.find((p) => p.event.txHash === hash)!.tx,

@@ -37,7 +37,7 @@ function chainWithDirectTransfer(transfer: number): { reader: ChainReader; log: 
     events: () => call("events", () => ({ ...retention(), events: [], cursor: cursorFor(clock) })),
     eventsAfter: () => call("eventsAfter", () => ({ ...retention(), events: [], cursor: cursorFor(clock) })),
     // The contract holds 1 unit more than its pots from the ledger the direct transfer landed in.
-    holdings: () => call("holdings", () => ({ held: BigInt(clock >= transfer ? 1 : 0), pots: BigInt(0) })),
+    holdings: () => call("holdings", () => ({ held: BigInt(clock >= transfer ? 1 : 0), pots: BigInt(0), ledger: clock })),
     transaction: async () => {
       throw new Error("no transactions in this chain");
     },

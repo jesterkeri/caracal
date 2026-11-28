@@ -58,9 +58,10 @@ export type ChainReader = {
    * (tax, goal, spend), both read now, after the covered ledger is fixed, so
    * USDC sent straight to the contract up to that ledger is in `held`. Always
    * checked: USDC held above the pots arrived without a recorded payment.
-   * `ledger`: the oldest ledger the two reads were made at, when the RPC's answers name it.
+   * `ledger`: the ledger both reads were made at. Required: a read that cannot say which ledger it saw
+   * cannot be shown to be at or after the covered ledger (Codex tax R2 #1).
    */
-  holdings(contract: string, token: string): Promise<{ held: bigint; pots: bigint; ledger?: number }>;
+  holdings(contract: string, token: string): Promise<{ held: bigint; pots: bigint; ledger: number }>;
 };
 
 /** One payment into the split contract, as it recorded it. */
@@ -285,7 +286,10 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
     // USDC held above the pots arrived without a recorded payment and has not been reconciled yet.
     const { held, pots, ledger } = await chain.holdings(want.contract, want.token);
-    if (ledger !== undefined && ledger < tail.latestLedger) {
+    if (!Number.isSafeInteger(ledger)) {
+      throw new ChainReadError("The Stellar RPC did not say which ledger it read the split contract's USDC at, so Caracal cannot tell whether it agrees with the payments. Try again.");
+    }
+    if (ledger < tail.latestLedger) {
       throw new ChainReadError("The Stellar RPC read the split contract's USDC at an older ledger than its payments, so Caracal cannot tell whether they agree. Try again.");
     }
     if (held > pots) {
@@ -445,7 +449,7 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
   };
 
   /** A read-only contract call, simulated. The source account is a placeholder: a simulation does not need it to exist. */
-  async function simulateRead(contract: string, fn: string, args: xdr.ScVal[]): Promise<{ value: unknown; ledger: number | undefined }> {
+  async function simulateRead(contract: string, fn: string, args: xdr.ScVal[]): Promise<{ value: unknown; ledger: number }> {
     const source = new Account(StrKey.encodeEd25519PublicKey(Buffer.alloc(32)), "0");
     const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: passphrase }).addOperation(new Contract(contract).call(fn, ...args)).setTimeout(30).build();
     const r = await call("simulateTransaction", { transaction: tx.toXDR() });
@@ -454,8 +458,11 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
     const out = (results[0] as { xdr?: unknown } | null)?.xdr;
     if (typeof out !== "string") throw new ChainReadError("The Stellar RPC could not read the split contract's USDC.");
     // The ledger it was read at (a simulation answer names it): the caller checks it is not older than the
-    // ledger the estimate covers. An answer without one cannot be checked that way and is taken as read now.
-    const ledger = typeof r.latestLedger === "number" && Number.isSafeInteger(r.latestLedger) ? r.latestLedger : undefined;
+    // ledger the estimate covers. An answer without one cannot be checked, so it is refused (Codex tax R2 #1).
+    const ledger = r.latestLedger;
+    if (typeof ledger !== "number" || !Number.isSafeInteger(ledger) || ledger <= 0) {
+      throw new ChainReadError("The Stellar RPC did not say which ledger it read the split contract's USDC at, so Caracal cannot tell whether it agrees with the payments. Try again.");
+    }
     try {
       return { value: scValToNative(xdr.ScVal.fromXDR(out, "base64")), ledger };
     } catch {
@@ -486,12 +493,11 @@ export function rpcChainReader(url: string, fetchFn: Fetch = fetch as Fetch, pas
         if (typeof held !== "bigint" || !Array.isArray(pots) || pots.length !== 3 || !pots.every((x) => typeof x === "bigint")) {
           throw new ChainReadError("The Stellar RPC sent the split contract's USDC in a form Caracal cannot read.");
         }
-        if (a.ledger !== undefined && b.ledger !== undefined && a.ledger !== b.ledger) {
+        if (a.ledger !== b.ledger) {
           if (attempt >= HOLDINGS_ATTEMPTS) throw new ChainReadError("The Stellar RPC kept reading the split contract's USDC and its pots at different ledgers, so Caracal cannot tell whether they agree. Try again.");
           continue;
         }
-        const ledger = a.ledger === undefined || b.ledger === undefined ? undefined : Math.min(a.ledger, b.ledger);
-        return { held, pots: (pots as bigint[]).reduce((x, y) => x + y, BigInt(0)), ledger };
+        return { held, pots: (pots as bigint[]).reduce((x, y) => x + y, BigInt(0)), ledger: a.ledger };
       }
     },
 

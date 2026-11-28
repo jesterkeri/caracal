@@ -111,7 +111,7 @@ function landsBetweenScanAndHoldings(late: ReturnType<typeof payment>) {
     // The payment lands while the holdings are read: the pots already include it (held == pots, balanced).
     holdings: async () => {
       landed = true;
-      return { held: BigInt(0), pots: BigInt(0) };
+      return { held: BigInt(0), pots: BigInt(0), ledger: 6000000 };
     },
     eventsAfter: async (...a) => {
       const r = await base.eventsAfter(...a);
@@ -157,6 +157,8 @@ describe("finding 3: the cutoff is one stable ledger", () => {
     const c: ChainReader = {
       ...base,
       eventsAfter: async (...a) => ({ ...(await base.eventsAfter(...a)), latestLedger: 6000004, latestLedgerCloseTime: unix("2026-11-27T14:59:50Z") }),
+      // The holdings are read after that check, so at its ledger (Codex tax R2 #1: a holdings read must name its ledger).
+      holdings: async (...a) => ({ ...(await base.holdings(...a)), ledger: 6000004 }),
     };
     const r = await readSplitPayments(c, want);
     expect(r.kind === "read" && [r.coverage.toLedger, r.coverage.to]).toEqual([6000004, "2026-11-27T14:59:50Z"]);
