@@ -133,6 +133,8 @@ export default function CashoutPage() {
   // Kept last of the states: tests set the states above by position.
   // The text of a refusal because an earlier payment may still land: shown only while that hold holds (adversary c31).
   const [heldText, setHeldText] = useState<string | null>(null);
+  // The text of an unknown send's outcome: shown only while that payment may still land (adversary c32).
+  const [unknownText, setUnknownText] = useState<string | null>(null);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -389,6 +391,7 @@ export default function CashoutPage() {
       // Never sent twice: the sending lock stays, and the anchor's status decides.
       if (r.hash) setSentHash(r.hash);
       setUnknownSend(true);
+      setUnknownText(r.message);
       setProblem(r.message);
       setPhase("watching");
     } else {
@@ -449,8 +452,6 @@ export default function CashoutPage() {
   // the hold has lifted (a kit call that has not settled), and each reading lets go of the lock of a payment the
   // network has passed, so another tab is not refused until that call settles (ported from split adversary s13).
   const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
-  // A refusal for an earlier payment is not kept on screen once the network has passed it (adversary c31).
-  const shownProblem = problem !== null && problem === heldText && !hold.held ? null : problem;
   useEffect(() => {
     if (!wallet || (!hold.held && !holdsSendLock(wallet))) return;
     const held = hold.held;
@@ -498,6 +499,17 @@ export default function CashoutPage() {
   // Never while the USDC payment is being sent: starting again then would lose track of it; never while the
   // hold would refuse the new one (adversary c27).
   const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending" && !hold.held;
+  // A refusal for an earlier payment is not kept on screen once the network has passed it (adversary c31), nor an
+  // unknown send's "may still go through" once the page no longer holds that it may (adversary c32).
+  const heldGone = problem !== null && problem === heldText && !hold.held;
+  const unknownGone = problem !== null && problem === unknownText && !mayStillLand;
+  const shownProblem = heldGone
+    ? null
+    : unknownGone
+      ? txn !== null && (txn.status === "completed" || txn.status === "refunded")
+        ? "Caracal could not confirm the USDC payment itself, but the anchor's status below shows it received it."
+        : "Caracal could not confirm the USDC payment, and it can no longer go through now. The anchor's status below shows whether it arrived."
+      : problem;
 
   return (
     <main className="page">
@@ -616,9 +628,14 @@ export default function CashoutPage() {
                 // amount than the one confirmed): no Send is offered, only the reason (adversary c12, as c8 for an asset).
                 <p className="msg msg-bad">{unpayable(txn, confirmed)}</p>
               ) : txn.status === "pending_user_transfer_start" || phase === "sending" ? (
-                <button className="btn btn-primary btn-block" disabled={phase === "sending"} onClick={send}>
-                  {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
-                </button>
+                <>
+                  {/* An earlier payment (another tab's, or before a reload) may still land: Send would be refused, so it
+                      is not offered while the hold holds, and the hold is shown here too (adversary c32). */}
+                  {phase === "confirm" && hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
+                  <button className="btn btn-primary btn-block" disabled={phase === "sending" || hold.held} onClick={send}>
+                    {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
+                  </button>
+                </>
               ) : session && (FORM_STATUSES.has(txn.status) || txn.status === "incomplete") ? (
                 // The anchor went back to its form (adversary c10): the form is the way forward, and once the anchor
                 // takes a payment again, Send is offered here again.
