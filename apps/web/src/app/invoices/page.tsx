@@ -120,8 +120,17 @@ function confirmedOf(ref: string): Confirmed | null {
  * settles that exact attempt (Codex invoices R4).
  */
 function cancelPendingOf(ref: string): number | null {
-  return attemptIn(cancelSlot(ref))?.by ?? null;
+  const a = attemptIn(cancelSlot(ref));
+  return a === null || settledCancels.has(a.id) ? null : a.by;
 }
+
+/**
+ * Cancellation attempts a list read has settled (adversary i20). Removing the record takes the Web Lock, which a
+ * browser grants in a later task, so the row was drawn while the record was still there and held as "Cancelling"
+ * with nothing to draw it again. An attempt settled here is no longer held, even before its record is gone; a
+ * cancellation recorded since has its own id and is held.
+ */
+const settledCancels = new Set<string>();
 
 const CANCELLING_TEXT = (by: number) =>
   `Cancelling: Caracal could not confirm the cancellation, and it may still go through until the network passes ledger ${by} (about 5 minutes after it was sent). Do not share its pay link meanwhile: it may stop working. Reload the page in a few minutes.`;
@@ -132,8 +141,10 @@ function shown(r: Row): ShownRow {
   if (pendingCancel !== null && typeof r.chain === "object" && r.chain !== null) {
     // Settled once the invoice reads cancelled or paid (a paid invoice cannot be cancelled), or open past cancelBy:
     // that attempt's record goes, never one recorded since (heldNow still holds the row for a newer one).
-    if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > pendingCancel.by)) void endAttempt(cancelSlot(r.invoice_ref), pendingCancel.id);
-    else return { ...r, cancelling: pendingCancel.by };
+    if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > pendingCancel.by)) {
+      settledCancels.add(pendingCancel.id);
+      void endAttempt(cancelSlot(r.invoice_ref), pendingCancel.id);
+    } else if (!settledCancels.has(pendingCancel.id)) return { ...r, cancelling: pendingCancel.by };
   }
   const done = confirmedOf(r.invoice_ref);
   const chain = typeof r.chain === "object" && r.chain !== null ? r.chain : null;
