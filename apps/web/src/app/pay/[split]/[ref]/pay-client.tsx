@@ -245,7 +245,7 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     setView(v);
     const settled = v.kind === "invoice" && (v.invoice.status !== "open" || openPast);
     if (earlier !== null && settled) {
-      if (checked !== null) await endAttempt(slot, checked.id);
+      if (checked !== null) await endAttempt(slot, checked.id, undefined, checked.by);
       // Another attempt recorded since (another tab), or this one's record that storage would not let go, still holds.
       const now = attemptIn(slot);
       setPending(now?.by ?? null);

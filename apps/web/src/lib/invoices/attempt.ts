@@ -135,10 +135,14 @@ export async function beginAttempt(slot: Slot, by: number, locks: Locks | undefi
 
 /**
  * Removes the record of attempt `id`, and only that one, under the slot's Web Lock (tried for about a second if
- * another tab holds it for a moment). Resolves true once no record of that attempt is left.
+ * another tab holds it for a moment). Resolves true once no record of that attempt is left. A check that settled
+ * an attempt by its last ledger passes `by` too: the record is removed only when it still has that ledger, since the
+ * check's own read (two storage reads, outside the lock) could pair one attempt's ledger with another's id
+ * (adversary i22).
  */
-export async function endAttempt(slot: Slot, id: string, locks: Locks | undefined = browserLocks()): Promise<boolean> {
-  if (!locks || typeof locks.request !== "function") return attemptIn(slot)?.id !== id;
+export async function endAttempt(slot: Slot, id: string, locks: Locks | undefined = browserLocks(), by?: number): Promise<boolean> {
+  const isIt = (a: Attempt | null) => a !== null && a.id === id && (by === undefined || a.by === by);
+  if (!locks || typeof locks.request !== "function") return !isIt(attemptIn(slot));
   for (let i = 0; i < 40; i++) {
     let entered = false;
     let done = false;
@@ -147,11 +151,11 @@ export async function endAttempt(slot: Slot, id: string, locks: Locks | undefine
         if (!lock) return;
         entered = true;
         try {
-          if (attemptIn(slot)?.id === id) slot.remove();
+          if (isIt(attemptIn(slot))) slot.remove();
         } catch {
           // storage refused: the record stays, and so does the hold
         }
-        done = attemptIn(slot)?.id !== id;
+        done = !isIt(attemptIn(slot));
       });
     } catch {
       return false;

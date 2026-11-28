@@ -121,7 +121,7 @@ function confirmedOf(ref: string): Confirmed | null {
  */
 function cancelPendingOf(ref: string): number | null {
   const a = attemptIn(cancelSlot(ref));
-  return a === null || settledCancels.has(a.id) ? null : a.by;
+  return a === null || settledCancels.has(settledKey(ref, a)) ? null : a.by;
 }
 
 /**
@@ -131,6 +131,11 @@ function cancelPendingOf(ref: string): number | null {
  * cancellation recorded since has its own id and is held.
  */
 const settledCancels = new Set<string>();
+/**
+ * Keyed by the invoice, the attempt's id and its last ledger: a record an earlier version wrote has no id and is
+ * named by its ledger alone, so two invoices it cancelled with the same last ledger share an id (adversary i22).
+ */
+const settledKey = (ref: string, a: { id: string; by: number }) => JSON.stringify([ref, a.id, a.by]);
 
 const CANCELLING_TEXT = (by: number) =>
   `Cancelling: Caracal could not confirm the cancellation, and it may still go through until the network passes ledger ${by} (about 5 minutes after it was sent). Do not share its pay link meanwhile: it may stop working. Reload the page in a few minutes.`;
@@ -142,9 +147,9 @@ function shown(r: Row): ShownRow {
     // Settled once the invoice reads cancelled or paid (a paid invoice cannot be cancelled), or open past cancelBy:
     // that attempt's record goes, never one recorded since (heldNow still holds the row for a newer one).
     if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > pendingCancel.by)) {
-      settledCancels.add(pendingCancel.id);
-      void endAttempt(cancelSlot(r.invoice_ref), pendingCancel.id);
-    } else if (!settledCancels.has(pendingCancel.id)) return { ...r, cancelling: pendingCancel.by };
+      settledCancels.add(settledKey(r.invoice_ref, pendingCancel));
+      void endAttempt(cancelSlot(r.invoice_ref), pendingCancel.id, undefined, pendingCancel.by);
+    } else if (!settledCancels.has(settledKey(r.invoice_ref, pendingCancel))) return { ...r, cancelling: pendingCancel.by };
   }
   const done = confirmedOf(r.invoice_ref);
   const chain = typeof r.chain === "object" && r.chain !== null ? r.chain : null;
