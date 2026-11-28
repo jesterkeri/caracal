@@ -111,6 +111,8 @@ function confirmedOf(ref: string): Confirmed | null {
  * may still go through and offers neither its pay link nor Cancel (Codex invoices R3 #2).
  */
 const CANCEL_PENDING_KEY = "caracal.invoiceCancelPending";
+/** This tab's own copy, so a browser that refuses storage still holds the row until the page is left (adversary i17). */
+const cancelHere = new Map<string, number | null>();
 
 function readCancelPending(): Record<string, unknown> {
   try {
@@ -122,19 +124,22 @@ function readCancelPending(): Record<string, unknown> {
 }
 
 function setCancelPending(ref: string, cancelBy: number | null) {
+  cancelHere.set(ref, cancelBy);
   try {
     const saved = readCancelPending();
     if (cancelBy === null) delete saved[ref];
     else saved[ref] = cancelBy;
     window.localStorage.setItem(CANCEL_PENDING_KEY, JSON.stringify(saved));
   } catch {
-    // storage blocked: nothing is kept for a reload
+    // storage blocked: this tab still remembers it, but nothing is kept for a reload
   }
 }
 
+/** The stored record (which another tab may have written), or else this tab's own. */
 function cancelPendingOf(ref: string): number | null {
   const v = readCancelPending()[ref];
-  return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null;
+  if (typeof v === "number" && Number.isSafeInteger(v) && v > 0) return v;
+  return cancelHere.get(ref) ?? null;
 }
 
 const CANCELLING_TEXT = (by: number) =>
@@ -171,6 +176,8 @@ function shown(r: Row): ShownRow {
  */
 function heldNow(r: ShownRow): ShownRow {
   if (r.ahead || r.cancelling !== undefined || typeof r.chain !== "object" || r.chain === null || r.chain.status !== "open") return r;
+  // A cancellation confirmed since the list was read (its list read may have failed) holds it too (adversary i17).
+  if (confirmedOf(r.invoice_ref) === "cancelled") return { ...r, ahead: "cancelled" };
   const cancelBy = cancelPendingOf(r.invoice_ref);
   return cancelBy === null ? r : { ...r, cancelling: cancelBy };
 }
