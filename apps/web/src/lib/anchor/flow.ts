@@ -5,6 +5,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { AnchorError, RequestTimeout, messageOf, within } from "./errors";
 import { signInToAnchor, type Sep45Deps } from "./sep45";
 import { startWithdraw, type AnchorTxn } from "./sep24";
+import { UnboundedPayment } from "./send-guard";
 import { paymentFor, type AnchorPayment } from "./transfer";
 import type { AnchorToml } from "./toml";
 
@@ -121,6 +122,8 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
       return { kind: "unknown", message: "Caracal got no answer about the USDC payment within 5 minutes. It may still go through. The anchor's status below shows whether it arrived. Do not send it again." };
     }
     if (codeOf(e) === WEBAUTHN_CANCELLED) return { kind: "not-sent", message: "You cancelled the passkey prompt. Nothing was sent." };
+    // Refused by the send guard before the kit was called (send-guard.ts submit).
+    if (e instanceof UnboundedPayment) return { kind: "not-sent", message: e.message };
     console.error("USDC payment threw:", messageOf(e));
     return { kind: "unknown", message: "Something went wrong while sending the USDC and Caracal cannot tell whether it left your wallet. The anchor's status below shows whether it arrived. Do not send it again." };
   }

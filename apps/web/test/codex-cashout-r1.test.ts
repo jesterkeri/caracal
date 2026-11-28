@@ -11,7 +11,7 @@ import { Buffer } from "buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkChallenge, encodeEntries } from "../src/lib/anchor/sep45";
 import { loadTransaction } from "../src/lib/anchor/sep24";
-import { SETTLE_MS, acquireSend, beginSend, sendHold } from "../src/lib/anchor/send-guard";
+import { SEND_LEDGERS, acquireSend, beginSend, sendHold } from "../src/lib/anchor/send-guard";
 import { readToml } from "../src/lib/anchor/toml";
 import type { Locks } from "../src/lib/auth/creation-lock";
 import { ID, WALLET, buttons, challenge, clickButton, fixture, label, mount, pressContinue, text, tick, toConfirm, unmock } from "./adversary-c2-harness";
@@ -63,10 +63,13 @@ describe("finding 1: a reload during a send does not offer a second payment", ()
     rt.unmount();
   });
 
-  it("the hold ends 3 minutes after the dead page's last renewal, and a new cash-out can then start", async () => {
+  // Restated with the ledger-bound send guard (disclosed in docs/decisions.md): the hold ended SETTLE_MS (3 min)
+  // after the dead page's last renewal on the browser's clock; it now ends once the network passes the payment's
+  // closeBy (the harness's fake RPC closes a ledger every 5 s).
+  it("the hold ends once the network passes the payment's last ledger, and a new cash-out can then start", async () => {
     const store = new Map<string, string>();
     const { rt, world } = await reloadMidSend(store);
-    await tick(SETTLE_MS + 11_000);
+    await tick((SEND_LEDGERS + 3) * 5_000);
     expect(text(rt)).not.toMatch(/may still go through/);
     void clickButton(rt.tree, /Continue to the anchor/);
     await tick(50);
@@ -133,35 +136,35 @@ describe("finding 1: the record itself", () => {
   it("two tabs pressing Send at the same moment: exactly one goes on", async () => {
     storage();
     const locks = sharedLocks();
-    const both = await Promise.all([acquireSend(WALLET, "a", locks), acquireSend(WALLET, "b", locks)]);
+    const both = await Promise.all([acquireSend(WALLET, "a", 1000, locks), acquireSend(WALLET, "b", 1000, locks)]);
     expect(both.filter((r) => r.ok)).toHaveLength(1);
   });
 
-  it("while the kit's call is pending the record is renewed past any window; once it settles it holds 3 more minutes", async () => {
+  // Restated with the ledger-bound send guard (disclosed in docs/decisions.md): the record was renewed while the
+  // kit's call was pending and held SETTLE_MS after it settled; it now holds through the payment's closeBy, whose
+  // passkey signature the network refuses after it, pending or not, and lifts past it.
+  it("an unknown payment holds through its closeBy, whatever the clock, and the passkey signs with that expiry", async () => {
     vi.useFakeTimers();
     storage();
-    const begun = beginSend(WALLET, ID);
+    const begun = beginSend(WALLET, ID, 1000);
     if (!begun.ok) throw new Error("should begin");
-    let settle!: () => void;
-    void begun.guard.watch(new Promise<void>((r) => (settle = r)));
+    expect(begun.guard.closeBy).toBe(1000 + SEND_LEDGERS);
+    const signAndSubmit = vi.fn((_tx: unknown, _o: { expiration: number }) => new Promise<never>(() => {}));
+    void begun.guard.submit({ signAndSubmit }, { needsNonInvokerSigningBy: () => [WALLET] } as never);
+    expect(signAndSubmit.mock.calls[0]![1]).toEqual({ expiration: 1000 + SEND_LEDGERS });
     begun.guard.finish("unknown");
     vi.advanceTimersByTime(30 * 60_000);
-    expect(sendHold(WALLET).held).toBe(true);
-    settle();
-    await Promise.resolve();
-    await Promise.resolve();
-    vi.advanceTimersByTime(SETTLE_MS - 1000);
-    expect(sendHold(WALLET).held).toBe(true);
-    vi.advanceTimersByTime(2000);
-    expect(sendHold(WALLET).held).toBe(false);
+    expect(sendHold(WALLET, 1000 + SEND_LEDGERS).held).toBe(true);
+    expect(sendHold(WALLET, null).held).toBe(true);
+    expect(sendHold(WALLET, 1001 + SEND_LEDGERS).held).toBe(false);
   });
 
   it("storage that cannot be read holds back; no Web Locks sends nothing", async () => {
     vi.stubGlobal("window", { localStorage: { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); }, removeItem() {} } });
-    expect(sendHold(WALLET)).toMatchObject({ held: true, reason: "unreadable" });
+    expect(sendHold(WALLET, 1000)).toMatchObject({ held: true, reason: "unreadable" });
     storage();
     vi.stubGlobal("navigator", {});
-    expect(await acquireSend(WALLET, ID)).toMatchObject({ ok: false, hold: { reason: "unsupported" } });
+    expect(await acquireSend(WALLET, ID, 1000)).toMatchObject({ ok: false, hold: { reason: "unsupported" } });
   });
 });
 

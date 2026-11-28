@@ -172,6 +172,7 @@ export type MountOptions = {
 const realFetch = globalThis.fetch;
 
 export async function mount(over: MountOptions = {}) {
+  const mountedAt = Date.now();
   const base = JSON.parse(fixture("txn-pending-user-transfer-start.json")) as { transaction: Record<string, unknown> };
   const world: World = {
     txn: { ...base.transaction, id: ID, status: "incomplete", ...over.txn },
@@ -225,7 +226,9 @@ export async function mount(over: MountOptions = {}) {
     disconnect: async () => {},
     signAuthEntry: over.signAuthEntry ?? (async (e: unknown) => e),
     signAndSubmit: world.kit.signAndSubmit,
-    rpc: over.rpc ?? { getLatestLedger: async () => ({ sequence: 100 }) },
+    // A ledger every 5 s of the (fake) clock from ledger 100, as testnet closes them: a payment's closeBy passes as
+    // time goes on (send-guard.ts). Fixture changed with the ledger-bound send guard; before, it stayed at 100.
+    rpc: over.rpc ?? { getLatestLedger: async () => ({ sequence: 100 + Math.floor((Date.now() - mountedAt) / 5_000) }) },
   };
   const auth = {
     getUser: async () => ({ data: { user: { id: "user-1", email: "a@x.ng" } }, error: null }),

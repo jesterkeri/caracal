@@ -3,26 +3,42 @@
 // The page's own locks (sendingFor, unknownSend, the landing window) live in its memory, so a reload, a
 // crash, leaving the page, or the reload another tab's account change causes, used to reset it to a fresh
 // cash-out while the first payment could still land: the person could then pay a second time (Codex
-// cash-out R1 #1). So every payment leaves a record in localStorage BEFORE the passkey is asked, renewed
-// every 10 s and on pagehide while this tab's send is in hand, and no cash-out of this wallet starts or
-// sends while a record is fresh. The record is removed only when the outcome is certain (confirmed sent,
-// or proven not sent).
+// cash-out R1 #1). So every payment leaves a record in localStorage BEFORE the passkey is asked, and no
+// cash-out of this wallet starts or sends while the record says it can still land. The record is removed
+// only when the outcome is certain: confirmed sent, proven not sent, or reported by the anchor as completed
+// or refunded (it received the payment).
 //
-// When can an uncertain payment no longer land? While this tab's signAndSubmit is still pending it can, so
-// the record keeps being renewed. Once that has settled, or the tab was closed or reloaded (a dead tab posts
-// nothing new), only a request already at the relay is left: it sends within SEND_DEADLINE_MS (60 s) and
-// the transaction it builds is valid TX_TIMEOUT_S (25 s). SETTLE_MS is 3 minutes after the last renewal,
-// more than twice that.
+// When can an uncertain payment no longer land? Not "some minutes later": a browser clock can jump, and time
+// read from it proves nothing (the same finding as Codex split R3). Each payment fixes its own last ledger,
+// closeBy, before it is sent: the page reads the latest ledger, and the passkey signs the wallet's
+// authorisation to expire at closeBy (the kit's `expiration`). The network refuses that authorisation in any
+// ledger after closeBy, so once an RPC shows a ledger past it, the payment can no longer land, whatever any
+// clock says. An RPC can lag the network but never run ahead of it. Without a ledger read, the hold stays.
+//
+// A record this browser cannot read, or one from the older, clock-based version (whose payment was signed
+// with the kit's default expiry, at most KIT_DEFAULT_LEDGERS after the ledger it read), is given
+// closeBy = the ledger read now + KIT_DEFAULT_LEDGERS, which is past any such payment's expiry.
 //
 // Checking the record and writing it are two steps, so acquireSend takes this wallet's Web Lock first
 // (atomic across the tabs of one site) and holds it while the payment may still be sent from this tab; the
 // browser lets it go if the tab dies. Storage that cannot be read holds back; storage that cannot be written,
 // or a browser without Web Locks, refuses to send, because nothing would stop a repeat.
 
+import type { contract } from "@stellar/stellar-sdk";
 import { browserLocks, type Locks } from "@/lib/auth/creation-lock";
 
-export const SETTLE_MS = 3 * 60_000;
-export const HEARTBEAT_MS = 10_000;
+/**
+ * How many ledgers after the one read at Send the passkey signature stays valid: about 90 s, which covers the
+ * kit's passkey prompt (WEBAUTHN_TIMEOUT_MS, 60 s) and the relay's transaction validity (TX_TIMEOUT_S, 25 s),
+ * and matches the page's landing window. A signature that expires first only makes the payment fail.
+ */
+export const SEND_LEDGERS = 18;
+/** smart-account-kit 0.10.0's default signature expiry, used by payments from older versions of Caracal. */
+export const KIT_DEFAULT_LEDGERS = 720;
+/** About how long a testnet ledger takes, only to say roughly how long a hold lasts. */
+const LEDGER_MS = 5_000;
+/** How long a ledger read may take before it counts as failed. */
+const LEDGER_READ_MS = 15_000;
 const KEY = (wallet: string) => `caracal.cashout.send.${wallet}`;
 const LOCK = (wallet: string) => `caracal.cashout.send.${wallet}`;
 
@@ -35,7 +51,7 @@ export type Hold =
 type Held = Extract<Hold, { held: true }>;
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-type Rec = { id: string; beat: number; anchorId: string | null; hash: string | null; ahead: boolean };
+type Rec = { v: 2; id: string; closeBy: number; anchorId: string | null; hash: string | null };
 
 function store(): Store | null {
   try {
@@ -46,134 +62,172 @@ function store(): Store | null {
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.length > 0 && v.length <= 200 ? v : null);
+const isLedger = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
 
-/** The record for this wallet: undefined when none, null when it is there but cannot be read. */
-function read(s: Store, wallet: string, now: number): Rec | null | undefined {
+/** The record for this wallet: undefined when none, null when it is there but cannot be read (or has no closeBy). */
+function read(s: Store, wallet: string): Rec | null | undefined {
+  const raw = s.getItem(KEY(wallet));
+  if (raw === null || raw === undefined) return undefined;
   try {
-    const raw = s.getItem(KEY(wallet));
-    if (raw === null || raw === undefined) return undefined;
     const v = JSON.parse(raw) as Record<string, unknown> | null;
-    if (typeof v?.id !== "string" || typeof v.beat !== "number" || !Number.isFinite(v.beat)) throw new Error("bad record");
-    // A renewal time in the future (a changed clock) counts as now, and is written back as now below.
-    return { id: v.id, beat: Math.min(v.beat, now), anchorId: text(v.anchorId), hash: text(v.hash), ahead: v.beat > now };
+    if (v?.v !== 2 || typeof v.id !== "string" || !isLedger(v.closeBy)) return null;
+    return { v: 2, id: v.id, closeBy: v.closeBy, anchorId: text(v.anchorId), hash: text(v.hash) };
   } catch {
     return null;
   }
 }
 
-const write = (s: Store, wallet: string, r: Omit<Rec, "ahead">) => s.setItem(KEY(wallet), JSON.stringify(r));
-
-/** Whether a cash-out of this wallet must wait. Storage that cannot be read holds back. */
-export function sendHold(wallet: string, now: number = Date.now()): Hold {
-  const s = store();
-  if (!s) return { held: true, until: null, reason: "unreadable" };
-  const rec = read(s, wallet, now);
-  if (rec === undefined) return { held: false };
-  if (rec === null) {
-    // A record that cannot be read is treated as written just now, so it expires and is not a trap.
-    try {
-      write(s, wallet, { id: "unreadable", beat: now, anchorId: null, hash: null });
-    } catch {
-      return { held: true, until: null, reason: "unreadable" };
-    }
-    return { held: true, until: now + SETTLE_MS, reason: "earlier-send", earlier: { anchorId: null, hash: null } };
+/** What an older or unreadable record still tells: the anchor id and hash, when it names them. */
+function earlierOf(s: Store, wallet: string): Earlier {
+  try {
+    const v = JSON.parse(s.getItem(KEY(wallet)) ?? "null") as Record<string, unknown> | null;
+    return { anchorId: text(v?.anchorId), hash: text(v?.hash) };
+  } catch {
+    return { anchorId: null, hash: null };
   }
-  if (rec.ahead) {
-    // Renewed "in the future" (the clock was ahead, then set back): recorded again as renewed now, so it holds
-    // for SETTLE_MS from here, not for as long as the clock was off. Same id, so a tab still sending renews it.
-    try {
-      write(s, wallet, { id: rec.id, beat: now, anchorId: rec.anchorId, hash: rec.hash });
-    } catch {
-      return { held: true, until: null, reason: "unreadable" };
-    }
-  }
-  return now - rec.beat < SETTLE_MS ? { held: true, until: rec.beat + SETTLE_MS, reason: "earlier-send", earlier: { anchorId: rec.anchorId, hash: rec.hash } } : { held: false };
 }
 
+const write = (s: Store, wallet: string, r: Rec) => s.setItem(KEY(wallet), JSON.stringify(r));
+
+/**
+ * Whether a cash-out of this wallet must wait, given the latest ledger an RPC showed (null when none was read).
+ * Storage that cannot be read holds back.
+ */
+export function sendHold(wallet: string, ledger: number | null, now: number = Date.now()): Hold {
+  const s = store();
+  if (!s) return { held: true, until: null, reason: "unreadable" };
+  let rec: Rec | null | undefined;
+  try {
+    rec = read(s, wallet);
+  } catch {
+    return { held: true, until: null, reason: "unreadable" };
+  }
+  if (rec === undefined) return { held: false };
+  const known = isLedger(ledger) ? ledger : null;
+  if (rec === null) {
+    // Unreadable or from an older version: bounded from the first ledger it is seen at (see the top).
+    const earlier = earlierOf(s, wallet);
+    if (known === null) return { held: true, until: null, reason: "earlier-send", earlier };
+    try {
+      write(s, wallet, { v: 2, id: "earlier", closeBy: known + KIT_DEFAULT_LEDGERS, ...earlier });
+    } catch {
+      return { held: true, until: null, reason: "unreadable" };
+    }
+    return { held: true, until: now + (KIT_DEFAULT_LEDGERS + 1) * LEDGER_MS, reason: "earlier-send", earlier };
+  }
+  const earlier = { anchorId: rec.anchorId, hash: rec.hash };
+  if (known === null) return { held: true, until: null, reason: "earlier-send", earlier };
+  if (known > rec.closeBy) return { held: false };
+  return { held: true, until: now + (rec.closeBy - known + 1) * LEDGER_MS, reason: "earlier-send", earlier };
+}
+
+/**
+ * The anchor reported this withdrawal completed or refunded, so it received the payment: the outcome is
+ * certain, and a record for that withdrawal is removed.
+ */
+export function anchorReceived(wallet: string, anchorId: string): void {
+  const s = store();
+  if (!s) return;
+  try {
+    if (read(s, wallet)?.anchorId === anchorId) s.removeItem(KEY(wallet));
+  } catch {
+    /* the record stays until the network passes its closeBy */
+  }
+}
+
+/** The part of the kit a payment is sent with. */
+export type Submitter<R> = { signAndSubmit(tx: contract.AssembledTransaction<unknown>, options: { expiration: number }): Promise<R> };
+
 export type SendGuard = {
-  /** The kit's signAndSubmit promise, watched so the record lasts while it is pending. */
-  watch<T>(p: Promise<T>): Promise<T>;
+  /** The last ledger this payment can land in. */
+  closeBy: number;
+  /**
+   * Sends through the kit with the passkey signature expiring at closeBy, watched until it settles. A
+   * transaction that needs no signature from the wallet is not sent: closeBy bounds a payment only through it.
+   */
+  submit<R>(kit: Submitter<R>, tx: contract.AssembledTransaction<unknown>): Promise<R>;
   /** The payment's hash once known, kept in the record so a reloaded page can show it. */
   noteHash(hash: string): void;
-  /** The outcome: a certain one removes the record; an unknown one keeps it until the payment can no longer land. */
+  /** The outcome: a certain one removes the record; an unknown one keeps it until the network passes closeBy. */
   finish(kind: "sent" | "not-sent" | "unknown"): void;
   /** Settles once nothing more can be sent from this tab. */
   released: Promise<void>;
 };
 
+/** What submit throws for a transaction it cannot bound; nothing was signed or sent. */
+export class UnboundedPayment extends Error {}
+
 type Begun = { ok: true; guard: SendGuard } | { ok: false; hold: Held };
 
-/** Takes the hold for this wallet before the passkey is asked: refused when an earlier payment holds it. */
-export function beginSend(wallet: string, anchorId: string, now: () => number = Date.now): Begun {
-  const hold = sendHold(wallet, now());
+/**
+ * Takes the hold for this wallet before the passkey is asked, given the latest ledger read just now: refused
+ * when an earlier payment holds it. The payment's closeBy is that ledger + SEND_LEDGERS, recorded first.
+ */
+export function beginSend(wallet: string, anchorId: string, ledger: number): Begun {
+  const none: Earlier = { anchorId: null, hash: null };
+  if (!isLedger(ledger)) return { ok: false, hold: { held: true, until: null, reason: "earlier-send", earlier: none } };
+  const hold = sendHold(wallet, ledger);
   if (hold.held) return { ok: false, hold };
   const s = store();
   if (!s) return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
-  const id = `${now()}-${Math.random().toString(36).slice(2)}`;
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const closeBy = ledger + SEND_LEDGERS;
   let hash: string | null = null;
   try {
-    write(s, wallet, { id, beat: now(), anchorId, hash });
-    if (read(s, wallet, now())?.id !== id) return { ok: false, hold: { held: true, until: now() + SETTLE_MS, reason: "earlier-send", earlier: { anchorId: null, hash: null } } };
+    write(s, wallet, { v: 2, id, closeBy, anchorId, hash });
+    if (read(s, wallet)?.id !== id) return { ok: false, hold: { held: true, until: null, reason: "earlier-send", earlier: none } };
   } catch {
     return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   }
   const mine = () => {
     try {
-      return read(s, wallet, now())?.id === id;
+      return read(s, wallet)?.id === id;
     } catch {
       return false;
     }
   };
-  const renew = () => {
-    try {
-      if (mine()) write(s, wallet, { id, beat: now(), anchorId, hash });
-    } catch {
-      /* the next renewal tries again; the record only ages */
-    }
-  };
-  const beat = setInterval(renew, HEARTBEAT_MS);
-  window.addEventListener?.("pagehide", renew);
   let pending = 0;
   let unknown = false;
   let release = () => {};
   const released = new Promise<void>((r) => (release = r));
-  const stop = () => {
-    clearInterval(beat);
-    window.removeEventListener?.("pagehide", renew);
-    release();
-  };
   const settled = () => {
     pending--;
-    if (unknown && pending === 0) {
-      renew();
-      stop();
-    }
+    if (unknown && pending === 0) release();
   };
   return {
     ok: true,
     guard: {
+      closeBy,
       released,
-      watch(p) {
+      submit(kit, tx) {
+        const needs = (tx as { needsNonInvokerSigningBy?: (o: { includeAlreadySigned: boolean }) => string[] }).needsNonInvokerSigningBy;
+        if (typeof needs === "function" && needs.call(tx, { includeAlreadySigned: true }).length === 0) {
+          return Promise.reject(new UnboundedPayment("This payment carries no authorisation for your wallet to sign, so Caracal could not give it a last ledger. Nothing was sent."));
+        }
         pending++;
+        const p = kit.signAndSubmit(tx, { expiration: closeBy });
         p.then(settled, settled);
         return p;
       },
       noteHash(h) {
         hash = text(h);
-        renew();
+        try {
+          if (mine()) write(s, wallet, { v: 2, id, closeBy, anchorId, hash });
+        } catch {
+          /* the record keeps what it had */
+        }
       },
       finish(kind) {
         if (kind === "unknown") {
           unknown = true;
-          renew();
-          if (pending === 0) stop();
+          if (pending === 0) release();
           return;
         }
-        stop();
+        release();
         try {
           if (mine()) s.removeItem(KEY(wallet));
         } catch {
-          /* the record ages out */
+          /* the record stays until the network passes its closeBy */
         }
       },
     },
@@ -184,7 +238,7 @@ export function beginSend(wallet: string, anchorId: string, now: () => number = 
  * beginSend under this wallet's Web Lock, held until the guard is released, so no other tab of this browser
  * can check and write the record at the same time. Does not wait for the lock: a tab that holds it is sending.
  */
-export function acquireSend(wallet: string, anchorId: string, locks: Locks | undefined = browserLocks(), now: () => number = Date.now): Promise<Begun> {
+export function acquireSend(wallet: string, anchorId: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<Begun> {
   if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
   return new Promise((resolve) => {
     let entered = false;
@@ -199,12 +253,12 @@ export function acquireSend(wallet: string, anchorId: string, locks: Locks | und
       request = locks.request(LOCK(wallet), { ifAvailable: true }, async (lock) => {
         entered = true;
         if (!lock) {
-          const h = sendHold(wallet, now());
+          const h = sendHold(wallet, ledger);
           return answer({ ok: false, hold: h.held ? h : { held: true, until: null, reason: "earlier-send", earlier: { anchorId: null, hash: null } } });
         }
         let begun: Begun;
         try {
-          begun = beginSend(wallet, anchorId, now);
+          begun = beginSend(wallet, anchorId, ledger);
         } catch {
           begun = { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
         }
@@ -220,6 +274,23 @@ export function acquireSend(wallet: string, anchorId: string, locks: Locks | und
   });
 }
 
+/** The latest ledger the RPC shows, within a limit; throws when it cannot be read. */
+export async function readLedger(rpc: unknown): Promise<number> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const r = await Promise.race([
+      (rpc as { getLatestLedger(): Promise<{ sequence?: unknown }> }).getLatestLedger(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`the Stellar network did not answer within ${LEDGER_READ_MS / 1000} seconds`)), LEDGER_READ_MS);
+      }),
+    ]);
+    if (!isLedger(r?.sequence)) throw new Error("the Stellar network did not say which ledger it is at");
+    return r.sequence;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** What the page says while a cash-out is held back. */
 export function holdText(hold: Held, now: number = Date.now()): string {
   if (hold.reason === "unsupported") {
@@ -228,7 +299,11 @@ export function holdText(hold: Held, now: number = Date.now()): string {
   if (hold.reason !== "earlier-send") {
     return "Caracal cannot tell whether an earlier USDC payment from this browser is still on its way, because this browser would not let it check. No USDC can be sent from here until it can. Allow this site to store data, then reload.";
   }
-  const mins = hold.until === null ? 3 : Math.max(1, Math.ceil((hold.until - now) / 60_000));
   const ref = [hold.earlier.anchorId && `anchor transaction ${hold.earlier.anchorId}`, hold.earlier.hash && `Stellar payment ${hold.earlier.hash}`].filter(Boolean).join(", ");
-  return `An earlier USDC payment to the anchor from this browser may still go through${ref ? ` (${ref})` : ""}. Check your wallet's USDC balance and history before you cash out again. To keep you from paying twice, no new cash-out can start or send for about ${mins} ${mins === 1 ? "minute" : "minutes"}.`;
+  const head = `An earlier USDC payment to the anchor from this browser may still go through${ref ? ` (${ref})` : ""}. Check your wallet's USDC balance and history before you cash out again.`;
+  if (hold.until === null) {
+    return `${head} To keep you from paying twice, no new cash-out can start or send until Caracal reads on the Stellar network that it can no longer land; it checks every few seconds.`;
+  }
+  const mins = Math.max(1, Math.ceil((hold.until - now) / 60_000));
+  return `${head} To keep you from paying twice, no new cash-out can start or send for about ${mins} ${mins === 1 ? "minute" : "minutes"}, until the network passes the last ledger it could land in.`;
 }

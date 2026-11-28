@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { HEARTBEAT_MS, acquireSend, holdText, sendHold, type Hold } from "@/lib/anchor/send-guard";
+import { acquireSend, anchorReceived, holdText, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -123,8 +123,13 @@ export default function CashoutPage() {
   const [balanceBeforeSend, setBalanceBeforeSend] = useState<bigint | null>(null);
   /** LAND_WINDOW_MS has passed since sendSettledAt (set by a timer, see unknownWaiting). */
   const [landingOver, setLandingOver] = useState(false);
-  /** Bumped while an earlier payment holds this wallet, so the hold is read again as it runs out. */
-  const [, setHoldTick] = useState(0);
+  /**
+   * The latest ledger read while an earlier payment holds this wallet: the hold lifts once it passes the
+   * payment's closeBy (send-guard.ts). null until read, or when it cannot be read, and the hold then stays.
+   */
+  const [seenLedger, setSeenLedger] = useState<number | null>(null);
+  /** LAND_WINDOW_MS has passed since the send settled; landingOver also waits for the hold to lift (see below). */
+  const [windowOver, setWindowOver] = useState(false);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -189,6 +194,7 @@ export default function CashoutPage() {
     };
   }, []);
 
+  const wallet = boot.kind === "ready" ? boot.wallet : null;
   // Watch the anchor's record of the withdrawal. The anchor's status is the truth.
   useEffect(() => {
     if (!session || !toml || !["form", "confirm", "sending", "watching"].includes(phase)) return;
@@ -201,8 +207,12 @@ export default function CashoutPage() {
         setPollNote(null);
         txnRef.current = t;
         setTxn(t);
-        // A "may still go through" warning from the send is settled once the anchor says it finished.
-        if (t.status === "completed" || t.status === "refunded") setProblem(null);
+        // A "may still go through" warning from the send is settled once the anchor says it finished, and the
+        // record holding back a new cash-out goes: the anchor received the payment, so its outcome is certain.
+        if (t.status === "completed" || t.status === "refunded") {
+          setProblem(null);
+          if (wallet) anchorReceived(wallet, t.id);
+        }
         if (phase === "form" && t.status === "pending_user_transfer_start") {
           seenRef.current = payTo(t);
           setPhase("confirm");
@@ -221,7 +231,7 @@ export default function CashoutPage() {
       stop = true;
       clearTimeout(timer);
     };
-  }, [phase, session, toml]);
+  }, [phase, session, toml, wallet]);
 
   // The balance changes when the anchor's status changes (the USDC arrives, a refund lands).
   useEffect(() => {
@@ -235,7 +245,7 @@ export default function CashoutPage() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
     // An earlier payment from this browser (this page before a reload, or another tab) may still land.
-    const held = sendHold(boot.wallet);
+    const held = sendHold(boot.wallet, seenLedger);
     if (held.held) return setProblem(holdText(held));
     setProblem(null);
     setPopupNote(null);
@@ -290,9 +300,19 @@ export default function CashoutPage() {
     // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
     // then says to check the wallet's history instead. Started before anything else is awaited.
     const balanceAtPress = within(readUsdcBalance(boot.wallet, kit.rpc), BALANCE_AT_SEND_MS).catch(() => null);
+    // The payment's last ledger is fixed from the ledger read now, before the passkey is asked (send-guard.ts).
+    let ledger: number;
+    try {
+      ledger = await readLedger(kit.rpc);
+    } catch {
+      sendingFor.current = null;
+      setProblem("Caracal could not read the Stellar network, so nothing was sent. Check your connection and try again.");
+      return;
+    }
+    setSeenLedger(ledger);
     // Recorded in this browser before the passkey is asked, so a reload, a crash or another tab cannot start a
     // second payment while this one may still land (Codex cash-out R1 #1, send-guard.ts).
-    const begun = await acquireSend(boot.wallet, latest.id);
+    const begun = await acquireSend(boot.wallet, latest.id, ledger);
     if (!begun.ok) {
       sendingFor.current = null;
       setProblem(holdText(begun.hold));
@@ -306,13 +326,15 @@ export default function CashoutPage() {
     setStalled(false);
     setSendSettledAt(null);
     setLandingOver(false);
+    setWindowOver(false);
     setBalanceBeforeSend(null);
     setPhase("sending");
     setBalanceBeforeSend(await balanceAtPress);
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
+      // The passkey signature expires at the payment's closeBy (send-guard.ts submit).
       signAndSubmit: (tx) =>
-        guard.watch(kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>)).finally(() => {
+        guard.submit(kit, tx as contract.AssembledTransaction<unknown>).finally(() => {
           setSendSettledAt(Date.now());
         }),
       // The poll kept the record current while the balance was read and the payment built: the passkey is
@@ -371,6 +393,7 @@ export default function CashoutPage() {
     setStalled(false);
     setSendSettledAt(null);
     setLandingOver(false);
+    setWindowOver(false);
     setProblem(null);
     setPollNote(null);
     setPopupNote(null);
@@ -398,37 +421,55 @@ export default function CashoutPage() {
   }, [unknownSend, sendSettledAt]);
   useEffect(() => {
     if (sendSettledAt === null) return;
-    // The balance is read again once the payment can no longer land, and the page says so only after that
-    // read: the advice to compare balances must not stand over one read before a late landing (adversary c16).
+    const t = setTimeout(() => setWindowOver(true), Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [sendSettledAt]);
+  // An earlier payment from this browser that may still land (read on every render, so another tab's or one
+  // from before a reload counts). Its ledger is read every few seconds while it holds, so the hold lifts once
+  // the network passes the payment's closeBy.
+  const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
+  useEffect(() => {
+    if (!hold.held) return;
     let gone = false;
-    const t = setTimeout(() => {
-      void refreshBalance()
-        .catch(() => {})
-        .then(() => {
-          if (!gone) setLandingOver(true);
-        });
-    }, Math.max(0, sendSettledAt + LAND_WINDOW_MS - Date.now()));
+    const look = () => {
+      const kit = kitRef.current;
+      if (!kit) return;
+      readLedger(kit.rpc)
+        .then((n) => !gone && setSeenLedger(n))
+        .catch(() => !gone && setSeenLedger(null));
+    };
+    look();
+    const t = setInterval(look, 5_000);
     return () => {
       gone = true;
-      clearTimeout(t);
+      clearInterval(t);
     };
-  }, [sendSettledAt]);
+  }, [hold.held]);
+  // The payment can no longer land once the landing window is over AND the network has passed its closeBy
+  // (the hold has lifted): only the ledger proves it, and the page never offers what the hold would refuse
+  // (adversary c27). The balance is read again then, and the page says so only after that read: the advice to
+  // compare balances must not stand over one read before a late landing (adversary c16).
+  useEffect(() => {
+    if (!windowOver || hold.held || landingOver) return;
+    let gone = false;
+    void refreshBalance()
+      .catch(() => {})
+      .then(() => {
+        if (!gone) setLandingOver(true);
+      });
+    return () => {
+      gone = true;
+    };
+  }, [windowOver, hold.held, landingOver]);
   // An unknown payment the anchor has not reported received may still land until the landing window ends.
   // No new cash-out is offered before then, whatever else happened (a lost session, a final status), because
   // a second payment could then pay the anchor twice (adversary c18). Only "completed" and "refunded" prove
   // the anchor received the first one.
   const mayStillLand =
     phase === "watching" && unknownSend && !landingOver && !(txn !== null && (txn.status === "completed" || txn.status === "refunded"));
-  // An earlier payment from this browser that may still land (read on every render, so another tab's or one
-  // from before a reload counts), and a re-render as the hold runs out.
-  const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet) : { held: false };
-  useEffect(() => {
-    if (!hold.held) return;
-    const t = setInterval(() => setHoldTick((n) => n + 1), HEARTBEAT_MS);
-    return () => clearInterval(t);
-  }, [hold.held]);
-  // Never while the USDC payment is being sent: starting again then would lose track of it.
-  const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending";
+  // Never while the USDC payment is being sent: starting again then would lose track of it; never while the
+  // hold would refuse the new one (adversary c27).
+  const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending" && !hold.held;
 
   return (
     <main className="page">
