@@ -207,7 +207,11 @@ export async function loadTransaction(transferServer: string, token: string, id:
   }
   if (res.status === 403 || res.status === 401) throw new AnchorError("The anchor no longer accepts this session, so its status cannot be read here. Your wallet's history shows whether the USDC left.", "status", true);
   if (!res.ok) throw new AnchorError(`The test anchor's status answered with an error (${res.status}).`, "status", true);
-  return parseTransaction(jsonOf(res.text));
+  const t = parseTransaction(jsonOf(res.text));
+  // A record for another withdrawal is never shown or paid as this one's: its status and payment details are
+  // not this withdrawal's (Codex cash-out R1 #3). The session stays as it was, and the next check asks again.
+  if (t.id !== id) throw new AnchorError("The test anchor answered the status check with a different withdrawal's record, so Caracal ignored it. Checking again.", "status", true);
+  return t;
 }
 
 /** What a status means for the person, in plain English. Only "completed" counts as done. */

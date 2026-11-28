@@ -7,10 +7,11 @@ import { readFileSync } from "node:fs";
 import { Address, xdr } from "@stellar/stellar-sdk";
 import { vi } from "vitest";
 import { encodeEntries } from "../src/lib/anchor/sep45";
+import { TEST_SIGNING_KEY, signAsAnchor, withTestKey } from "./sep45-test-anchor";
 
 export const fixture = (n: string) => readFileSync(new URL(`./fixtures/anchor/${n}`, import.meta.url), "utf8");
 export const WALLET = "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW";
-export const SIGNING_KEY = "GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR";
+export const SIGNING_KEY = TEST_SIGNING_KEY; // Codex cash-out R1 #2: challenges are signed (sep45-test-anchor.ts)
 export const CONTRACT = "CD3LA6RKF5D2FN2R2L57MWXLBRSEWWENE74YBEFZSSGNJRJGICFGQXMX";
 export const FORM_URL = "https://anchor-ref-ui-testanchor.stellar.org?transaction_id=2ea23fcd&token=short";
 export const FORM_HREF = new URL(FORM_URL).toString(); // what the page opens (checkInteractiveUrl normalises it)
@@ -38,7 +39,7 @@ export function challenge(): string {
         subInvocations: [],
       }),
     });
-  return encodeEntries([mk(WALLET), mk(SIGNING_KEY)]);
+  return encodeEntries([mk(WALLET), signAsAnchor(mk(SIGNING_KEY))]);
 }
 
 // ---- a working hook runtime -------------------------------------------------
@@ -164,6 +165,8 @@ export type MountOptions = {
   txnStatusCode?: () => number;
   /** The signAuthEntry the kit fake offers. */
   signAuthEntry?: (e: unknown) => Promise<unknown>;
+  /** The browser's localStorage, to share it between two page loads (Codex cash-out R1 #1: a reload). */
+  store?: Map<string, string>;
 };
 
 const realFetch = globalThis.fetch;
@@ -185,7 +188,8 @@ export async function mount(over: MountOptions = {}) {
     openArgs: [],
     kit: { signAndSubmit: vi.fn(over.submit ?? (async () => ({ success: true, hash: "cb".repeat(32) }))), readBalance: vi.fn(async () => BigInt(90_000_000)) },
   };
-  const store = new Map([["caracal.walletOwner", "user-1"]]);
+  const store = over.store ?? new Map<string, string>();
+  store.set("caracal.walletOwner", "user-1");
   vi.stubGlobal("window", {
     location: { replace: vi.fn(), reload: vi.fn(), origin: "http://localhost:3000" },
     localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) },
@@ -204,7 +208,7 @@ export async function mount(over: MountOptions = {}) {
       if (u.startsWith("http://127.0.0.1")) return realFetch(url, init); // a local test server, not the anchor
       world.fetchLog.push(`${init?.method ?? "GET"} ${u}`);
       if (world.hang(u)) return new Promise<Response>(() => {});
-      if (u.endsWith("/.well-known/stellar.toml")) return new Response(fixture("stellar.toml"));
+      if (u.endsWith("/.well-known/stellar.toml")) return new Response(withTestKey(fixture("stellar.toml")));
       if (u.endsWith("/sep24/info")) return new Response(fixture("sep24-info.json"));
       if (u.includes("/sep45/auth") && init?.method === "POST") return new Response(JSON.stringify({ token: "TOK" }));
       if (u.includes("/sep45/auth")) return new Response(JSON.stringify({ authorization_entries: challenge() }));

@@ -25,8 +25,9 @@ import { encodeEntries } from "../src/lib/anchor/sep45";
 import { readToml } from "../src/lib/anchor/toml";
 import { SMART_ACCOUNT } from "../src/lib/stellar/config";
 import { CONTRACT, ID, SIGNING_KEY, WALLET, fixture } from "./adversary-c2-harness";
+import { signAsAnchor, withTestKey } from "./sep45-test-anchor";
 
-const toml = readToml(fixture("stellar.toml"));
+const toml = readToml(withTestKey(fixture("stellar.toml")));
 const AMOUNT = BigInt(20_000_000);
 
 beforeEach(() => void vi.spyOn(console, "error").mockImplementation(() => {}));
@@ -55,7 +56,7 @@ function challengeWithWalletSignature(signature: xdr.ScVal): string {
         subInvocations: [],
       }),
     });
-  return encodeEntries([mk(WALLET, signature), mk(SIGNING_KEY, xdr.ScVal.scvVoid())]);
+  return encodeEntries([mk(WALLET, signature), signAsAnchor(mk(SIGNING_KEY, xdr.ScVal.scvVoid()))]);
 }
 
 const anchor = (entries: string): typeof fetch =>

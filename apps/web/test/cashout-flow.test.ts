@@ -3,11 +3,12 @@ import { Address, xdr } from "@stellar/stellar-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { beginCashout, sendToAnchor, type SendDeps } from "../src/lib/anchor/flow";
 import { encodeEntries } from "../src/lib/anchor/sep45";
+import { TEST_SIGNING_KEY, signAsAnchor } from "./sep45-test-anchor";
 import { parseTransaction } from "../src/lib/anchor/sep24";
 import type { AnchorToml } from "../src/lib/anchor/toml";
 
 const WALLET = "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW";
-const SIGNING_KEY = "GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR";
+const SIGNING_KEY = TEST_SIGNING_KEY; // Codex cash-out R1 #2: challenges are signed (sep45-test-anchor.ts)
 const CONTRACT = "CD3LA6RKF5D2FN2R2L57MWXLBRSEWWENE74YBEFZSSGNJRJGICFGQXMX";
 const TOKEN = "SECRET-ANCHOR-TOKEN-do-not-leak";
 const TOML: AnchorToml = { signingKey: SIGNING_KEY, webAuthEndpoint: "https://testanchor.stellar.org/sep45/auth", transferServer: "https://testanchor.stellar.org/sep24", webAuthContract: CONTRACT };
@@ -36,7 +37,7 @@ function challenge(): string {
         subInvocations: [],
       }),
     });
-  return encodeEntries([mk(WALLET), mk(SIGNING_KEY)]);
+  return encodeEntries([mk(WALLET), signAsAnchor(mk(SIGNING_KEY))]);
 }
 
 function anchor() {

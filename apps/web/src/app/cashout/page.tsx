@@ -14,6 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
+import { HEARTBEAT_MS, acquireSend, holdText, sendHold, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -122,6 +123,8 @@ export default function CashoutPage() {
   const [balanceBeforeSend, setBalanceBeforeSend] = useState<bigint | null>(null);
   /** LAND_WINDOW_MS has passed since sendSettledAt (set by a timer, see unknownWaiting). */
   const [landingOver, setLandingOver] = useState(false);
+  /** Bumped while an earlier payment holds this wallet, so the hold is read again as it runs out. */
+  const [, setHoldTick] = useState(0);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -231,6 +234,9 @@ export default function CashoutPage() {
   async function start() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
+    // An earlier payment from this browser (this page before a reload, or another tab) may still land.
+    const held = sendHold(boot.wallet);
+    if (held.held) return setProblem(holdText(held));
     setProblem(null);
     setPopupNote(null);
     setPhase("starting");
@@ -280,6 +286,19 @@ export default function CashoutPage() {
       return;
     }
     sendingFor.current = txn.id;
+    // The balance at the press, read now: the last one on screen may predate USDC that arrived since, and the
+    // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
+    // then says to check the wallet's history instead. Started before anything else is awaited.
+    const balanceAtPress = within(readUsdcBalance(boot.wallet, kit.rpc), BALANCE_AT_SEND_MS).catch(() => null);
+    // Recorded in this browser before the passkey is asked, so a reload, a crash or another tab cannot start a
+    // second payment while this one may still land (Codex cash-out R1 #1, send-guard.ts).
+    const begun = await acquireSend(boot.wallet, latest.id);
+    if (!begun.ok) {
+      sendingFor.current = null;
+      setProblem(holdText(begun.hold));
+      return;
+    }
+    const guard = begun.guard;
     setProblem(null);
     // Each attempt has its own landing window: an earlier attempt's (proven not sent, so the lock was released)
     // must not count for this one (adversary c15).
@@ -289,14 +308,11 @@ export default function CashoutPage() {
     setLandingOver(false);
     setBalanceBeforeSend(null);
     setPhase("sending");
-    // The balance at the press, read now: the last one on screen may predate USDC that arrived since, and the
-    // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
-    // then says to check the wallet's history instead.
-    setBalanceBeforeSend(await within(readUsdcBalance(boot.wallet, kit.rpc), BALANCE_AT_SEND_MS).catch(() => null));
+    setBalanceBeforeSend(await balanceAtPress);
     const deps: SendDeps = {
       buildTransfer: (payment) => buildAnchorTransfer(boot.wallet, payment, kit.rpc),
       signAndSubmit: (tx) =>
-        kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>).finally(() => {
+        guard.watch(kit.signAndSubmit(tx as contract.AssembledTransaction<unknown>)).finally(() => {
           setSendSettledAt(Date.now());
         }),
       // The poll kept the record current while the balance was read and the payment built: the passkey is
@@ -314,7 +330,15 @@ export default function CashoutPage() {
         return null;
       },
     };
-    const r = await sendToAnchor(latest, confirmed, deps);
+    let r: Awaited<ReturnType<typeof sendToAnchor>>;
+    try {
+      r = await sendToAnchor(latest, confirmed, deps);
+    } catch (e) {
+      console.error("USDC payment:", messageOf(e));
+      r = { kind: "unknown", message: "Something went wrong while sending the USDC and Caracal cannot tell whether it left your wallet. The anchor's status below shows whether it arrived. Do not send it again." };
+    }
+    if (r.kind !== "not-sent" && r.hash) guard.noteHash(r.hash);
+    guard.finish(r.kind);
     refreshBalance();
     if (r.kind === "sent") {
       setSentHash(r.hash);
@@ -395,6 +419,14 @@ export default function CashoutPage() {
   // the anchor received the first one.
   const mayStillLand =
     phase === "watching" && unknownSend && !landingOver && !(txn !== null && (txn.status === "completed" || txn.status === "refunded"));
+  // An earlier payment from this browser that may still land (read on every render, so another tab's or one
+  // from before a reload counts), and a re-render as the hold runs out.
+  const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet) : { held: false };
+  useEffect(() => {
+    if (!hold.held) return;
+    const t = setInterval(() => setHoldTick((n) => n + 1), HEARTBEAT_MS);
+    return () => clearInterval(t);
+  }, [hold.held]);
   // Never while the USDC payment is being sent: starting again then would lose track of it.
   const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending";
 
@@ -450,7 +482,8 @@ export default function CashoutPage() {
                   </div>
                 </dl>
               )}
-              <button className="btn btn-primary btn-block" disabled={!preview?.ok} onClick={start}>
+              {hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
+              <button className="btn btn-primary btn-block" disabled={!preview?.ok || hold.held} onClick={start}>
                 Continue to the anchor
               </button>
               <p className="muted small">

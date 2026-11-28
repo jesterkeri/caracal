@@ -14,8 +14,9 @@ import { AnchorError } from "../src/lib/anchor/errors";
 import { checkChallenge, encodeEntries } from "../src/lib/anchor/sep45";
 import { readToml } from "../src/lib/anchor/toml";
 import { CONTRACT, SIGNING_KEY, WALLET, challenge, fixture } from "./adversary-c2-harness";
+import { signAsAnchor, withTestKey } from "./sep45-test-anchor";
 
-const toml = readToml(fixture("stellar.toml"));
+const toml = readToml(withTestKey(fixture("stellar.toml")));
 const AMOUNT = BigInt(20_000_000);
 
 beforeEach(() => void vi.spyOn(console, "error").mockImplementation(() => {}));
@@ -44,7 +45,7 @@ function challengeWithArg(arg: xdr.ScVal): string {
         subInvocations: [],
       }),
     });
-  return encodeEntries([mk(WALLET), mk(SIGNING_KEY)]);
+  return encodeEntries([mk(WALLET), signAsAnchor(mk(SIGNING_KEY))]);
 }
 
 describe("adversary c2: the wrong cause is named for a sign-in failure", () => {

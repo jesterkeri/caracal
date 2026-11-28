@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { checkChallenge, encodeEntries, signInToAnchor, type Sep45Deps } from "../src/lib/anchor/sep45";
 import { AnchorError } from "../src/lib/anchor/errors";
 import type { AnchorToml } from "../src/lib/anchor/toml";
+import { TEST_SIGNING_KEY, signAsAnchor } from "./sep45-test-anchor";
 
 // A challenge shaped exactly like the one testanchor.stellar.org returned on
 // 2026-11-27 (decoded in docs/research/anchor-spike-2026-11-27.md): two
@@ -10,7 +11,7 @@ import type { AnchorToml } from "../src/lib/anchor/toml";
 // unsigned and the anchor's signed.
 const WALLET = "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW";
 const OTHER_WALLET = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
-const SIGNING_KEY = "GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR";
+const SIGNING_KEY = TEST_SIGNING_KEY; // Codex cash-out R1 #2: the anchor's entry is signed (sep45-test-anchor.ts)
 const CONTRACT = "CD3LA6RKF5D2FN2R2L57MWXLBRSEWWENE74YBEFZSSGNJRJGICFGQXMX";
 const TOML: AnchorToml = { signingKey: SIGNING_KEY, webAuthEndpoint: "https://testanchor.stellar.org/sep45/auth", transferServer: "https://testanchor.stellar.org/sep24", webAuthContract: CONTRACT };
 const TOKEN = "SECRET-ANCHOR-TOKEN-do-not-leak";
@@ -34,12 +35,13 @@ function entry(o: Over = {}): xdr.SorobanAuthorizationEntry {
       ),
       subInvocations: subs,
     });
-  return new xdr.SorobanAuthorizationEntry({
+  const e = new xdr.SorobanAuthorizationEntry({
     credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
       new xdr.SorobanAddressCredentials({ address: Address.fromString(o.signer ?? WALLET).toScAddress(), nonce: xdr.Int64.fromString("5"), signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid() }),
     ),
     rootInvocation: inv(o.fn ?? "web_auth_verify", o.extraArg ? [map, map] : [map], o.subs ? [inv("web_auth_verify", [map], [])] : []),
   });
+  return (o.signer ?? WALLET) === SIGNING_KEY ? signAsAnchor(e) : e;
 }
 const challenge = (...es: xdr.SorobanAuthorizationEntry[]) => encodeEntries(es);
 const good = () => challenge(entry(), entry({ signer: SIGNING_KEY }));

@@ -7,9 +7,11 @@
 // 3. POST the entries back and receive a token. The token stays in memory:
 //    never in a URL, a log or storage.
 
-import { Address, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Address, Keypair, hash, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Buffer } from "buffer";
 import { AnchorError, RequestTimeout, jsonOf, messageOf, requestWithin, within } from "./errors";
 import { ANCHOR } from "./config";
+import { NETWORK } from "../stellar/config";
 import type { AnchorToml } from "./toml";
 
 /** smart-account-kit's code for a passkey prompt the person closed (SmartAccountErrorCode). */
@@ -53,6 +55,38 @@ const walletOf = (e: xdr.SorobanAuthorizationEntry): string | null => {
   }
 };
 
+/**
+ * Whether `e` is the anchor's own entry, signed by `signingKey` (the SIGNING_KEY its stellar.toml publishes):
+ * address credentials for that G account, and one ed25519 signature by that key over the entry's Soroban
+ * authorization preimage (network id, nonce, expiry ledger, invocation), in the shape a Stellar account signs
+ * ({ public_key, signature }). SEP-45 has the client verify this before it signs (Codex cash-out R1 #2).
+ */
+function signedByAnchor(e: xdr.SorobanAuthorizationEntry, signingKey: string): boolean {
+  try {
+    const c = e.credentials();
+    if (c.switch().name !== "sorobanCredentialsAddress") return false;
+    const creds = c.address();
+    if (Address.fromScAddress(creds.address()).toString() !== signingKey) return false;
+    const sig = creds.signature();
+    if (sig.switch().name !== "scvVec" || (sig.vec() ?? []).length !== 1) return false;
+    const one = scValToNative(sig.vec()![0]!) as { public_key?: unknown; signature?: unknown } | null;
+    const key = Keypair.fromPublicKey(signingKey);
+    if (!one || !(one.public_key instanceof Uint8Array) || !(one.signature instanceof Uint8Array)) return false;
+    if (!Buffer.from(one.public_key).equals(key.rawPublicKey())) return false;
+    const preimage = xdr.HashIdPreimage.envelopeTypeSorobanAuthorization(
+      new xdr.HashIdPreimageSorobanAuthorization({
+        networkId: hash(Buffer.from(NETWORK.passphrase)),
+        nonce: creds.nonce(),
+        signatureExpirationLedger: creds.signatureExpirationLedger(),
+        invocation: e.rootInvocation(),
+      }),
+    );
+    return key.verify(hash(preimage.toXDR()), Buffer.from(one.signature));
+  } catch {
+    return false;
+  }
+}
+
 /** The 4-byte count then each entry: the XDR of a variable array of authorization entries. */
 export function encodeEntries(entries: xdr.SorobanAuthorizationEntry[]): string {
   const count = Buffer.alloc(4);
@@ -75,6 +109,12 @@ export function checkChallenge(entriesBase64: string, wallet: string, toml: Anch
   }
   const own = entries.map(walletOf).flatMap((w, i) => (w === wallet ? [i] : []));
   if (own.length !== 1) throw new AnchorError("The anchor's sign-in challenge is not addressed to your wallet. Nothing was signed.", "sign-in");
+  // Exactly the wallet's entry and the anchor's, signed by the key its stellar.toml publishes (Caracal sends no
+  // client_domain, so there is no third). A challenge the anchor did not sign could come from anyone.
+  const anchors = entries.flatMap((e, i) => (i !== own[0] && signedByAnchor(e, toml.signingKey) ? [i] : []));
+  if (entries.length !== 2 || anchors.length !== 1) {
+    throw new AnchorError("The anchor's sign-in challenge is not signed by the anchor's published key (SIGNING_KEY in its stellar.toml), so it may not be the anchor's. Nothing was signed.", "sign-in");
+  }
   // SEP-45: the client's entry is handed over unsigned. One that already carries a signature is the anchor's malformed challenge.
   if (entries[own[0]!]!.credentials().address().signature().switch().name !== "scvVoid") {
     throw new AnchorError("The anchor's sign-in challenge arrived with the wallet's entry already signed, which a sign-in challenge must not be. Refused as the anchor's. Nothing was signed or sent.", "sign-in");
@@ -95,6 +135,11 @@ export function checkChallenge(entriesBase64: string, wallet: string, toml: Anch
     if (a.account !== wallet || a.home_domain !== ANCHOR.homeDomain || a.web_auth_domain !== ANCHOR.homeDomain || a.web_auth_domain_account !== toml.signingKey) {
       throw new AnchorError("The anchor's sign-in challenge names a different wallet or domain than expected. Nothing was signed.", "sign-in");
     }
+  }
+  // Every entry authorizes the same call, with the same arguments and nonce.
+  const firstArgs = entries[0]!.rootInvocation().toXDR("base64");
+  if (entries.some((e) => e.rootInvocation().toXDR("base64") !== firstArgs)) {
+    throw new AnchorError("The anchor's sign-in challenge has entries for different calls or nonces. Nothing was signed.", "sign-in");
   }
   return { entries, own: own[0]! };
 }

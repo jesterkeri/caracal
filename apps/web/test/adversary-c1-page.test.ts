@@ -7,10 +7,11 @@ import { readFileSync } from "node:fs";
 import { Address, xdr } from "@stellar/stellar-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeEntries } from "../src/lib/anchor/sep45";
+import { TEST_SIGNING_KEY, signAsAnchor, withTestKey } from "./sep45-test-anchor";
 
 const fixture = (n: string) => readFileSync(new URL(`./fixtures/anchor/${n}`, import.meta.url), "utf8");
 const WALLET = "CBRHIZOREKRKXYGJUEUDGMOMSCDQF2VDM2ZFJRVR2CVP5YQ3CIKSYSCW";
-const SIGNING_KEY = "GCHLHDBOKG2JWMJQBTLSL5XG6NO7ESXI2TAQKZXCXWXB5WI2X6W233PR";
+const SIGNING_KEY = TEST_SIGNING_KEY; // Codex cash-out R1 #2: challenges are signed (sep45-test-anchor.ts)
 const CONTRACT = "CD3LA6RKF5D2FN2R2L57MWXLBRSEWWENE74YBEFZSSGNJRJGICFGQXMX";
 const FORM_URL = "https://anchor-ref-ui-testanchor.stellar.org?transaction_id=2ea23fcd&token=short";
 const FORM_HREF = new URL(FORM_URL).toString(); // what the page opens (checkInteractiveUrl normalises it)
@@ -38,7 +39,7 @@ function challenge(): string {
         subInvocations: [],
       }),
     });
-  return encodeEntries([mk(WALLET), mk(SIGNING_KEY)]);
+  return encodeEntries([mk(WALLET), signAsAnchor(mk(SIGNING_KEY))]);
 }
 
 // ---- a working hook runtime -------------------------------------------------
@@ -177,7 +178,7 @@ async function mount(over: { txn?: Record<string, unknown>; hang?: (url: string)
       const u = String(url);
       world.fetchLog.push(`${init?.method ?? "GET"} ${u}`);
       if (world.hang(u)) return new Promise<Response>(() => {});
-      if (u.endsWith("/.well-known/stellar.toml")) return new Response(fixture("stellar.toml"));
+      if (u.endsWith("/.well-known/stellar.toml")) return new Response(withTestKey(fixture("stellar.toml")));
       if (u.endsWith("/sep24/info")) return new Response(fixture("sep24-info.json"));
       if (u.includes("/sep45/auth") && init?.method === "POST") return new Response(JSON.stringify({ token: "TOK" }));
       if (u.includes("/sep45/auth")) return new Response(JSON.stringify({ authorization_entries: challenge() }));
