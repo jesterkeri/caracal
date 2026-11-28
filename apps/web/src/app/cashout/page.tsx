@@ -155,22 +155,30 @@ export default function CashoutPage() {
   const seenRef = useRef<string | null>(null);
   const walletRef = useRef<string | null>(null);
   const balanceRead = useRef(0);
+  /** The newest balance read started, which an older one superseded by it waits for. */
+  const balancePending = useRef<Promise<void>>(Promise.resolve());
+  /** A balance read started because the shown one predates an earlier payment's closeBy is still running. */
+  const staleRead = useRef(false);
 
   // The wallet's USDC balance, read again whenever it may have changed. A slow
   // older read never overwrites a newer one, and a failed read shows "not available"
   // rather than an old number the preview would check against.
-  // Resolves once this read has finished (shown, or superseded by a newer one).
+  // Resolves once a balance at least as new as this read is on screen: this read's, or, when a newer read superseded
+  // it, that one's. A caller that says "read just now" after it must not be speaking of an older figure still shown
+  // while the newer read is outstanding (adversary c36).
   function refreshBalance(): Promise<void> {
     const kit = kitRef.current;
     const wallet = walletRef.current;
     if (!kit || !wallet) return Promise.resolve();
     const mine = ++balanceRead.current;
     let at: number | null = null;
-    return readUsdcBalance(wallet, kit.rpc, (l) => (at = l)).then((b) => {
-      if (mine !== balanceRead.current) return;
+    const read: Promise<void> = readUsdcBalance(wallet, kit.rpc, (l) => (at = l)).then((b) => {
+      if (mine !== balanceRead.current) return balancePending.current;
       setBalance(b);
       setBalanceAt(b === null ? null : at);
     });
+    balancePending.current = read;
+    return read;
   }
 
   // The wallet: restored only for the signed-in account that created or connected it.
@@ -310,7 +318,13 @@ export default function CashoutPage() {
     setPhase("starting");
     // The popup is opened now, inside the click, so the browser allows it. It
     // is pointed at the anchor's form once the anchor has started the withdrawal.
-    popupRef.current = window.open("", "caracal-anchor", "popup,width=480,height=760");
+    // A browser may throw here rather than return null (a sandboxed frame, an in-app browser): that is a blocked
+    // popup too, and the form's link below is the way on (adversary c36).
+    try {
+      popupRef.current = window.open("", "caracal-anchor", "popup,width=480,height=760");
+    } catch {
+      popupRef.current = null;
+    }
     // The popup is about to show the anchor's own site: it gets no handle back to this page.
     // ("noopener" in the features would make window.open return null, and the popup could not be pointed at the form.)
     if (popupRef.current) {
@@ -343,16 +357,7 @@ export default function CashoutPage() {
     if (boot.kind !== "ready" || !kit || !txn || confirmed === null || sendingFor.current === txn.id) return;
     // The anchor refused this session: the record on screen can no longer be followed, so it is not paid (adversary c13).
     if (lostSession) return;
-    // The account, memo and quote the person was shown must be the ones the anchor still has.
-    // The poll keeps the screen on the anchor's latest record, so the comparison is with what was on screen
-    // when the person reached this step, not with the record the poll last wrote.
-    const latest = txnRef.current ?? txn;
-    if (seenRef.current !== payTo(latest)) {
-      seenRef.current = payTo(latest);
-      setTxn(latest);
-      setProblem("The anchor changed the account, memo or quote after you looked at it. Nothing was sent. Check the details above and confirm again.");
-      return;
-    }
+    if (!toml || !session) return;
     sendingFor.current = txn.id;
     // From the press on, the page is sending: "Start again" goes at once, not only once the payment is built,
     // or pressing it during the ledger read left the page with no record and no control (adversary c28).
@@ -361,6 +366,35 @@ export default function CashoutPage() {
     // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
     // then says to check the wallet's history instead. Started before anything else is awaited.
     const balanceAtPress = within(readUsdcBalance(boot.wallet, kit.rpc), BALANCE_AT_SEND_MS).catch(() => null);
+    // The account, memo and quote the person was shown must be the ones the anchor still has, so its record is read
+    // again now: the poll's last record may be minutes old while the anchor's status cannot be read, and the anchor
+    // may have changed its terms meanwhile (adversary c36). If it cannot be read, nothing is paid.
+    let latest: AnchorTxn;
+    try {
+      latest = await loadTransaction(toml.transferServer, session.token, session.id);
+    } catch (e) {
+      sendingFor.current = null;
+      setProblem(`Caracal could not read the anchor's latest record of this withdrawal, so it cannot check the account, memo and quote, and nothing was sent.${e instanceof AnchorError ? ` ${e.message}` : ""} Try again in a moment.`);
+      setPhase("confirm");
+      return;
+    }
+    txnRef.current = latest;
+    // The comparison is with what was on screen when the person reached this step, not with the record the poll last wrote.
+    if (seenRef.current !== payTo(latest)) {
+      sendingFor.current = null;
+      seenRef.current = payTo(latest);
+      setTxn(latest);
+      setProblem("The anchor changed the account, memo or quote after you looked at it. Nothing was sent. Check the details above and confirm again.");
+      setPhase("confirm");
+      return;
+    }
+    if (latest.id !== txn.id || latest.status !== "pending_user_transfer_start") {
+      sendingFor.current = null;
+      setTxn(latest);
+      setProblem("The anchor is no longer waiting for this payment, so nothing was sent. Its status is shown below.");
+      setPhase("confirm");
+      return;
+    }
     // The payment's last ledger is fixed from the ledger read now, before the passkey is asked (send-guard.ts).
     let ledger: number;
     try {
@@ -563,7 +597,15 @@ export default function CashoutPage() {
   // Once the network is past the earlier payment's closeBy, the balance is read again, as of a later ledger.
   useEffect(() => {
     if (!stale || seenLedger === null || mustPass === null || seenLedger <= mustPass) return;
-    const t = setTimeout(() => void refreshBalance().catch(() => {}), 0);
+    // One such read at a time: on an RPC slower than the 5 s ledger poll, starting another at each new ledger would
+    // supersede the one still running, and no balance would ever be shown (adversary c36).
+    const t = setTimeout(() => {
+      if (staleRead.current) return;
+      staleRead.current = true;
+      void refreshBalance()
+        .catch(() => {})
+        .finally(() => (staleRead.current = false));
+    }, 0);
     return () => clearTimeout(t);
   }, [stale, seenLedger, mustPass]);
   const shownProblem = heldGone || staleGone
