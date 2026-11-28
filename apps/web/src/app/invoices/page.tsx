@@ -288,6 +288,9 @@ export default function InvoicesPage() {
   const [copied, setCopied] = useState<string | null>(null);
   // How the notice looks is set with its text, never guessed from the words.
   const [noticeTone, setNoticeTone] = useState<Tone>("bad");
+  // Draws the page again once a cancellation is recorded, so its row is held at once (adversary i21). Last, as tests
+  // set state by position.
+  const [, setRecorded] = useState(0);
 
   function setNotice(text: string | null, tone: Tone = "bad") {
     setNoticeText(text);
@@ -317,7 +320,8 @@ export default function InvoicesPage() {
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
-      const me = await readSignInState(auth);
+      // Bounded like every other read here (adversary i21): a check that never answers says so instead of loading for ever.
+      const me: SignInState = await bounded(readSignInState(auth), "Checking your sign-in").catch(() => ({ kind: "unverified" }) as const);
       if (me.kind === "signed-out") return window.location.replace("/signin");
       if (me.kind === "unverified") return setLoad({ kind: "error", message: SIGN_IN_UNCHECKED, signOut: true });
       if (gone) return;
@@ -470,6 +474,8 @@ export default function InvoicesPage() {
       setBusy(null);
       return setNotice(refusedText(begun.refused, "cancellation"), begun.refused === "busy" ? "unsure" : "bad");
     }
+    // The record now holds the row ("Cancelling", no pay link, no Cancel): the last draw was from before it (adversary i21).
+    setRecorded((n) => n + 1);
     const outcome = await cancelInvoice(kit, ready.split, ref, cancelBy);
     // Only this attempt's own record is removed, never one another tab recorded (R4 #1).
     if (outcome.kind !== "unknown") await endAttempt(slot, begun.attempt.id);
