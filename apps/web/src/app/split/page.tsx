@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { beginWrite, holdOn, holdText } from "@/lib/split/write-guard";
+import { acquireWrite, holdOn, holdText } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -132,14 +132,15 @@ export default function SplitPage() {
   async function run(what: string, send: (kit: WriteKit) => Promise<SendOutcome>) {
     if (view.kind !== "ready" || note.busy || writing) return;
     const wallet = view.wallet;
-    // An earlier write that may still land holds back every new write on this split (write-guard.ts).
-    const begun = beginWrite(splitAddressFor(wallet));
-    if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) } });
-    const guard = begun.guard;
     writing = true;
-    // Any read already under way began before this write: it is dropped.
-    readSeq++;
     try {
+      // An earlier write that may still land, or one another tab is making, holds back every new write on
+      // this split (write-guard.ts).
+      const begun = await acquireWrite(splitAddressFor(wallet));
+      if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) } });
+      const guard = begun.guard;
+      // Any read already under way began before this write: it is dropped.
+      readSeq++;
       setNote({ busy: "Waiting for your passkey" });
       let outcome: SendOutcome;
       try {

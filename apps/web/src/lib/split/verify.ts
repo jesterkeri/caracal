@@ -4,6 +4,8 @@
 // token before it shows a balance as USDC or offers an action.
 
 import { Address, xdr } from "@stellar/stellar-sdk";
+// Imported, not the global: a browser bundle has no global Buffer, and without it every split read as unchecked (Codex split R2 #2).
+import { Buffer } from "buffer";
 import { READ_TIMEOUT_MS } from "./chain";
 
 /**

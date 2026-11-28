@@ -17,14 +17,23 @@
 //
 // Storage that cannot be read holds back; storage that cannot be written
 // refuses to start a write, because nothing would stop a repeat.
+//
+// Checking the record and writing it are two steps, so two tabs could both
+// see none and both start (Codex split R2 #1). acquireWrite takes this
+// split's Web Lock first, which is atomic across the tabs of one site, and
+// holds it for as long as the write may still be sent from this tab; the
+// browser lets it go if the tab dies. The record stays for what is left after
+// that: a request already at the relay.
 
+import { browserLocks, type Locks } from "@/lib/auth/creation-lock";
 import type { SendOutcome, WriteKit } from "./send";
 
 export const SETTLE_MS = 3 * 60_000;
 export const HEARTBEAT_MS = 10_000;
 const KEY = (split: string) => `caracal.split.write.${split}`;
+const LOCK = (split: string) => `caracal.split.write.${split}`;
 
-export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unreadable" };
+export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unreadable" | "unsupported" };
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 type Record_ = { id: string; beat: number; ahead?: boolean };
@@ -90,6 +99,8 @@ export type WriteGuard = {
   kit(k: WriteKit): WriteKit;
   /** The outcome: certain ones remove the record; an unknown one keeps it until it can no longer land. */
   finish(outcome: SendOutcome): void;
+  /** Settles once nothing more can be sent from this tab: a certain outcome, or an unknown one whose kit call has settled. */
+  released: Promise<void>;
 };
 
 /** Takes the hold on this split before anything is sent: refused when another write holds it. */
@@ -125,9 +136,12 @@ export function beginWrite(split: string, now: () => number = Date.now): { ok: t
   let pending = 0;
   let unknown = false;
   let restore = () => {};
+  let release = () => {};
+  const released = new Promise<void>((r) => (release = r));
   const stop = () => {
     clearInterval(beat);
     window.removeEventListener?.("pagehide", renew);
+    release();
   };
   const settled = () => {
     pending--;
@@ -137,6 +151,7 @@ export function beginWrite(split: string, now: () => number = Date.now): { ok: t
     }
   };
   const guard: WriteGuard = {
+    released,
     kit(k) {
       // The same kit object goes on (one write runs at a time), with its signAndSubmit watched until finish().
       const original = k.signAndSubmit;
@@ -171,8 +186,57 @@ export function beginWrite(split: string, now: () => number = Date.now): { ok: t
   return { ok: true, guard };
 }
 
+/**
+ * beginWrite under this split's Web Lock, held until the guard is released, so no other tab of this
+ * browser can check and write the record at the same time (Codex split R2 #1). Does not wait for the
+ * lock: a tab that holds it is writing, so this write is held back. Without Web Locks, or when the
+ * browser refuses the request (blocked site data, a sandboxed frame), nothing is sent.
+ */
+export function acquireWrite(
+  split: string,
+  locks: Locks | undefined = browserLocks(),
+  now: () => number = Date.now,
+): Promise<ReturnType<typeof beginWrite>> {
+  if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
+  return new Promise((resolve) => {
+    let entered = false;
+    let answered = false;
+    const answer = (r: ReturnType<typeof beginWrite>) => {
+      if (answered) return;
+      answered = true;
+      resolve(r);
+    };
+    let request: Promise<unknown>;
+    try {
+      request = locks.request(LOCK(split), { ifAvailable: true }, async (lock) => {
+        entered = true;
+        if (!lock) {
+          const h = holdOn(split, now());
+          return answer({ ok: false, hold: h.held ? h : { held: true, until: null, reason: "earlier-write" } });
+        }
+        let begun: ReturnType<typeof beginWrite>;
+        try {
+          begun = beginWrite(split, now);
+        } catch {
+          begun = { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
+        }
+        answer(begun);
+        if (begun.ok) await begun.guard.released;
+      });
+    } catch {
+      return answer({ ok: false, hold: { held: true, until: null, reason: "unreadable" } });
+    }
+    request.catch(() => {
+      if (!entered) answer({ ok: false, hold: { held: true, until: null, reason: "unreadable" } });
+    });
+  });
+}
+
 /** What the page says while a write is held back. */
 export function holdText(hold: Extract<Hold, { held: true }>, now: number = Date.now()): string {
+  if (hold.reason === "unsupported") {
+    return "This browser cannot keep two of its tabs from sending the same withdrawal, so Caracal sends nothing from it. Use an up-to-date browser.";
+  }
   if (hold.reason === "unreadable") {
     return "Caracal cannot tell whether an earlier withdrawal or move is still on its way, because this browser would not let it check. Nothing can be sent from here until it can. Refresh the pots, and allow this site to store data.";
   }
