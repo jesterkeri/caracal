@@ -66,11 +66,16 @@ export async function readPotsAt(server: SimulatingRpc, split: string, passphras
 
 /** config(): owner, token and the current split. */
 export async function readConfig(server: SimulatingRpc, split: string, passphrase: string = NETWORK.passphrase): Promise<SplitConfig> {
-  const { value: v } = await simulateRead(server, split, "config", passphrase);
+  return (await readConfigAt(server, split, passphrase)).config;
+}
+
+/** config(), with the ledger it was read at (null when the RPC did not say), like readPotsAt. */
+export async function readConfigAt(server: SimulatingRpc, split: string, passphrase: string = NETWORK.passphrase): Promise<{ config: SplitConfig; ledger: number | null }> {
+  const { value: v, ledger } = await simulateRead(server, split, "config", passphrase);
   if (!Array.isArray(v) || v.length !== 4 || typeof v[0] !== "string" || typeof v[1] !== "string" || typeof v[2] !== "number" || typeof v[3] !== "number") {
     throw new Error("the split contract's config() answer was not (owner, token, tax, goal)");
   }
-  return { owner: v[0], token: v[1], taxBps: v[2], goalBps: v[3] };
+  return { config: { owner: v[0], token: v[1], taxBps: v[2], goalBps: v[3] }, ledger };
 }
 
 /** Whether this wallet's split contract exists on chain (it is always at splitAddressFor(wallet)). */

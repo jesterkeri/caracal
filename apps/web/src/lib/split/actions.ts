@@ -6,7 +6,7 @@
 import { SPLIT, TOKENS } from "../stellar/config";
 import { splitAddressFor } from "../stellar/split-address";
 import { formatUsdc, splitProblem } from "./amounts";
-import { readConfig, readPotsAt, splitStatus, type Pots, type SimulatingRpc, type SplitConfig } from "./chain";
+import { readConfigAt, readPotsAt, splitStatus, type Pots, type SimulatingRpc, type SplitConfig } from "./chain";
 import { deploySplitFunction, moveFunction, setSplitFunction, withdrawFunction, type Pot } from "./calls";
 import { sendSplitCall, type BuildTx, type SendOutcome, type WriteKit } from "./send";
 import { readInstanceCode, type EntryReader } from "./verify";
@@ -20,7 +20,7 @@ export type Loaded =
    * deployment at an address that is taken, so nothing is made or sent.
    */
   | { kind: "absent"; split: string; ledger: number | null }
-  /** It exists and was read. `ledger`: the ledger its pots were read at (null when the RPC did not say). */
+  /** It exists and was read. `ledger`: the older of the ledgers its pots and its settings were read at (null when the RPC did not say for one of them). */
   | { kind: "present"; split: string; pots: Pots; config: SplitConfig; ledger: number | null }
   /** It exists but its data expired and must be restored first. */
   | { kind: "archived"; split: string; ledger: number | null }
@@ -61,7 +61,11 @@ export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefin
   if (code.kind === "unchecked" || code.kind === "absent") return { kind: "error", split, message: "Caracal could not check which code your split contract runs, so it will not show or use it yet. Check your connection and try again." };
   if (code.kind !== "wasm" || code.hash !== SPLIT.wasmHash) return { kind: "error", split, message: "The contract at your split address does not run Caracal's split code, so Caracal will not show its balances or use it." };
   try {
-    const [{ pots, ledger }, config] = await Promise.all([readPotsAt(server, split), readConfig(server, split)]);
+    const [read, { config, ledger: configLedger }] = await Promise.all([readPotsAt(server, split), readConfigAt(server, split)]);
+    const pots = read.pots;
+    // The pots and the settings are two simulations, which separate RPC nodes may answer at different ledgers: what
+    // is shown is as of the older one, or of no known ledger if either did not say (adversary s18).
+    const ledger = read.ledger === null || configLedger === null ? null : Math.min(read.ledger, configLedger);
     // Only this wallet can have deployed this address, so a different owner means something is badly wrong.
     if (config.owner !== wallet) return { kind: "error", split, message: "The contract at your split address is not owned by your wallet, so Caracal will not use it." };
     // A split over another token would have its balances shown as USDC.
