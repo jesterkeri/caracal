@@ -287,6 +287,16 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     const tail = tailScan.last;
     if (tail.latestLedger < scanned.last.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
     const seenIds = new Set(scanned.events.map((e) => e.id));
+    // A recheck reads only after the scan's cursor, so an event the scan already read (or one sent twice) in it is
+    // an answer that contradicts itself, not proof that nothing new arrived (Codex tax R4 #1).
+    const consistent = (r: Scanned) => {
+      const ids = new Set<string>();
+      for (const e of r.events) {
+        if (seenIds.has(e.id) || ids.has(e.id)) throw new ChainReadError("The RPC sent an event again that it had already sent, when Caracal read on from where it stopped, so Caracal cannot trust which ledgers it read. Try again.");
+        ids.add(e.id);
+      }
+    };
+    consistent(tailScan);
     const kept = () => {
       if (attempt >= MAX_ATTEMPTS) throw new ChainReadError("New events kept arriving in the split contract while Caracal was reading it, so it could not fix the ledger the estimate covers. Try again.");
     };
@@ -309,6 +319,7 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
     const afterScan = await recheck(chain, want.contract, scanned.cursor);
     if (afterScan.last.latestLedger < tail.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
+    consistent(afterScan);
     if (afterScan.events.some((e) => !seenIds.has(e.id))) {
       kept();
       continue;
@@ -360,8 +371,9 @@ async function readOn(page: EventsPage, readTo: number, next: (cursor: string) =
     if (n >= MAX_PAGES) throw new ChainReadError("The RPC needed too many pages to read the payments.");
     const following = await next(page.cursor);
     if (following.cursor === page.cursor) {
-      // Nothing after a full page that already reached the newest ledger: the scan is complete.
-      if (reached >= page.latestLedger && following.events.length === 0) {
+      // Nothing after a full page that already reached the newest ledger: the scan is complete, but only up to the
+      // ledger the cursor reached. A following page naming a newer ledger was not scanned to it (Codex tax R4 #1).
+      if (reached >= page.latestLedger && following.events.length === 0 && reached >= following.latestLedger) {
         checkRetention(following);
         if (following.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
         last = following;

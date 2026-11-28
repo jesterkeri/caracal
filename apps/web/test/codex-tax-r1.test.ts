@@ -101,11 +101,15 @@ describe("finding 2: a different sender is not proof of income", () => {
 /** A chain where `late` is recorded after the first event scan and before the holdings read completes. */
 function landsBetweenScanAndHoldings(late: ReturnType<typeof payment>) {
   let landed = false;
+  // Fixture changed with Codex tax R4 #1 (a recheck repeating an event the scan already read is refused): once a scan
+  // has read the late payment, the reads after its cursor no longer return it, as a real RPC's would not.
+  let scannedLate = false;
   const base = chain([late]);
   const c: ChainReader = {
     ...base,
     events: async (...a) => {
       const r = await base.events(...a);
+      if (landed) scannedLate = true;
       return { ...r, events: landed ? r.events : [] };
     },
     // The payment lands while the holdings are read: the pots already include it (held == pots, balanced).
@@ -115,7 +119,7 @@ function landsBetweenScanAndHoldings(late: ReturnType<typeof payment>) {
     },
     eventsAfter: async (...a) => {
       const r = await base.eventsAfter(...a);
-      return { ...r, events: landed ? [late.event] : [] };
+      return { ...r, events: landed && !scannedLate ? [late.event] : [] };
     },
   };
   return c;
