@@ -53,6 +53,8 @@ export const KIT_DEFAULT_LEDGERS = 720;
 /** About how long a testnet ledger takes, only to say roughly how long a hold lasts. */
 const LEDGER_MS = 5_000;
 const KEY = (split: string) => `caracal.split.write.${split}`;
+/** The ledger the pots shown must be read past, kept after a write's record is gone (adversary s20). */
+const READ_AFTER = (split: string) => `caracal.split.readAfter.${split}`;
 const LOCK = (split: string) => `caracal.split.write.${split}`;
 
 export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unknown-expiry" | "unreadable" | "unsupported" };
@@ -120,6 +122,42 @@ export function recordCloseBy(split: string): number | null {
 }
 
 /**
+ * The ledger the pots shown must be read past because of a write that ended: kept in this browser, so a page
+ * opened later (a reload, another tab) still gates its first read, which a lagging RPC node can answer with the pots
+ * from before the write (adversary s20). null when none is kept or it cannot be read.
+ */
+export function readAfter(split: string): number | null {
+  const s = store();
+  if (!s) return null;
+  try {
+    const v = JSON.parse(s.getItem(READ_AFTER(split)) ?? "null") as unknown;
+    return isLedger(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps `ledger` as the one the pots must be read past, unless a later one is kept already. Storage refused: nothing kept. */
+export function rememberReadAfter(split: string, ledger: number): void {
+  if (!isLedger(ledger)) return;
+  const s = store();
+  if (!s) return;
+  try {
+    const kept = readAfter(split);
+    if (kept === null || ledger > kept) s.setItem(READ_AFTER(split), JSON.stringify(ledger));
+  } catch {
+    /* storage refused: this page still remembers it in its own state */
+  }
+}
+
+/** The ledger the pots shown must be read past, from this split's record (recordCloseBy) and from writes that ended (readAfter). */
+export function readPastBy(split: string): number | null {
+  const a = recordCloseBy(split);
+  const b = readAfter(split);
+  return a === null ? b : b === null ? a : Math.max(a, b);
+}
+
+/**
  * Whether a write on this split must wait, given the latest ledger an RPC showed (null when none was read).
  * Storage that cannot be read holds back. Reads only: it never writes or removes the record.
  */
@@ -167,7 +205,11 @@ export async function clearPassed(split: string, ledger: number, locks: Locks | 
   if (!isLedger(ledger)) return;
   await underLock(split, locks, (s) => {
     const rec = read(s, split);
-    if (rec && ledger > rec.closeBy) s.removeItem(KEY(split));
+    if (rec && ledger > rec.closeBy) {
+      // Its closeBy still asks a page opened later to read the pots past it (adversary s20).
+      rememberReadAfter(split, rec.closeBy);
+      s.removeItem(KEY(split));
+    }
   });
 }
 

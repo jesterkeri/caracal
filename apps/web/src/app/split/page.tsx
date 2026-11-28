@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { acquireWrite, clearPassed, clearUnknown, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger, recordCloseBy } from "@/lib/split/write-guard";
+import { acquireWrite, clearPassed, clearUnknown, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger, readPastBy, recordCloseBy, rememberReadAfter } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -202,7 +202,7 @@ export default function SplitPage() {
       setSeenLedger(ledger);
       // The pots shown must be read past every earlier write's closeBy this tab knows of (Codex split R4 #2).
       // While the record says it can still land, the guard below refuses with that reason instead.
-      const need = later(guardBy, recordCloseBy(splitAddressFor(wallet)));
+      const need = later(guardBy, readPastBy(splitAddressFor(wallet)));
       const at = readAt(view.loaded);
       if (!holdOn(splitAddressFor(wallet), ledger).held && need !== null && !(at !== null && at > need)) return setNote({ said: { tone: "unsure", text: STALE }, hold: true });
       const begun = await acquireWrite(splitAddressFor(wallet), ledger);
@@ -221,13 +221,16 @@ export default function SplitPage() {
       // An unknown write may still land through its closeBy: the pots must be read past it before anything new is
       // offered, even if the poll has already removed its record because the network passed closeBy while it was
       // still being sent (adversary s15).
+      // (Its record stays until the network passes closeBy; clearPassed keeps that closeBy for later pages when it goes.)
       if (outcome.kind === "unknown") setGuardBy((g) => later(g, guard.closeBy));
       // A write that went through is shown only from pots read at or after the ledger it landed in, or, when the kit
       // did not say which, past its closeBy: a lagging RPC node can still answer with the pots from before it
       // (adversary s19).
       if (outcome.kind === "done") {
         const landed = outcome.ledger;
-        setGuardBy((g) => later(g, landed !== undefined ? landed - 1 : guard.closeBy));
+        const after = landed !== undefined ? landed - 1 : guard.closeBy;
+        setGuardBy((g) => later(g, after));
+        rememberReadAfter(splitAddressFor(wallet), after);
       }
       ended = { from: me, closeBy: guard.closeBy, unknown: outcome.kind === "unknown" };
       const said = say(outcome, what);
@@ -293,6 +296,7 @@ export default function SplitPage() {
     }
     // The pots must be read again, as of this ledger or later, before anything new is offered.
     setGuardBy((g) => later(g, ledger - 1));
+    rememberReadAfter(split, ledger - 1);
     setSeenLedger(ledger);
     setNote({});
   }
@@ -305,7 +309,9 @@ export default function SplitPage() {
   // Rendering only reads the record: it never writes or removes it (Codex split R4 #1).
   const readySplit = view.kind === "ready" && loaded?.kind !== "error" ? splitAddressFor(view.wallet) : null;
   const hold = readySplit ? holdOn(readySplit, seenLedger) : ({ held: false } as const);
-  const seenBy = readySplit ? recordCloseBy(readySplit) : null;
+  // A kept record's closeBy, or the ledger a write that ended asks the pots to be read past, kept in this browser so a
+  // reload or another tab still gates its first read (adversary s20).
+  const seenBy = readySplit ? readPastBy(readySplit) : null;
   const mustPass = later(guardBy, seenBy);
   const shownLedger = readAt(loaded);
   const stale = !hold.held && mustPass !== null && !(shownLedger !== null && shownLedger > mustPass);
