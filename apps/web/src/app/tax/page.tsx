@@ -19,6 +19,8 @@ const TOO_SLOW = "Caracal did not get an estimate within 2 minutes, so it stoppe
 
 /** Bumped by every edit and every Estimate: an answer for answers that have since changed is dropped. */
 let asked = 0;
+/** The estimate request still on its way, if any: aborted once its answer can no longer be shown (adversary t17). */
+let inFlight: AbortController | null = null;
 
 export default function TaxPage() {
   const [who, setWho] = useState<Who>({ kind: "checking" });
@@ -44,6 +46,7 @@ export default function TaxPage() {
       // account stays on screen (no wallet, no estimate, no answer still on its way) and the page loads again.
       unfollow = followAccount(auth, now.id, () => {
         asked++;
+        inFlight?.abort();
         setRun({ kind: "idle" });
         setListed(null);
         setAnswers({});
@@ -65,6 +68,8 @@ export default function TaxPage() {
   /** A changed answer makes any result (or one still being worked out) stale: it is cleared, not left beside the new answers. */
   function edited() {
     asked++;
+    // The request for the old answers is cancelled, so the server stops working on it too.
+    inFlight?.abort();
     setRun({ kind: "idle" });
   }
 
@@ -73,8 +78,14 @@ export default function TaxPage() {
     const mine = ++asked;
     const current = () => mine === asked;
     setRun({ kind: "running" });
+    inFlight?.abort();
     const stop = new AbortController();
-    const timer = setTimeout(() => stop.abort(), ESTIMATE_TIMEOUT_MS);
+    inFlight = stop;
+    let tooSlow = false;
+    const timer = setTimeout(() => {
+      tooSlow = true;
+      stop.abort();
+    }, ESTIMATE_TIMEOUT_MS);
     try {
       const res = await fetch("/tax/estimate", {
         method: "POST",
@@ -100,9 +111,10 @@ export default function TaxPage() {
       }
       setRun({ kind: "done", outcome: body });
     } catch {
-      if (current()) setRun({ kind: "failed", message: stop.signal.aborted ? TOO_SLOW : FAILED });
+      if (current()) setRun({ kind: "failed", message: tooSlow ? TOO_SLOW : FAILED });
     } finally {
       clearTimeout(timer);
+      if (inFlight === stop) inFlight = null;
     }
   }
 
