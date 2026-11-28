@@ -31,18 +31,21 @@ describe("a Channels 429", () => {
     expect((out as { error: string }).error).toContain("Nothing was sent");
   });
 
-  it("is not reported as something that may have been sent", async () => {
+  // Both tests below reversed by Codex Day 1 R8 #3 when Day 1 was merged into this branch (disclosed in
+  // docs/decisions.md): an HTTP 429 alone does not prove the transaction was refused before it was sent, so it is
+  // reported as unknown. They asserted the opposite ("Nothing was sent", status 429; outcome "not-sent") until then.
+  it("is reported as unknown: a bare 429 does not prove nothing was sent", async () => {
     fakeChannels.reply = (_req, res) => {
       res.writeHead(429);
       res.end();
     };
     const out = await submitToChannels(channelsClient("k-1", fakeChannels.url, 2000), "AAAA");
-    expect(out).toMatchObject({ ok: false, status: 429 });
-    // Fails today: "The fee sponsor is busy. Try again shortly." has no "Nothing was sent", so every page treats it as a lost answer.
-    expect((out as { error: string }).error).toContain("Nothing was sent");
+    expect(out).toMatchObject({ ok: false, status: 502 });
+    expect((out as { error: string }).error).not.toContain("Nothing was sent");
+    expect((out as { error: string }).error).toContain("Check your activity");
   });
 
-  it("so a payer whose request was rate limited is told the payment 'may have' gone through (kit result as 0.10.0 builds it)", async () => {
+  it("so a payer whose request got a bare 429 is told it may have gone through (kit result as 0.10.0 builds it)", async () => {
     // What smart-account-kit 0.10.0 gives signAndSubmit's caller for a relay answer { success:false, error } :
     // submissionFailure(error) -> a SubmissionError (code 5003) whose message is the relay's error text.
     fakeChannels.reply = (_req, res) => {
@@ -60,7 +63,7 @@ describe("a Channels 429", () => {
     contract.AssembledTransaction.build = (async () => built) as never;
     try {
       const outcome = await sendCall(kit as never, "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX", "deposit", []);
-      expect(outcome.kind).toBe("not-sent");
+      expect(outcome.kind).toBe("unknown");
     } finally {
       contract.AssembledTransaction.build = orig;
     }

@@ -18,6 +18,7 @@
 // saved that credential, as pending, before it submitted anything.
 // Rendered by calling the component with React's state and effects stubbed.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -108,7 +109,7 @@ async function renderWallet(states: unknown[], b: ReturnType<typeof browser>) {
     signOut: async () => ({ error: null }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(b.kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(b.kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {

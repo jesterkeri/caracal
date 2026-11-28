@@ -20,6 +20,7 @@ import { Address, xdr } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SMART_ACCOUNT } from "../src/lib/stellar/config";
 import { SHARED_DEPLOYER, walletCtorArgs } from "./relay-fixtures";
+import { withLedger } from "./fake-ledger";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -136,7 +137,7 @@ async function renderWallet(states: unknown[], store: Map<string, string>, kit: 
     signOut: async () => ({ error: null }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {

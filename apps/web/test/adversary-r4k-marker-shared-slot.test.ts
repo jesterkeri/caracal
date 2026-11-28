@@ -11,6 +11,7 @@
 // connected() calls markCreation(null), which removes the key whatever
 // account it names. A signs in again and is offered Create with no warning.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function texts(node: unknown, out: string[] = []): string[] {
@@ -90,7 +91,7 @@ async function render(b: ReturnType<typeof browser>, user: User, states: unknown
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(b.kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(b.kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {

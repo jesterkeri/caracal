@@ -1,6 +1,7 @@
 // Follow-ups to adversary r4i: the "creation outcome unknown" marker is kept
 // per account and cleared once the outcome is known.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function texts(node: unknown, out: string[] = []): string[] {
@@ -77,7 +78,7 @@ async function render(b: ReturnType<typeof browser>, user: User, states: unknown
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(b.kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(b.kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {
@@ -169,7 +170,7 @@ describe("r4j follow-up: starting a new wallet after an unknown outcome", () => 
     await click(first.tree, "Create wallet")!();
     await settle();
     b.local.set("caracal.creationStartedAt", String(Date.now() - startedAgoMs));
-    b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+    b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
     const state = first.setters.filter((s) => s.i === 0).at(-1)!.v;
     vi.resetModules();
     const create = vi.spyOn(b.kit, "createWallet");
@@ -214,7 +215,7 @@ describe("r4k follow-up: the marker per account, and its start time", () => {
     b.local.set(KEY, "A,B");
     const pb2 = await render(b, B, [{ kind: "idle", knownWallet: true, checkFirst: true }, "Bola", B]);
     b.local.set("caracal.creationStartedAt", String(Date.now() - 4 * 60_000));
-    b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+    b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999, B: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
     await click(pb2.tree, "Start a new one anyway")!();
     await settle();
     expect(b.local.get(KEY)).toBe("A");
