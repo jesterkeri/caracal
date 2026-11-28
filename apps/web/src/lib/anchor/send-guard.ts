@@ -236,7 +236,14 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
       released,
       submit(kit, tx) {
         const needs = (tx as { needsNonInvokerSigningBy?: (o: { includeAlreadySigned: boolean }) => string[] }).needsNonInvokerSigningBy;
-        if (typeof needs === "function" && needs.call(tx, { includeAlreadySigned: true }).length === 0) {
+        // One whose signers cannot be read is not sent either: a throw here would read as "unknown" (split's adversary s12).
+        let signers: string[] | null = null;
+        try {
+          signers = typeof needs === "function" ? needs.call(tx, { includeAlreadySigned: true }) : null;
+        } catch {
+          signers = [];
+        }
+        if (signers !== null && signers.length === 0) {
           return Promise.reject(new UnboundedPayment("This payment carries no authorisation for your wallet to sign, so Caracal could not give it a last ledger. Nothing was sent."));
         }
         pending++;

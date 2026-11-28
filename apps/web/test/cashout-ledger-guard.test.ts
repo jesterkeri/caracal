@@ -133,3 +133,19 @@ describe("the lock of a payment whose kit call never settles", () => {
     if (second.ok) second.guard.finish("sent");
   });
 });
+
+describe("a payment whose signers cannot be read", () => {
+  it("is not sent: it is refused as unbounded", async () => {
+    storage();
+    const begun = beginSend(WALLET, "a1", 1000);
+    if (!begun.ok) throw new Error("should begin");
+    const signAndSubmit = vi.fn();
+    const tx = {
+      needsNonInvokerSigningBy: () => {
+        throw new Error("not simulated");
+      },
+    };
+    await expect(begun.guard.submit({ signAndSubmit }, tx as never)).rejects.toBeInstanceOf(UnboundedPayment);
+    expect(signAndSubmit).not.toHaveBeenCalled();
+  });
+});
