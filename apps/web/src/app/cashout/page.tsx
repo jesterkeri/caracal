@@ -569,6 +569,10 @@ export default function CashoutPage() {
   const seenBy = wallet ? readPastBy(wallet) : null;
   const mustPass = later(guardBy, seenBy);
   const stale = !hold.held && mustPass !== null && !(balanceAt !== null && balanceAt > mustPass);
+  // The landing advice compares balances only once the balance on screen was read at a ledger past the payment's
+  // closeBy: a node a few ledgers behind may answer after the hold lifts with one from before a late landing, which
+  // must not be shown as "read just now" (adversary c39). Until then the page says it is reading it again.
+  const adviceReady = pastLanding && !stale;
   const gate = hold.held || stale;
   useEffect(() => {
     if (!wallet || (!hold.held && !holdsSendLock(wallet) && !stale)) return;
@@ -836,7 +840,7 @@ export default function CashoutPage() {
           )}
           {unknownWaiting && (
             <p className="msg msg-unsure">
-              {pastLanding
+              {adviceReady
                 ? `${
                     lostSession
                       ? "Caracal can no longer read the anchor's status"
@@ -846,7 +850,11 @@ export default function CashoutPage() {
                       ? `Your USDC balance was ${fromStroops(balanceBeforeSend)} USDC when you pressed Send and is ${fromStroops(balance)} USDC now (read just now). `
                       : "Caracal could not read your USDC balance just now, so check your wallet's history first. "
                   }If it did not drop and no other USDC came in meanwhile, the payment did not go through and you can start another cash-out. If it dropped, or other USDC came in, check your wallet's history first, and ask the anchor about a payment it did not record with the transaction id.`
-                : stalled && sendSettledAt === null
+                : pastLanding
+                  ? `${
+                      lostSession ? "Caracal can no longer read the anchor's status" : "The anchor still has not received the USDC"
+                    }, and the payment can no longer reach the network. Caracal is reading your USDC balance again, as of a later ledger, before it compares it with the balance when you pressed Send.`
+                  : stalled && sendSettledAt === null
                   ? "The payment has still not finished sending, so Caracal cannot tell when it stops being able to land. Reload this page, which stops it, then wait two minutes and check your USDC balance above before starting another cash-out."
                   : "The payment can still reach the network for a short while. If the anchor still has not received it then, this page offers to start another cash-out. If the page stops changing, reload it and check your USDC balance before starting again."}
             </p>
