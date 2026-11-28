@@ -18,6 +18,7 @@
 //      `execute`.
 
 import { Address, xdr } from "@stellar/stellar-sdk";
+import { cancelQuietly } from "../cancel-quietly";
 
 export const MAX_BODY_BYTES = 64 * 1024;
 const MAX_AUTH_ENTRIES = 8;
@@ -378,13 +379,13 @@ export async function readBounded(request: Request, max = MAX_BODY_BYTES, signal
       if (done) break;
       total += value.byteLength;
       if (total > max) {
-        await reader.cancel().catch(() => {});
+        cancelQuietly(() => reader.cancel());
         return null;
       }
       chunks.push(value);
     }
   } catch (e) {
-    await reader.cancel().catch(() => {});
+    cancelQuietly(() => reader.cancel());
     throw e;
   } finally {
     signal?.removeEventListener("abort", onAbort);
