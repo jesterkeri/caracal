@@ -22,14 +22,16 @@
 // official client), which only adds a fee bump; without the key it is refused
 // (fail closed).
 //
-// A request is sent upstream within SEND_DEADLINE_MS of arriving, or not at
-// all (refused, "Nothing was sent"), and never once its caller has gone. A
-// wallet deployment is forwarded with its authorisation re-signed to expire
-// DEPLOY_AUTH_LEDGERS after the simulation's ledger (deploy-auth.ts), so it
-// cannot land more than about a minute after it was sent. Together these
-// bound how long after arriving a wallet creation can still land, which the
-// wallet page's wait before "start a new one anyway" relies on
-// (creation-marker.ts).
+// A request is sent upstream within SEND_DEADLINE_MS of arriving (on a
+// monotonic clock, checked again just before sending), or not at all
+// (refused, "Nothing was sent"), and never once its caller has gone. A wallet
+// deployment is forwarded with its authorisation re-signed to expire
+// DEPLOY_AUTH_LEDGERS after the simulation's ledger and never after the
+// ledger the wallet page named in `closeBy` (deploy-auth.ts); one that arrives
+// with the network already at or past `closeBy` is refused before sending.
+// The page records `closeBy` before it sends, so even after a lost answer it
+// knows the attempt cannot land once the network has passed that ledger
+// (creation-marker.ts): a bound shared with the relay, not a guess about lag.
 //
 // Testnet default upstream: SDF's public smart-account relayer proxy, which
 // forwards to OpenZeppelin Channels. Set RELAYER_UPSTREAM to use our own
@@ -44,7 +46,7 @@ import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay
 import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, isTxHash, safeTransactionId, submitToChannels, type Submitter } from "@/lib/relay/channels";
 import { buildSponsoredTx, serial, type SponsorDeps } from "@/lib/relay/sponsor";
 import { isLoopback, rpcContractLookup } from "@/lib/relay/wasm-lookup";
-import { DEPLOY_AUTH_LEDGERS, withShortDeployAuth } from "@/lib/relay/deploy-auth";
+import { closeByOf, deployAuthExpiry, withShortDeployAuth } from "@/lib/relay/deploy-auth";
 import { SEND_DEADLINE_MS } from "@/lib/relay/limits";
 
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
@@ -124,26 +126,19 @@ const fail = (error: string, status: number) =>
 
 const refuse = (error: string, status: number) => fail(refusalText(error), status);
 
-/** Whether a request body (not yet checked) asks to deploy a contract. */
-function deploysContract(body: unknown): boolean {
-  try {
-    const func = (body as { func?: unknown })?.func;
-    return typeof func === "string" && xdr.HostFunction.fromXDR(func, "base64").switch().name === "hostFunctionTypeCreateContractV2";
-  } catch {
-    return false;
-  }
-}
-
 export async function POST(request: Request) {
-  const arrived = Date.now();
+  // A monotonic clock: setting the system clock back cannot stretch the deadline.
+  const arrived = performance.now();
   /** Refusal if this request may no longer be sent: too late, or its caller has gone. */
   const tooLate = () =>
     request.signal?.aborted
       ? refuse("The request was cancelled before it was sent", 499)
-      : Date.now() - arrived > SEND_DEADLINE_MS
+      : performance.now() - arrived > SEND_DEADLINE_MS
         ? refuse("The fee sponsor is busy. Try again in a minute.", 503)
         : null;
   if (!perIp.take(clientKey(request, process.env))) return refuse("Too many requests. Wait a minute.", 429);
+  const closeBy = closeByOf(request.url);
+  if (closeBy === "invalid") return refuse("The wallet creation's last ledger is not a valid ledger number", 400);
   if (!perInstance.take("all")) return refuse("The fee sponsor is busy. Try again shortly.", 429);
 
   let text: string | null;
@@ -166,9 +161,10 @@ export async function POST(request: Request) {
   if (!deps) return refuse("Fee sponsorship is not set up on this server.", 503);
 
   const verdict = await checkPayload(body, CARACAL_POLICY, chain.wasm, chain.instance);
-  // A refused deployment says "Nothing was sent", which the wallet page needs
-  // to offer creation again; calls keep the policy's own wording.
-  if (!verdict.ok) return deploysContract(body) ? refuse(verdict.error, verdict.status) : fail(verdict.error, verdict.status);
+  // Every refusal here is made before anything is sent, so it says "Nothing
+  // was sent": the wallet page needs it to offer creation again, and the
+  // invoice and split pages need it to tell a refusal from a lost answer.
+  if (!verdict.ok) return refuse(verdict.error, verdict.status);
 
   // Only the shared deployer's wallet deployment goes to SDF's proxy as
   // { func, auth }: it names its exact code hash and no existing contract's
@@ -229,7 +225,7 @@ export async function POST(request: Request) {
       return refuse("The network could not be reached to check this call. Try again.", 503);
     }
     // Simulated with every signature enforced and every wasm checked; see sponsor.ts.
-    if (!built.ok) return toProxy ? refuse(built.error, built.status) : fail(built.error, built.status);
+    if (!built.ok) return refuse(built.error, built.status);
     const late = tooLate();
     if (late) return late;
 
@@ -237,13 +233,20 @@ export async function POST(request: Request) {
       const sent = await submitToChannels(channels(channelsKey!, channelsUrl), built.xdr, channelsTimeout());
       return sent.ok ? Response.json({ success: true, data: sent.data }) : fail(sent.error, sent.status);
     }
+    const expiry = deployAuthExpiry(built.latestLedger, closeBy);
+    if (expiry === null) {
+      return refuse("This wallet creation reached the fee sponsor after the last ledger the page allowed for it", 409);
+    }
     let forwarded: { func: string; auth: string[] };
     try {
-      forwarded = await withShortDeployAuth(verdict.body, built.latestLedger + DEPLOY_AUTH_LEDGERS, NETWORK.passphrase);
+      forwarded = await withShortDeployAuth(verdict.body, expiry, NETWORK.passphrase);
     } catch (e) {
       console.error("relay could not re-sign the deployment:", e instanceof Error ? e.message : String(e));
       return refuse("Caracal could not prepare this wallet creation", 400);
     }
+    // Checked again just before sending: re-signing above is asynchronous.
+    const atSend = tooLate();
+    if (atSend) return atSend;
     try {
       // The timeout covers both the request and reading the answer.
       const res = await fetch(proxyUrl ?? DEFAULT_UPSTREAM, {

@@ -101,8 +101,12 @@ export async function submitToChannels(client: Submitter, xdr: string, deadlineM
     }
     if (e instanceof PluginTransportError) {
       console.error("channels transport error:", e.statusCode ?? "", e.message.slice(0, 200));
-      if (e.statusCode === 429) return { ok: false, status: 429, error: "The fee sponsor is busy. Try again shortly." };
-      // A timeout may come after Channels already submitted the transaction.
+      // An HTTP status alone, 429 included, does not prove the transaction was refused before it was sent:
+      // nothing documents that every 429 from the hosted service or a proxy in front of it comes before
+      // submission (Codex Day 1 R8 #3). Only a pre-submission code (REFUSED_BEFORE_SUBMIT above) or the relay's
+      // own rate limit (route.ts, answered before anything is forwarded) says "Nothing was sent". A timeout may
+      // likewise come after Channels already submitted the transaction.
+      if (e.statusCode === 429) return { ok: false, status: 502, error: "The fee relayer turned this request away as busy (HTTP 429), but that does not show whether the transaction was sent. Check your activity before trying again." };
       return { ok: false, status: 502, error: "The fee relayer did not answer. Check your activity before trying again." };
     }
     if (e instanceof PluginUnexpectedError) {

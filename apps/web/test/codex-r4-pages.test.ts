@@ -6,6 +6,7 @@
 //     not verify, and must keep its sign-out control.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WALLET_OWNER_KEY } from "../src/lib/auth/wallet-binding";
+import { withLedger } from "./fake-ledger";
 
 type El = { type: unknown; props: { children?: unknown; onClick?: () => unknown; href?: string } };
 type User = { id: string; email?: string | null };
@@ -84,7 +85,7 @@ async function renderPage(path: "wallet" | "signin", states: unknown[], auth: un
     };
   });
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   const store = new Map<string, string>();

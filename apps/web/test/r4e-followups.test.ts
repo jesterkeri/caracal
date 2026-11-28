@@ -1,6 +1,7 @@
 // Follow-up to adversary r4e's suspicion and r4f's findings: after a wallet
 // creation whose outcome is unknown, the page offers Connect, not Create.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function texts(node: unknown, out: string[] = []): string[] {
@@ -51,10 +52,16 @@ async function renderWallet(states: unknown[], create?: (events: ReturnType<type
     };
   });
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: {} }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve({ disconnect: async () => {}, createWallet, events }) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger({ disconnect: async () => {}, createWallet, events })) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
-  vi.stubGlobal("window", { location: { replace: vi.fn(), reload: vi.fn(), origin: "https://caracal.test", search: "" } });
+  // Harness (Codex R6 #3, 2026-11-27): a browser with readable, empty site storage. Without localStorage every
+  // read threw, which the page now treats as "cannot tell whether a wallet exists" rather than "none".
+  const local = new Map<string, string>();
+  vi.stubGlobal("window", {
+    location: { replace: vi.fn(), reload: vi.fn(), origin: "https://caracal.test", search: "" },
+    localStorage: { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => void local.set(k, v), removeItem: (k: string) => void local.delete(k) },
+  });
   const mod = await import("../src/app/wallet/page");
   return { tree: mod.default(), setters };
 }
@@ -207,7 +214,7 @@ describe("r4g follow-up: the Google button when starting the sign-in throws", ()
       return { ...actual, default: actual, useState: (init: unknown) => { const at = i++; return [at === 1 ? { kind: "signed-out" } : init, (v: unknown) => setters.push({ i: at, v })]; }, useEffect: () => {} };
     });
     vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth: { signInWithOAuth: async () => { throw new DOMException("The operation is insecure.", "SecurityError"); } } }) }));
-    vi.doMock("@/lib/stellar/kit", () => ({ getKit: () => Promise.resolve({}) }));
+    vi.doMock("@/lib/stellar/kit", () => ({ getKit: () => Promise.resolve(withLedger({})) }));
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
     vi.stubGlobal("window", { location: { origin: "https://caracal.test", search: "" } });

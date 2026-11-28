@@ -3,8 +3,10 @@
 // smart-account-kit 0.10.0 says "Smart account contract not found on-chain for
 // credential X" for ANY failed lookup of the wallet's contract, a network
 // failure included. A healthy ledger endpoint does not prove the lookup found
-// nothing, so the wallet page looks up that exact contract itself and says "no
-// wallet" only when the network answers that it has no such contract.
+// nothing, so the wallet page looks up that exact contract itself. Even an
+// answer with no entry does not prove there is no wallet: an RPC may leave out
+// an entry that was archived (wasm-lookup.ts notes the same), so "not-found"
+// proves neither that a wallet exists nor that it does not.
 
 import { Buffer } from "buffer";
 import { Address, Keypair, StrKey, hash, xdr } from "@stellar/stellar-sdk";
@@ -37,12 +39,13 @@ export function credentialInKitError(e: unknown): string | null {
 }
 
 /**
- * absent: the network answered and holds no such contract.
+ * not-found: the network answered with no entry for it: no such contract, or one
+ *   whose data was archived and that this RPC does not return. Proves neither.
  * archived: the contract exists, but its data expired and must be restored.
  * present: the contract exists and is live (the kit's lookup failed for another reason).
  * unknown: the lookup failed or did not answer in time.
  */
-export type WalletStatus = "absent" | "archived" | "present" | "unknown";
+export type WalletStatus = "not-found" | "archived" | "present" | "unknown";
 
 /** The part of a stellar-sdk rpc.Server used here. */
 export type LedgerReader = {
@@ -75,7 +78,7 @@ export async function walletStatus(rpc: LedgerReader | undefined, contractId: st
       }),
     ]);
     if (!answer || !Array.isArray(answer.entries) || typeof answer.latestLedger !== "number") return "unknown";
-    if (answer.entries.length === 0) return "absent";
+    if (answer.entries.length === 0) return "not-found";
     const live = answer.entries[0].liveUntilLedgerSeq;
     return typeof live === "number" && live < answer.latestLedger ? "archived" : "present";
   } catch {
