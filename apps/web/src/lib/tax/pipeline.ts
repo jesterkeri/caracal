@@ -6,7 +6,7 @@
 
 import { SPLIT, TOKENS } from "@/lib/stellar/config";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { ChainReadError, isContractId, readSplitPayments, type ChainReader, type Coverage, type Payment } from "./chain-payments";
+import { ChainReadError, EVENT_ID, isContractId, readSplitPayments, type ChainReader, type Coverage, type Payment } from "./chain-payments";
 import { RateSourceError, quoteFor, type RateTable } from "./cbn-rates";
 import { DISCLAIMER, estimate, getRules, type Account, type Estimate, type FxQuote, type LedgerEntry } from "@caracal/tax";
 
@@ -56,7 +56,8 @@ export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | 
     classifications = {};
     for (const k of keys) {
       const v = (c as Record<string, unknown>)[k];
-      if (k.length === 0 || k.length > MAX_ID) return { ok: false, message: "A payment answer names a payment Caracal does not know." };
+      // Only an RPC event id can name a payment, so an answer keyed otherwise is refused before the network is read (adversary t25).
+      if (k.length === 0 || k.length > MAX_ID || !EVENT_ID.test(k)) return { ok: false, message: "A payment answer names a payment Caracal does not know." };
       if (v !== "income" && v !== "not_income") return { ok: false, message: "Each payment answer must be income or not income." };
       Object.defineProperty(classifications, k, { value: v, enumerable: true, writable: true, configurable: true });
     }

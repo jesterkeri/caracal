@@ -78,8 +78,12 @@ describe("finding 2: a different sender is not proof of income", () => {
   });
 
   it("the request carries the answers and validates them", () => {
-    const ok = { wallet: WALLET, otherIncome: { kind: "all-in-caracal" }, classifications: { a: "income", b: "not_income" } };
-    expect(parseTaxRequest(ok)).toMatchObject({ ok: true, req: { classifications: { a: "income", b: "not_income" } } });
+    // Test change (adversary t25): the answers are keyed by RPC event ids, the only keys that can name a payment;
+    // they were "a" and "b", which are now refused before the network is read. The checks are unchanged.
+    const A = "0025441509360848896-0000000000";
+    const B = "0025441513655808000-0000000001";
+    const ok = { wallet: WALLET, otherIncome: { kind: "all-in-caracal" }, classifications: { [A]: "income", [B]: "not_income" } };
+    expect(parseTaxRequest(ok)).toMatchObject({ ok: true, req: { classifications: { [A]: "income", [B]: "not_income" } } });
     for (const bad of [{ a: "maybe" }, { a: true }, ["income"], null, "income", { ["x".repeat(65)]: "income" }, Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, "income"]))]) {
       expect(parseTaxRequest({ ...ok, classifications: bad })).toMatchObject({ ok: false });
     }

@@ -16,6 +16,9 @@ import { NETWORK } from "../stellar/config";
 import { readLimitedText } from "./read-limited";
 
 /** The chain could not be read, or answered with something that cannot be relied on. */
+/** A Soroban RPC event id: the event's position as 19 digits, a hyphen and 10 digits (as getEvents pages by). */
+export const EVENT_ID = /^\d{19}-\d{10}$/;
+
 export class ChainReadError extends Error {}
 
 export type Retention = {
