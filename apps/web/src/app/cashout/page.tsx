@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { acquireSend, anchorReceived, holdText, holdsSendLock, passLedger, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
+import { acquireSend, anchorReceived, cannotGuard, holdText, holdsSendLock, passLedger, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -247,6 +247,10 @@ export default function CashoutPage() {
     // An earlier payment from this browser (this page before a reload, or another tab) may still land.
     const held = sendHold(boot.wallet, seenLedger);
     if (held.held) return setProblem(holdText(held));
+    // A browser that could not guard the payment would only be refused at Send, after the sign-in and the anchor's
+    // form: refuse before anything starts (adversary c30).
+    const cannot = cannotGuard(boot.wallet);
+    if (cannot) return setProblem(holdText(cannot));
     setProblem(null);
     setPopupNote(null);
     setPhase("starting");

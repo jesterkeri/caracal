@@ -285,6 +285,26 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
  * beginSend under this wallet's Web Lock, held until the guard is released, so no other tab of this browser
  * can check and write the record at the same time. Does not wait for the lock: a tab that holds it is sending.
  */
+/**
+ * Whether this browser could guard a payment at all, asked before a cash-out starts (adversary c30): with no Web
+ * Locks, or storage that will not take the payment's record, Send would refuse at the end, after the sign-in and the
+ * anchor's form. Returns why not, or null. The record is tried under its own key, so no real record is touched.
+ */
+export function cannotGuard(wallet: string, locks: Locks | undefined = browserLocks()): Held | null {
+  if (!locks || typeof locks.request !== "function") return { held: true, until: null, reason: "unsupported" };
+  const s = store();
+  if (!s) return { held: true, until: null, reason: "unreadable" };
+  const probe = `${KEY(wallet)}.check`;
+  try {
+    s.setItem(probe, "1");
+    const kept = s.getItem(probe) === "1";
+    s.removeItem(probe);
+    return kept ? null : { held: true, until: null, reason: "unreadable" };
+  } catch {
+    return { held: true, until: null, reason: "unreadable" };
+  }
+}
+
 export function acquireSend(wallet: string, anchorId: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<Begun> {
   if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
   // A payment of this tab that is done, or that the network has passed, holds the lock for nothing: let go first.
