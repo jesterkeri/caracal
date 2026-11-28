@@ -51,6 +51,14 @@ type Note = { busy?: string; said?: Said; hold?: true };
 // slower read never puts earlier pots on screen or clears a write's note.
 let readSeq = 0;
 let writing = false;
+/**
+ * Told when this tab's write ends, so a copy of the page mounted while it was being sent (the person left the page and
+ * came back without a reload) re-reads the pots and remembers an unknown write's closeBy (adversary s16): the page
+ * that started it may be gone. `from` is that page, which handles its own write.
+ */
+type WriteEnd = { from: object; closeBy: number; unknown: boolean };
+const writeEnded = new Set<(e: WriteEnd) => void>();
+const WRITING_ELSEWHERE = "A withdrawal, move or change started on this page earlier is still being sent. Nothing new can be sent until its outcome is known; this page then reads the pots again.";
 
 /** The larger of two ledgers, either of which may be unknown. */
 const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
@@ -72,6 +80,8 @@ export default function SplitPage() {
   // The largest closeBy of an earlier write this tab has seen a record of (Codex split R4 #2). Nothing new is offered
   // until the pots shown were read at a ledger past it, even once the record is gone (another tab may remove it).
   const [guardBy, setGuardBy] = useState<number | null>(null);
+  // This copy of the page, to tell its own writes from those of a copy mounted earlier (adversary s16).
+  const [me] = useState<object>(() => ({}));
 
   useEffect(() => {
     let unfollow: (() => void) | undefined;
@@ -174,6 +184,7 @@ export default function SplitPage() {
     if (view.kind !== "ready" || note.busy || writing) return;
     const wallet = view.wallet;
     writing = true;
+    let ended: WriteEnd | null = null;
     try {
       // An earlier write that may still land, or one another tab is making, holds back every new write on
       // this split (write-guard.ts).
@@ -211,12 +222,15 @@ export default function SplitPage() {
       // offered, even if the poll has already removed its record because the network passed closeBy while it was
       // still being sent (adversary s15).
       if (outcome.kind === "unknown") setGuardBy((g) => later(g, guard.closeBy));
+      ended = { from: me, closeBy: guard.closeBy, unknown: outcome.kind === "unknown" };
       const said = say(outcome, what);
       if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
       setNote({ busy: "Reading the result from the network", said });
       await reread(wallet, said);
     } finally {
       writing = false;
+      const e = ended;
+      if (e) writeEnded.forEach((f) => f(e));
     }
   }
 
@@ -277,6 +291,8 @@ export default function SplitPage() {
   }
 
   const busy = note.busy !== undefined;
+  // This tab is sending a write this copy of the page did not start (it was mounted again while it was sent).
+  const writingElsewhere = writing && !busy;
   const loaded = view.kind === "ready" ? view.loaded : null;
   // Read from storage on every render (not remembered), so a write in another tab or before a reload counts.
   // Rendering only reads the record: it never writes or removes it (Codex split R4 #1).
@@ -286,7 +302,7 @@ export default function SplitPage() {
   const mustPass = later(guardBy, seenBy);
   const shownLedger = readAt(loaded);
   const stale = !hold.held && mustPass !== null && !(shownLedger !== null && shownLedger > mustPass);
-  const blocked = busy || hold.held || stale;
+  const blocked = busy || hold.held || stale || writingElsewhere;
   // When a hold lifts, the pots are read again (as of a ledger past closeBy) and its note goes: a write that landed
   // after the write's own re-read is then on screen before the person repeats it (adversary s11, Codex split R4 #2).
   const readyWallet = view.kind === "ready" ? view.wallet : null;
@@ -302,6 +318,20 @@ export default function SplitPage() {
     const t = setTimeout(() => setGuardBy((g) => later(g, seenBy)), 0);
     return () => clearTimeout(t);
   }, [seenBy, guardBy]);
+  // A write this tab sent from a copy of the page mounted earlier has ended: the pots are read again here too.
+  useEffect(() => {
+    if (!readyWallet) return;
+    const f = (e: WriteEnd) => {
+      if (e.from === me) return;
+      if (e.unknown) setGuardBy((g) => later(g, e.closeBy));
+      void reread(readyWallet, undefined, true);
+    };
+    writeEnded.add(f);
+    return () => {
+      writeEnded.delete(f);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyWallet, me]);
   // Once nothing holds and the pots are read past closeBy, a held-back write's note goes (never a failure, adversary s12).
   const lifted = !hold.held && !stale;
   useEffect(() => {
@@ -334,7 +364,7 @@ export default function SplitPage() {
       {view.kind === "ready" && loaded?.kind === "error" && (
         <div className="flex flex-col gap-3">
           <p className="msg msg-bad">{loaded.message}</p>
-          <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
+          <button className="btn btn-secondary btn-sm self-start" disabled={busy || writingElsewhere} onClick={() => reread(view.wallet)}>
             Try again
           </button>
         </div>
@@ -362,7 +392,7 @@ export default function SplitPage() {
           <p className="small muted leading-7">
             Your wallet deploys it at a fixed address, <span className="addr addr-box box-decoration-clone px-1.5 py-0.5 text-[color:var(--c-text)]">{loaded.split}</span>, so it cannot be deployed twice. Caracal pays the fee.
           </p>
-          <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
+          <button className="btn btn-secondary btn-sm self-start" disabled={busy || writingElsewhere} onClick={() => reread(view.wallet)}>
             Check again
           </button>
         </section>
@@ -389,7 +419,7 @@ export default function SplitPage() {
                 {loaded.split}
               </a>
             </p>
-            <button className="btn btn-secondary btn-sm self-start" disabled={busy} onClick={() => reread(view.wallet)}>
+            <button className="btn btn-secondary btn-sm self-start" disabled={busy || writingElsewhere} onClick={() => reread(view.wallet)}>
               Refresh
             </button>
           </section>
@@ -473,6 +503,7 @@ export default function SplitPage() {
           I have checked the pots
         </button>
       )}
+      {writingElsewhere && <p className="msg msg-unsure">{WRITING_ELSEWHERE}</p>}
       {!busy && stale && note.said?.text !== STALE && <p className="msg msg-unsure">{STALE}</p>}
       {note.busy && <p className="small muted">{note.busy}...</p>}
       {note.said && (
