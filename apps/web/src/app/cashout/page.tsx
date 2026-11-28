@@ -102,6 +102,32 @@ const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
 /** Non-final statuses where waiting is the right thing and the status text says so. */
 const WAIT_STATUSES = new Set(["pending_user_transfer_start", "pending_user_transfer_complete", "pending_anchor", "pending_stellar", "pending_external", ...FORM_STATUSES]);
 
+/** Closes the anchor's popup. A stand-in window whose close() throws (a sandboxed frame, an in-app browser) must not stop the caller (adversary c37). */
+function closePopup(popup: Window | null) {
+  try {
+    popup?.close();
+  } catch {
+    // the popup stays open; the page goes on
+  }
+}
+
+/**
+ * Points the popup at the anchor's form, or says why it could not (null when it did). A stand-in window whose
+ * `closed` cannot be read or whose navigation throws (a sandboxed frame, an in-app browser) is a blocked popup:
+ * the withdrawal the anchor just started goes on, with the form's link (adversary c40).
+ */
+function pointPopup(popup: Window | null, url: string): "closed" | "blocked" | null {
+  if (!popup) return "blocked";
+  try {
+    if (popup.closed) return "closed";
+    popup.location.href = url;
+    return null;
+  } catch {
+    closePopup(popup);
+    return "blocked";
+  }
+}
+
 export default function CashoutPage() {
   const [boot, setBoot] = useState<Boot>({ kind: "loading" });
   const [toml, setToml] = useState<AnchorToml | null>(null);
@@ -245,7 +271,7 @@ export default function CashoutPage() {
         if (phase === "form" && t.status === "pending_user_transfer_start") {
           seenRef.current = payTo(t);
           setPhase("confirm");
-          closePopup();
+          closePopup(popupRef.current);
         }
         if (FINAL_STATUSES.has(t.status)) return;
       } catch (e) {
@@ -307,15 +333,6 @@ export default function CashoutPage() {
     setProblem(t);
   }
 
-  /** Closes the anchor's popup. A stand-in window whose close() throws (a sandboxed frame, an in-app browser) must not stop the caller (adversary c37). */
-  function closePopup() {
-    try {
-      popupRef.current?.close();
-    } catch {
-      // the popup stays open; the page goes on
-    }
-  }
-
   async function start() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
@@ -356,11 +373,10 @@ export default function CashoutPage() {
       });
       setConfirmed(preview.amount);
       setSession(r);
-      if (popupRef.current && !popupRef.current.closed) popupRef.current.location.href = r.url;
-      else setPopupNote(popupRef.current ? "closed" : "blocked");
+      setPopupNote(pointPopup(popupRef.current, r.url));
       setPhase("form");
     } catch (e) {
-      closePopup();
+      closePopup(popupRef.current);
       setProblem(e instanceof AnchorError ? e.message : "Something went wrong starting the cash-out. Nothing was sent.");
       setPhase("preview");
     }
@@ -508,7 +524,7 @@ export default function CashoutPage() {
 
   function startAgain() {
     // A withdrawal that was not paid is never reused: the next one starts from a new sign-in.
-    closePopup();
+    closePopup(popupRef.current);
     setSession(null);
     setTxn(null);
     txnRef.current = null;
