@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { acquireWrite, clearPassed, clearUnknown, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger, readPastBy, recordCloseBy, rememberReadAfter } from "@/lib/split/write-guard";
+import { acquireWrite, clearPassed, clearUnknown, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger, readPastBy, recordCloseBy, STALE_TEXT } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -64,8 +64,7 @@ const WRITING_ELSEWHERE = "A withdrawal, move or change started on this page ear
 const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
 /** The ledger what is shown was read at, when the RPC said. */
 const readAt = (l: Loaded | null) => (l && l.kind !== "error" ? l.ledger : null);
-const STALE =
-  "Caracal is reading the pots again, and nothing new can be sent until it has read them as of a later ledger, so the pots you see include any earlier withdrawal, move or change that went through. If this stays, press Refresh.";
+const STALE = STALE_TEXT;
 
 export default function SplitPage() {
   const [view, setView] = useState<View>({ kind: "checking" });
@@ -205,7 +204,8 @@ export default function SplitPage() {
       const need = later(guardBy, readPastBy(splitAddressFor(wallet)));
       const at = readAt(view.loaded);
       if (!holdOn(splitAddressFor(wallet), ledger).held && need !== null && !(at !== null && at > need)) return setNote({ said: { tone: "unsure", text: STALE }, hold: true });
-      const begun = await acquireWrite(splitAddressFor(wallet), ledger);
+      // The same check is made again under the lock, where another tab's write cannot end unseen (Codex split R5 #1).
+      const begun = await acquireWrite(splitAddressFor(wallet), ledger, undefined, at);
       if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) }, hold: true });
       const guard = begun.guard;
       // Any read already under way began before this write: it is dropped.
@@ -229,8 +229,8 @@ export default function SplitPage() {
       if (outcome.kind === "done") {
         const landed = outcome.ledger;
         const after = landed !== undefined ? landed - 1 : guard.closeBy;
+        // guard.finish kept it in this browser too, or kept the record when it could not (Codex split R5 #2).
         setGuardBy((g) => later(g, after));
-        rememberReadAfter(splitAddressFor(wallet), after);
       }
       ended = { from: me, closeBy: guard.closeBy, unknown: outcome.kind === "unknown" };
       const said = say(outcome, what);
@@ -291,12 +291,12 @@ export default function SplitPage() {
     } catch (e) {
       return setNote({ said: { tone: "bad", text: `Caracal could not read the Stellar network, so the earlier record stays. Try again. (${e instanceof Error ? e.message : String(e)})` }, hold: true });
     }
-    if (!(await clearUnknown(split))) {
+    // The ledger of this check is kept first, as the one the pots must be read past; the record stays if it cannot be.
+    if (!(await clearUnknown(split, undefined, ledger - 1))) {
       return setNote({ said: { tone: "unsure", text: "Caracal could not clear the earlier record, because another tab of this browser is sending a write or this browser would not let it. Try again in a moment." }, hold: true });
     }
     // The pots must be read again, as of this ledger or later, before anything new is offered.
     setGuardBy((g) => later(g, ledger - 1));
-    rememberReadAfter(split, ledger - 1);
     setSeenLedger(ledger);
     setNote({});
   }

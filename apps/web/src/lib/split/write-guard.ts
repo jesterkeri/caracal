@@ -57,7 +57,7 @@ const KEY = (split: string) => `caracal.split.write.${split}`;
 const READ_AFTER = (split: string) => `caracal.split.readAfter.${split}`;
 const LOCK = (split: string) => `caracal.split.write.${split}`;
 
-export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unknown-expiry" | "unreadable" | "unsupported" };
+export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unknown-expiry" | "unreadable" | "unsupported" | "stale" };
 type Held = Extract<Hold, { held: true }>;
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -137,16 +137,22 @@ export function readAfter(split: string): number | null {
   }
 }
 
-/** Keeps `ledger` as the one the pots must be read past, unless a later one is kept already. Storage refused: nothing kept. */
-export function rememberReadAfter(split: string, ledger: number): void {
-  if (!isLedger(ledger)) return;
+/**
+ * Keeps `ledger` as the one the pots must be read past, unless a later one is kept already. True when this browser
+ * now keeps it (or a later one); false when storage refused it. A record is removed only once this is true, so a
+ * refusal leaves the record, whose closeBy still gates every page (Codex split R5 #2).
+ */
+export function rememberReadAfter(split: string, ledger: number): boolean {
+  if (!isLedger(ledger)) return false;
   const s = store();
-  if (!s) return;
+  if (!s) return false;
   try {
     const kept = readAfter(split);
     if (kept === null || ledger > kept) s.setItem(READ_AFTER(split), JSON.stringify(ledger));
+    const now = readAfter(split);
+    return now !== null && now >= ledger;
   } catch {
-    /* storage refused: this page still remembers it in its own state */
+    return false;
   }
 }
 
@@ -205,25 +211,25 @@ export async function clearPassed(split: string, ledger: number, locks: Locks | 
   if (!isLedger(ledger)) return;
   await underLock(split, locks, (s) => {
     const rec = read(s, split);
-    if (rec && ledger > rec.closeBy) {
-      // Its closeBy still asks a page opened later to read the pots past it (adversary s20).
-      rememberReadAfter(split, rec.closeBy);
-      s.removeItem(KEY(split));
-    }
+    // Its closeBy still asks a page opened later to read the pots past it (adversary s20). When that cannot be kept,
+    // the record stays and gates those pages itself (Codex split R5 #2).
+    if (rec && ledger > rec.closeBy && rememberReadAfter(split, rec.closeBy)) s.removeItem(KEY(split));
   });
 }
 
 /**
  * Under this split's Web Lock, removes a record with no closeBy (unreadable, or from an older version of Caracal)
  * once the person has checked the pots and said so: the only way past it, since no ledger proves it cannot land.
- * Resolves true when no such record is left.
+ * `readPast` (the ledger of the person's check, less one) is kept first as the ledger the pots must be read past;
+ * when it cannot be kept, the record stays (Codex split R5 #2). Resolves true when no such record is left.
  */
-export async function clearUnknown(split: string, locks: Locks | undefined = browserLocks()): Promise<boolean> {
+export async function clearUnknown(split: string, locks: Locks | undefined = browserLocks(), readPast?: number): Promise<boolean> {
   let done = false;
   await underLock(split, locks, (s) => {
+    const kept = readPast === undefined || rememberReadAfter(split, readPast);
     const raw = s.getItem(KEY(split));
-    if (raw !== null && raw !== undefined && read(s, split) === null) s.removeItem(KEY(split));
-    done = s.getItem(KEY(split)) === null || read(s, split) !== null;
+    if (kept && raw !== null && raw !== undefined && read(s, split) === null) s.removeItem(KEY(split));
+    done = kept && (s.getItem(KEY(split)) === null || read(s, split) !== null);
   });
   return done;
 }
@@ -278,18 +284,26 @@ const UNBOUNDED: TransactionResult = {
 /**
  * Takes the hold on this split before anything is sent, given the latest ledger read just now: refused when
  * an earlier write holds it. The write's closeBy is that ledger + WRITE_LEDGERS, recorded before sending.
+ * `shownAt` is the ledger the pots on screen were read at (null when the RPC did not say): the write is refused,
+ * reason "stale", unless they were read past every ledger this browser keeps for an earlier write, checked here,
+ * under the lock, since another tab's write can end between the page's own check and the lock (Codex split R5 #1).
  */
-export function beginWrite(split: string, ledger: number): Begun {
+export function beginWrite(split: string, ledger: number, shownAt?: number | null): Begun {
   if (!isLedger(ledger)) return { ok: false, hold: { held: true, until: null, reason: "earlier-write" } };
   const hold = holdOn(split, ledger);
   if (hold.held) return { ok: false, hold };
   const s = store();
   if (!s) return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
-  // A passed record this write replaces still asks a page opened later to read the pots past its closeBy, as
-  // clearPassed keeps it (adversary s21).
   try {
     const passed = read(s, split);
-    if (passed) rememberReadAfter(split, passed.closeBy);
+    if (shownAt !== undefined) {
+      const kept = readAfter(split);
+      const need = passed ? (kept === null ? passed.closeBy : Math.max(kept, passed.closeBy)) : kept;
+      if (need !== null && !(shownAt !== null && shownAt > need)) return { ok: false, hold: { held: true, until: null, reason: "stale" } };
+    }
+    // A passed record this write replaces still asks a page opened later to read the pots past its closeBy, as
+    // clearPassed keeps it (adversary s21). When that cannot be kept, the record is not replaced (Codex split R5 #2).
+    if (passed && !rememberReadAfter(split, passed.closeBy)) return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   } catch {
     return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   }
@@ -373,8 +387,12 @@ export function beginWrite(split: string, ledger: number): Begun {
         return;
       }
       // Removed while this write still holds the lock (release lets go of it), so it cannot remove a newer record.
+      // A write that went through first keeps the ledger the pots must be read past: the one it landed in less one,
+      // or its closeBy when the kit did not say (adversary s19). When that cannot be kept, the record stays, and its
+      // closeBy gates a reload or another tab instead (Codex split R5 #2).
       try {
-        if (mine()) s.removeItem(KEY(split));
+        const keep = outcome.kind !== "done" || rememberReadAfter(split, outcome.ledger !== undefined ? outcome.ledger - 1 : closeBy);
+        if (keep && mine()) s.removeItem(KEY(split));
       } catch {
         /* the record stays until the network passes closeBy */
       }
@@ -390,13 +408,13 @@ export function beginWrite(split: string, ledger: number): Begun {
  * lock: a tab that holds it is writing, so this write is held back. Without Web Locks, or when the
  * browser refuses the request (blocked site data, a sandboxed frame), nothing is sent.
  */
-export function acquireWrite(split: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<Begun> {
+export function acquireWrite(split: string, ledger: number, locks: Locks | undefined = browserLocks(), shownAt?: number | null): Promise<Begun> {
   if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
   // A write of this tab the network has passed holds the lock for nothing: it is let go first.
-  return passLedger(split, ledger).then(() => lockAndBegin(split, ledger, locks));
+  return passLedger(split, ledger).then(() => lockAndBegin(split, ledger, locks, shownAt));
 }
 
-function lockAndBegin(split: string, ledger: number, locks: Locks): Promise<Begun> {
+function lockAndBegin(split: string, ledger: number, locks: Locks, shownAt?: number | null): Promise<Begun> {
   return new Promise((resolve) => {
     let entered = false;
     let answered = false;
@@ -418,7 +436,7 @@ function lockAndBegin(split: string, ledger: number, locks: Locks): Promise<Begu
         }
         let begun: Begun;
         try {
-          begun = beginWrite(split, ledger);
+          begun = beginWrite(split, ledger, shownAt);
         } catch {
           begun = { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
         }
@@ -453,8 +471,13 @@ export async function readLedger(rpc: unknown): Promise<number> {
   }
 }
 
+/** What the page says while the pots on screen are older than an earlier write it must show (reason "stale"). */
+export const STALE_TEXT =
+  "Caracal is reading the pots again, and nothing new can be sent until it has read them as of a later ledger, so the pots you see include any earlier withdrawal, move or change that went through. If this stays, press Refresh.";
+
 /** What the page says while a write is held back. */
 export function holdText(hold: Held, now: number = Date.now()): string {
+  if (hold.reason === "stale") return STALE_TEXT;
   if (hold.reason === "unsupported") {
     return "This browser cannot keep two of its tabs from sending the same withdrawal, so Caracal sends nothing from it. Use an up-to-date browser.";
   }
