@@ -126,32 +126,57 @@ export function isCaracalSplit(split: string, cfg: SplitConfig): boolean {
 
 /** Newest first would need paging backwards; the node keeps about a week, so one forward pass is enough. */
 const EVENT_WINDOW_LEDGERS = 120_000;
-const MAX_EVENT_PAGES = 10;
+/** Bounds on the work one lookup may do: pages asked for, and time in all. */
+const MAX_EVENT_PAGES = 30;
+const EVENT_LOOKUP_MS = 60_000;
 
 /** The part of rpc.Server used to find a payment. */
 export type EventReader = Pick<rpc.Server, "getEvents" | "getLatestLedger">;
 
 /**
+ * The ledger an event cursor points at, when it is a paging token ("<toid>-<n>" or "<toid>", the ledger in the
+ * toid's top 32 bits); null for any other form.
+ */
+export function cursorLedger(cursor: unknown): number | null {
+  if (typeof cursor !== "string") return null;
+  const m = /^(\d{1,20})(?:-\d{1,10})?$/.exec(cursor);
+  if (!m) return null;
+  const ledger = Number(BigInt(m[1]) >> BigInt(32));
+  return Number.isSafeInteger(ledger) && ledger > 0 ? ledger : null;
+}
+
+/**
  * The transaction that paid `ref`, found in the contract's `split` events on
  * the node's recent history (about a week). Null when it is not there (an older
  * payment, or none); never throws, since this only adds a receipt link.
+ *
+ * A short or empty page does not end the scan (Codex invoices R3 #3): an RPC may answer one while its cursor is
+ * still below the newest ledger. The scan pages on until the cursor reaches the ledger read first (the payment, read
+ * as paid before it, is at or below it), stops moving, or the page and time bounds are spent. Events are kept unless
+ * marked as from a failed call: newer RPCs return only successful calls' events and no longer set
+ * inSuccessfulContractCall.
  */
 export async function findPaymentTx(server: EventReader, split: string, ref: string): Promise<string | null> {
   const wanted = refBytes(ref);
   if (!wanted) return null;
+  const until = Date.now() + EVENT_LOOKUP_MS;
   try {
-    const latest = await bounded(server.getLatestLedger(), "The Stellar network");
+    const tip = (await bounded(server.getLatestLedger(), "The Stellar network")).sequence;
     const filters = [{ type: "contract" as const, contractIds: [split] }];
-    let page = await bounded(server.getEvents({ startLedger: Math.max(1, latest.sequence - EVENT_WINDOW_LEDGERS), filters, limit: 200 }), "The Stellar network");
+    let page = await bounded(server.getEvents({ startLedger: Math.max(1, tip - EVENT_WINDOW_LEDGERS), filters, limit: 200 }), "The Stellar network");
+    let asked: string | null = null;
     for (let i = 0; i < MAX_EVENT_PAGES; i++) {
       for (const ev of page.events) {
         const name = ev.topic[0]?.switch().name === "scvSymbol" ? ev.topic[0].sym().toString() : "";
-        if (name !== "split" || !ev.inSuccessfulContractCall) continue;
+        if (name !== "split" || (ev as { inSuccessfulContractCall?: boolean }).inSuccessfulContractCall === false) continue;
         const data = scValToNative(ev.value) as { invoice_ref?: Uint8Array } | null;
         if (data?.invoice_ref && Buffer.from(data.invoice_ref).equals(wanted)) return ev.txHash;
       }
-      if (page.events.length < 200) return null;
-      page = await bounded(server.getEvents({ cursor: page.cursor, filters, limit: 200 }), "The Stellar network");
+      const cursor = typeof page.cursor === "string" && page.cursor !== "" ? page.cursor : null;
+      const at = cursorLedger(cursor);
+      if (cursor === null || cursor === asked || (at !== null && at >= tip) || Date.now() > until) return null;
+      asked = cursor;
+      page = await bounded(server.getEvents({ cursor, filters, limit: 200 }), "The Stellar network");
     }
   } catch {
     // no receipt link, that is all
@@ -257,9 +282,16 @@ const i128 = (n: bigint): xdr.ScVal => nativeToScVal(n, { type: "i128" });
 export const createInvoice = (kit: Submitter, split: string, ref: string, amount: bigint, opensBy?: number) =>
   sendCall(kit, split, "create_invoice", [bytesArg(ref), i128(amount)], opensBy);
 
-/** cancel_invoice(ref): the owner cancels an open invoice. */
-export const cancelInvoice = (kit: Submitter, split: string, ref: string) => sendCall(kit, split, "cancel_invoice", [bytesArg(ref)]);
+/** cancel_invoice(ref): the owner cancels an open invoice; it cannot land after ledger `cancelBy` (Codex invoices R3 #2). */
+export const cancelInvoice = (kit: Submitter, split: string, ref: string, cancelBy?: number) => sendCall(kit, split, "cancel_invoice", [bytesArg(ref)], cancelBy);
 
-/** deposit(from, amount, ref): the payer's wallet pays the invoice's exact amount in USDC. */
-export const payInvoice = (kit: Submitter, split: string, from: string, amount: bigint, ref: string) =>
-  sendCall(kit, split, "deposit", [new Address(from).toScVal(), i128(amount), bytesArg(ref)]);
+/**
+ * How many ledgers after the one read before paying a payment may still land (about 5 minutes), as for an opening:
+ * the passkey signature expires after it, so a payment whose answer was lost is settled one way or the other once the
+ * network is read past it (Codex invoices R3 #1).
+ */
+export const PAY_LEDGERS = 60;
+
+/** deposit(from, amount, ref): the payer's wallet pays the invoice's exact amount in USDC; it cannot land after ledger `payBy`. */
+export const payInvoice = (kit: Submitter, split: string, from: string, amount: bigint, ref: string, payBy?: number) =>
+  sendCall(kit, split, "deposit", [new Address(from).toScVal(), i128(amount), bytesArg(ref)], payBy);

@@ -77,6 +77,8 @@ async function render(before: Inv, after: Inv) {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/chain")>("../src/lib/invoices/chain");
     return {
       ...actual,
+      // Fixture (Codex invoices R3 #1): a payment now reads the newest ledger first, to fix its last ledger.
+      latestLedger: async () => 1000,
       readConfig: async () => ({ owner: WALLET, token: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA" }),
       readInvoice: async () => (reads++ === 0 ? before : after),
       readUsdcBalance: async () => usdc(1000),

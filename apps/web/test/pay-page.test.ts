@@ -70,6 +70,8 @@ async function render(states: unknown[], chain: Chain = {}, props = { split: SPL
     const actual = await vi.importActual<typeof import("../src/lib/invoices/chain")>("../src/lib/invoices/chain");
     return {
       ...actual,
+      // Fixture (Codex invoices R3 #1): a payment now reads the newest ledger first, to fix its last ledger.
+      latestLedger: async () => 1000,
       readConfig: async () => ("config" in chain ? chain.config : { owner: WALLET, token: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA" }),
       readInvoice: async () => (reads++ === 0 || !("after" in chain) ? chain.invoice : chain.after),
       readUsdcBalance: async () => chain.balance ?? usdc(1000),
@@ -140,7 +142,8 @@ describe("paying", () => {
     await click(r.tree, "Pay")();
     await settle();
     expect(r.calls.pay).toHaveBeenCalledTimes(1);
-    expect(r.calls.pay.mock.calls[0].slice(1)).toEqual([SPLIT, PAYER, usdc(150), REF]);
+    // Test change (Codex invoices R3 #1): the payment now also carries its last ledger, the ledger read (1000) + 60.
+    expect(r.calls.pay.mock.calls[0].slice(1)).toEqual([SPLIT, PAYER, usdc(150), REF, 1060]);
     expect(last(r.setters, 2)).toMatchObject({ kind: "paid", hash: HASH });
   });
   it("a wallet with too little USDC is told so before anything is sent", async () => {

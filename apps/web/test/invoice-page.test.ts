@@ -200,7 +200,8 @@ describe("the list", () => {
     const r = await render([ready([row()])], { outcome: { kind: "done", hash: HASH } });
     await click(r.tree, "Cancel invoice")();
     await settle();
-    expect(r.calls.cancel.mock.calls[0].slice(1)).toEqual([SPLIT, REF]);
+    // Test change (Codex invoices R3 #2): the cancellation now also carries its last ledger, the ledger read (1000) + 60.
+    expect(r.calls.cancel.mock.calls[0].slice(1)).toEqual([SPLIT, REF, 1060]);
   });
   it("a paid invoice links to the receipt; a cancelled one has no pay link or Cancel", async () => {
     const paid = await render([ready([row({ chain: { amount: usdc(150), status: "paid" }, txHash: HASH })])]);

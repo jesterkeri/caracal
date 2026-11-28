@@ -9,7 +9,7 @@ const PAYER_KIT = { saveSession: false } as const;
 import { NETWORK, explorerLink } from "@/lib/stellar/config";
 import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc } from "@/lib/invoices/amount";
-import { bounded, findPaymentTx, isCaracalSplit, payInvoice, readConfig, readInvoice, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
+import { PAY_LEDGERS, bounded, findPaymentTx, isCaracalSplit, latestLedger, payInvoice, readConfig, readInvoice, readInvoiceAt, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
 import { refBytes } from "@/lib/invoices/ref";
 
 type View =
@@ -49,6 +49,36 @@ async function connectFailure(e: unknown, rpc: LedgerReader | undefined): Promis
 /** The passkey prompt (the kit's WebAuthn timeout is 1 minute) plus the wallet lookup, with room to spare. */
 const CONNECT_TIMEOUT_MS = 3 * 60_000;
 
+/**
+ * A payment of this invoice from this browser whose answer was lost: the last ledger it can land at (its passkey
+ * signature expires after it). Kept in localStorage, so a reload or another tab still holds back a second payment
+ * until the invoice reads paid or cancelled, or open at a ledger past it (Codex invoices R3 #1).
+ */
+const PENDING_KEY = (split: string, ref: string) => `caracal.payPending.${split}.${ref}`;
+
+function readPending(split: string, ref: string): number | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const v = JSON.parse(window.localStorage.getItem(PENDING_KEY(split, ref)) ?? "null") as unknown;
+    return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePending(split: string, ref: string, payBy: number | null): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (payBy === null) window.localStorage.removeItem(PENDING_KEY(split, ref));
+    else window.localStorage.setItem(PENDING_KEY(split, ref), JSON.stringify(payBy));
+  } catch {
+    // storage blocked: this page still remembers it
+  }
+}
+
+const PENDING_TEXT = (payBy: number) =>
+  `An earlier payment of this invoice from this browser may still go through, until the Stellar network passes ledger ${payBy} (about 5 minutes after it was sent). Do not pay again yet: use "Check again".`;
+
 /** What the page knows about paying, kept apart from what it knows about the invoice. */
 type Pay =
   | { kind: "idle" }
@@ -60,6 +90,8 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
   const [view, setView] = useState<View>({ kind: "loading" });
   const [wallet, setWallet] = useState<string | null>(null);
   const [pay, setPay] = useState<Pay>({ kind: "idle" });
+  // The last ledger an earlier payment from this browser whose answer was lost can land at (see PENDING_KEY).
+  const [pending, setPending] = useState<number | null>(null);
 
   const linkOk = StrKey.isValidContract(split) && refBytes(invoiceRef) !== null;
 
@@ -82,7 +114,11 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
   useEffect(() => {
     let gone = false;
     void reload().then((v) => {
-      if (!gone) setView(v);
+      if (gone) return;
+      setView(v);
+      // An earlier payment from this browser whose answer was lost (before a reload, or in another tab).
+      const kept = readPending(split, invoiceRef);
+      if (kept !== null) setPending(kept);
     });
     return () => {
       gone = true;
@@ -109,6 +145,12 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
 
   async function payNow() {
     if (!wallet || view.kind !== "invoice") return;
+    // An earlier payment from this browser (this page before a reload, or another tab) may still land.
+    const earlier = pending ?? readPending(split, invoiceRef);
+    if (earlier !== null) {
+      setPending(earlier);
+      return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(earlier) });
+    }
     setPay({ kind: "busy", label: "Checking the invoice and your balance" });
     // Fresh from the chain: the amount paid is the one the contract holds now.
     const now = await reload();
@@ -129,6 +171,14 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
         text: `Your wallet holds ${formatUsdc(balance)} USDC and this invoice needs ${formatUsdc(amount)} USDC. Nothing was sent. Add USDC to your wallet, then pay.`,
       });
     }
+    // The payment's last ledger is fixed before the passkey is asked: a lost answer is then settled once the network
+    // is read past it, and kept in this browser in the meantime (Codex invoices R3 #1).
+    let payBy: number;
+    try {
+      payBy = (await latestLedger(server)) + PAY_LEDGERS;
+    } catch (e) {
+      return setPay({ kind: "message", text: `Caracal could not read the Stellar network, so nothing was sent. ${errorText(e)}` });
+    }
     setPay({ kind: "busy", label: "Paying. Approve it with your passkey" });
     let kit: Awaited<ReturnType<typeof getKit>>;
     try {
@@ -136,7 +186,9 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     } catch (e) {
       return setPay({ kind: "message", text: `The payment was not made: Caracal could not load the wallet kit. ${errorText(e)}` });
     }
-    const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef);
+    writePending(split, invoiceRef, payBy);
+    const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef, payBy);
+    if (outcome.kind !== "unknown") writePending(split, invoiceRef, null);
     if (outcome.kind === "done") {
       setPay({ kind: "paid", hash: outcome.hash });
       // It landed. A failed read now must not hide that: the invoice already shown stays, marked paid.
@@ -144,13 +196,25 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
         if (v.kind === "invoice") setView(v);
       });
     }
-    if (outcome.kind === "not-sent") return setPay({ kind: "message", text: `The payment was not made. ${outcome.message}` });
-    if (outcome.kind === "failed") return setPay({ kind: "message", text: `The payment failed on the network, and no money moved. ${outcome.message}` });
+    if (outcome.kind === "not-sent" || outcome.kind === "failed") {
+      // Said of this attempt only. The invoice is read again: it may have been paid meanwhile (from another device,
+      // say), and a failure because it was already paid must not read as "not paid" (Codex invoices R3 #1).
+      const now2 = await reload();
+      if (now2.kind === "invoice") setView(now2);
+      if (now2.kind === "invoice" && now2.invoice.status === "paid") return setPay({ kind: "paid", hash: now2.txHash });
+      if (outcome.kind === "not-sent") return setPay({ kind: "message", text: `This payment was not made. ${outcome.message}` });
+      return setPay({ kind: "message", text: `This payment attempt failed on the network, and it moved no money. ${outcome.message}` });
+    }
+    setPending(payBy);
     // Unknown: the chain says whether it landed.
     const after = await reload();
     setView(after);
     // The receipt is the transaction the contract's events say paid the invoice: after a lost answer the
     // payer's own transaction may have failed while someone else's paid it.
+    if (after.kind === "invoice" && (after.invoice.status === "paid" || after.invoice.status === "cancelled")) {
+      writePending(split, invoiceRef, null);
+      setPending(null);
+    }
     if (after.kind === "invoice" && after.invoice.status === "paid") return setPay({ kind: "paid", hash: after.txHash });
     // A cancelled invoice was never paid (the contract refuses to cancel a paid one) and takes no deposit
     // after (InvoiceCancelled), so this payment did not go through and cannot.
@@ -166,9 +230,30 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
 
   async function checkAgain() {
     setPay({ kind: "busy", label: "Checking the invoice" });
+    const earlier = pending ?? readPending(split, invoiceRef);
+    // The invoice, with the ledger the network read it at: an open invoice read past the earlier payment's last
+    // ledger proves that payment can no longer land; read at or before it, it still may (Codex invoices R3 #1).
+    let readAt: number | undefined;
+    if (earlier !== null && linkOk) {
+      try {
+        readAt = (await readInvoiceAt(new rpc.Server(NETWORK.rpcUrl), split, invoiceRef)).ledger;
+      } catch {
+        readAt = undefined;
+      }
+    }
     const v = await reload();
     setView(v);
-    setPay(v.kind === "invoice" && v.invoice.status === "paid" ? { kind: "paid", hash: v.txHash } : { kind: "idle" });
+    const settled = v.kind === "invoice" && (v.invoice.status !== "open" || (earlier !== null && readAt !== undefined && readAt > earlier));
+    if (earlier !== null && settled) {
+      writePending(split, invoiceRef, null);
+      setPending(null);
+    }
+    if (v.kind === "invoice" && v.invoice.status === "paid") return setPay({ kind: "paid", hash: v.txHash });
+    if (earlier !== null && !settled) return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(earlier) });
+    if (earlier !== null && v.kind === "invoice" && v.invoice.status === "open") {
+      return setPay({ kind: "message", text: `The earlier payment did not go through, and it can no longer: the network has passed ledger ${earlier}, after which its passkey signature is refused. You can pay now.` });
+    }
+    setPay({ kind: "idle" });
   }
 
   const busy = pay.kind === "busy";
@@ -224,7 +309,7 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
                   <p className="small muted">
                     Paying from <a className="link addr" href={explorerLink("contract", wallet)}>{wallet}</a>
                   </p>
-                  <button className="btn btn-green btn-block" disabled={busy || (pay.kind === "message" && pay.checkFirst === true)} onClick={() => void payNow()}>
+                  <button className="btn btn-green btn-block" disabled={busy || pending !== null || (pay.kind === "message" && pay.checkFirst === true)} onClick={() => void payNow()}>
                     Pay {formatUsdc(view.invoice.amount)} USDC
                   </button>
                 </div>
@@ -233,11 +318,19 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
           )}
         </>
       )}
+      {pending !== null && view.kind === "invoice" && view.invoice.status === "open" && pay.kind !== "paid" && pay.kind !== "busy" && !(pay.kind === "message" && pay.checkFirst) && (
+        <div className="msg msg-unsure flex flex-col gap-2">
+          <p>{PENDING_TEXT(pending)}</p>
+          <button className="link self-start" onClick={() => void checkAgain()}>
+            Check again
+          </button>
+        </div>
+      )}
       {pay.kind === "busy" && <p className="small muted">{pay.label}.</p>}
       {pay.kind === "message" && (
         <div className={pay.checkFirst ? "msg msg-unsure flex flex-col gap-2" : "msg msg-bad flex flex-col gap-2"}>
           <p>{pay.text}</p>
-          {pay.checkFirst && wallet && (
+          {pay.checkFirst && (wallet || pending !== null) && (
             <button className="link self-start" onClick={() => void checkAgain()}>
               Check again
             </button>

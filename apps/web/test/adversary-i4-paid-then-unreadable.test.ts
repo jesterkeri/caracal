@@ -78,6 +78,8 @@ async function render(states: unknown[], readsAfterPay: "paid" | "down") {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/chain")>("../src/lib/invoices/chain");
     return {
       ...actual,
+      // Fixture (Codex invoices R3 #1): a payment now reads the newest ledger first, to fix its last ledger.
+      latestLedger: async () => 1000,
       readConfig: async () => ({ owner: WALLET, token: TOKENS.usdc }),
       // read 1: payNow's fresh read (open). read 2: the reload after the payment landed.
       readInvoice: async () => {

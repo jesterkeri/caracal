@@ -20,7 +20,7 @@ import { cannotOpenAnyMore, loadRows, statusText, type Row } from "@/lib/invoice
  * A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago;
  * `ahead` marks one whose opening or cancelling this browser saw confirmed, which the read has not caught up with.
  */
-type ShownRow = Row & { stillOpening?: boolean; startedRecently?: boolean; ahead?: Confirmed; mayOpen?: boolean };
+type ShownRow = Row & { stillOpening?: boolean; startedRecently?: boolean; ahead?: Confirmed; mayOpen?: boolean; cancelling?: number };
 type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
@@ -105,8 +105,49 @@ function confirmedOf(ref: string): Confirmed | null {
   return v === "opened" || v === "cancelled" ? v : null;
 }
 
+/**
+ * Cancellations whose answer was lost ({ ref: last ledger it can land at }, JSON in localStorage, so a reload keeps
+ * it). Until the invoice reads cancelled or paid, or open at a ledger past that one, its row says the cancellation
+ * may still go through and offers neither its pay link nor Cancel (Codex invoices R3 #2).
+ */
+const CANCEL_PENDING_KEY = "caracal.invoiceCancelPending";
+
+function readCancelPending(): Record<string, unknown> {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(CANCEL_PENDING_KEY) ?? "{}") as unknown;
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setCancelPending(ref: string, cancelBy: number | null) {
+  try {
+    const saved = readCancelPending();
+    if (cancelBy === null) delete saved[ref];
+    else saved[ref] = cancelBy;
+    window.localStorage.setItem(CANCEL_PENDING_KEY, JSON.stringify(saved));
+  } catch {
+    // storage blocked: nothing is kept for a reload
+  }
+}
+
+function cancelPendingOf(ref: string): number | null {
+  const v = readCancelPending()[ref];
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
+const CANCELLING_TEXT = (by: number) =>
+  `Cancelling: Caracal could not confirm the cancellation, and it may still go through until the network passes ledger ${by} (about 5 minutes after it was sent). Do not share its pay link meanwhile: it may stop working. Reload the page in a few minutes.`;
+
 /** The row as shown: a confirmed outcome the read has not caught up with is shown as confirmed, and dropped once it has. */
 function shown(r: Row): ShownRow {
+  const cancelBy = cancelPendingOf(r.invoice_ref);
+  if (cancelBy !== null && typeof r.chain === "object" && r.chain !== null) {
+    // Settled once the invoice reads cancelled or paid (a paid invoice cannot be cancelled), or open past cancelBy.
+    if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > cancelBy)) setCancelPending(r.invoice_ref, null);
+    else return { ...r, cancelling: cancelBy };
+  }
   const done = confirmedOf(r.invoice_ref);
   const chain = typeof r.chain === "object" && r.chain !== null ? r.chain : null;
   if (done === "opened") {
@@ -388,7 +429,18 @@ export default function InvoicesPage() {
       setBusy(null);
       return setNotice(`Caracal could not load the wallet kit, so nothing was cancelled. ${e instanceof Error ? e.message : String(e)}`);
     }
-    const outcome = await cancelInvoice(kit, ready.split, ref);
+    // The cancellation's last ledger is fixed before the passkey is asked, and kept in this browser until its
+    // outcome is known, so a lost answer is shown on the row, after a reload too (Codex invoices R3 #2).
+    let cancelBy: number;
+    try {
+      cancelBy = (await latestLedger(kit.rpc)) + OPENING_LEDGERS;
+    } catch (e) {
+      setBusy(null);
+      return setNotice(`Caracal could not read the Stellar network, so nothing was cancelled. ${e instanceof Error ? e.message : String(e)}`);
+    }
+    setCancelPending(ref, cancelBy);
+    const outcome = await cancelInvoice(kit, ready.split, ref, cancelBy);
+    if (outcome.kind !== "unknown") setCancelPending(ref, null);
     setBusy(null);
     // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()).
     if (outcome.kind === "done") setConfirmed(ref, "cancelled");
@@ -502,8 +554,8 @@ export default function InvoicesPage() {
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
                   {r.description && <p className="small muted">{r.description}</p>}
-                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && (r.stillOpening || r.startedRecently || r.mayOpen)) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
-                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : r.chain === null && r.startedRecently ? STARTED_RECENTLY : r.chain === null && r.mayOpen ? MAY_OPEN : statusText(r.chain)}</p>
+                  <div className={r.ahead || r.cancelling !== undefined || r.chain === "unreadable" || (r.chain === null && (r.stillOpening || r.startedRecently || r.mayOpen)) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
+                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.cancelling !== undefined ? CANCELLING_TEXT(r.cancelling) : r.chain === null && r.stillOpening ? STILL_OPENING : r.chain === null && r.startedRecently ? STARTED_RECENTLY : r.chain === null && r.mayOpen ? MAY_OPEN : statusText(r.chain)}</p>
                   </div>
                   {r.chain === null && !r.stillOpening && !r.startedRecently && !r.mayOpen && !r.ahead && (
                     <p>
@@ -512,7 +564,7 @@ export default function InvoicesPage() {
                       </button>
                     </p>
                   )}
-                  {!r.ahead && typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
+                  {!r.ahead && r.cancelling === undefined && typeof r.chain === "object" && r.chain !== null && r.chain.status === "open" && (
                     <>
                       <p className="addr addr-box">{link}</p>
                       <p className="flex flex-wrap gap-2">
