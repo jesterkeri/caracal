@@ -30,24 +30,8 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 export async function POST(request: Request): Promise<Response> {
   if (!perClient.take(clientKey(request, process.env))) return json({ error: "Too many estimates were asked for from this address. Wait a minute and try again." }, 429);
   if (!perInstance.take("all")) return json({ error: "Caracal is answering too many estimates right now. Try again in a minute." }, 429);
-  let text: string;
-  try {
-    const read = await readBounded(request, MAX_BODY_BYTES);
-    if (read === null) return json({ error: "The request was too large." }, 400);
-    text = read;
-  } catch {
-    return json({ error: "The request could not be read." }, 400);
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return json({ error: "The request was not valid JSON." }, 400);
-  }
-  const parsed = parseTaxRequest(body);
-  if (!parsed.ok) return json({ error: parsed.message }, 400);
-  if (!/^https:\/\//i.test(NETWORK.rpcUrl)) return json({ error: "This server's Stellar RPC setting must be an https address." }, 500);
-
+  // The deadline covers the whole request, the body's read included (Codex tax R5): a body that stalls is given up
+  // at the deadline or when the caller goes away, and its stream is cancelled.
   const deadline = deadlineSignal();
   const stop = AbortSignal.any([request.signal, deadline.signal]);
   const until = fetchUntil(stop);
@@ -56,6 +40,24 @@ export async function POST(request: Request): Promise<Response> {
       ? json({ status: "unavailable", message: `The estimate took longer than ${ESTIMATE_DEADLINE_MS / 1000} seconds, so Caracal stopped it. No number was produced. Try again.`, disclaimer: DISCLAIMER })
       : json({ error: "The request was cancelled before the estimate finished. No number was produced." }, 400);
   try {
+    let text: string;
+    try {
+      const read = await readBounded(request, MAX_BODY_BYTES, stop);
+      if (read === null) return json({ error: "The request was too large." }, 400);
+      text = read;
+    } catch {
+      if (stop.aborted) return stopped();
+      return json({ error: "The request could not be read." }, 400);
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return json({ error: "The request was not valid JSON." }, 400);
+    }
+    const parsed = parseTaxRequest(body);
+    if (!parsed.ok) return json({ error: parsed.message }, 400);
+    if (!/^https:\/\//i.test(NETWORK.rpcUrl)) return json({ error: "This server's Stellar RPC setting must be an https address." }, 500);
     const outcome = await runTaxEstimate(parsed.req, {
       chain: rpcChainReader(NETWORK.rpcUrl, until),
       rateTable: () => fetchNfemTable(until),
