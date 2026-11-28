@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { acquireSend, anchorReceived, cannotGuard, clearUnknown, holdText, holdsSendLock, passLedger, readLedger, recordCloseBy, sendHold, type Hold } from "@/lib/anchor/send-guard";
+import { acquireSend, anchorReceived, cannotGuard, clearUnknown, holdText, holdsSendLock, passLedger, readLedger, readPastBy, sendHold, STALE_TEXT, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -93,8 +93,9 @@ const BALANCE_AT_SEND_MS = 10_000;
 const BALANCE_AGAIN_MS = 30_000;
 /** The larger of two ledgers, either of which may be unknown. */
 const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
-const STALE =
-  "The earlier USDC payment can no longer land. Caracal is reading your USDC balance again, and no cash-out can start or send until it has read it as of a later ledger, so you see whether that payment went through.";
+// Says nothing about whether an earlier payment can still land: after a confirmed payment or the person's check of a
+// record with no closeBy, nothing on this screen proves that (as split adversary s21).
+const STALE = STALE_TEXT;
 
 /** Statuses whose text tells the person to open the anchor's form. */
 const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
@@ -274,7 +275,8 @@ export default function CashoutPage() {
    * starts or sends then (read fresh, so a click that outruns a render still sees another tab's record).
    */
   function balanceStale(w: string): boolean {
-    const need = later(guardBy, recordCloseBy(w));
+    // The record's closeBy, or the ledger kept after a payment's record went, so another tab or a reload counts (Codex cash-out R2).
+    const need = later(guardBy, readPastBy(w));
     return need !== null && !(balanceAt !== null && balanceAt > need);
   }
 
@@ -288,7 +290,8 @@ export default function CashoutPage() {
     } catch {
       return setProblem("Caracal could not read the Stellar network, so the earlier record stays. Check your connection and try again.");
     }
-    if (!(await clearUnknown(boot.wallet))) {
+    // The ledger of this check is kept first, as the one the balance must be read past; the record stays if it cannot be.
+    if (!(await clearUnknown(boot.wallet, undefined, ledger - 1))) {
       return setProblem("Caracal could not clear the earlier record, because another tab of this browser is sending a payment or this browser would not let it. Try again in a moment.");
     }
     // The balance must be read again, as of this ledger or later, before a cash-out is offered.
@@ -427,7 +430,8 @@ export default function CashoutPage() {
     }
     // Recorded in this browser before the passkey is asked, so a reload, a crash or another tab cannot start a
     // second payment while this one may still land (Codex cash-out R1 #1, send-guard.ts).
-    const begun = await acquireSend(boot.wallet, latest.id, ledger);
+    // The balance check above is made again under the lock, where another tab's payment cannot end unseen (Codex cash-out R2).
+    const begun = await acquireSend(boot.wallet, latest.id, ledger, undefined, balanceAt);
     if (!begun.ok) {
       sendingFor.current = null;
       refuseHeld(begun.hold);
@@ -477,6 +481,12 @@ export default function CashoutPage() {
     }
     if (r.kind !== "not-sent" && r.hash) guard.noteHash(r.hash);
     guard.finish(r.kind);
+    // A payment that went through is shown only from a balance read past the ledger it landed in (or its closeBy):
+    // guard.finish kept that ledger in this browser, or kept the record (Codex cash-out R2); this page waits too.
+    if (r.kind === "sent") {
+      const after = guard.readPast();
+      setGuardBy((g) => later(g, after));
+    }
     refreshBalance();
     if (r.kind === "sent") {
       setSentHash(r.hash);
@@ -556,7 +566,7 @@ export default function CashoutPage() {
   // network has passed, so another tab is not refused until that call settles (ported from split adversary s13).
   const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
   // Rendering only reads the record: it never writes or removes it (ported from Codex split R4 #1).
-  const seenBy = wallet ? recordCloseBy(wallet) : null;
+  const seenBy = wallet ? readPastBy(wallet) : null;
   const mustPass = later(guardBy, seenBy);
   const stale = !hold.held && mustPass !== null && !(balanceAt !== null && balanceAt > mustPass);
   const gate = hold.held || stale;

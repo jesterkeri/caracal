@@ -187,7 +187,9 @@ export async function mount(over: MountOptions = {}) {
     },
     opened: 0,
     openArgs: [],
-    kit: { signAndSubmit: vi.fn(over.submit ?? (async () => ({ success: true, hash: "cb".repeat(32) }))), readBalance: vi.fn(async () => BigInt(90_000_000)) },
+    // Fixture changed with Codex cash-out R2 (disclosed in docs/decisions.md): a confirmed payment names the ledger it
+    // was included in, as the real kit's TransactionResult does through the relay (adversary-c4's real-kit control).
+    kit: { signAndSubmit: vi.fn(over.submit ?? (async () => ({ success: true, hash: "cb".repeat(32), ledger: 100 + Math.floor((Date.now() - mountedAt) / 5_000) }))), readBalance: vi.fn(async () => BigInt(90_000_000)) },
   };
   const store = over.store ?? new Map<string, string>();
   store.set("caracal.walletOwner", "user-1");

@@ -36,6 +36,10 @@ describe("adversary c13: unknown send, payment never landed, anchor still waitin
     await tick(50);
     world.txn.status = "completed"; // it did land after all
     await tick(3100);
+    // Test change (Codex cash-out R2): the anchor's report keeps the payment's closeBy as the ledger the balance must be
+    // read past (the ledger it landed in is not known for an unknown send), so the way forward comes once the balance
+    // is read past it, about 90 s on. The assertion is unchanged.
+    await tick(100_000);
     expect(buttonLabels(rt.tree)).toContain("Start another cash-out");
     rt.unmount();
   });
