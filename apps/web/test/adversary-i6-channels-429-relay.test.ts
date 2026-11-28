@@ -32,14 +32,17 @@ describe("a Channels 429", () => {
     expect((out as { error: string }).error).toContain("Nothing was sent");
   });
 
-  it("is not reported as something that may have been sent", async () => {
+  // Reversed by Codex Day 1 R8 #3 (disclosed in docs/decisions.md): an HTTP 429 alone does not prove the
+  // transaction was refused before it was sent, so it is reported as unknown and the person checks their activity.
+  // This test asserted the opposite ("Nothing was sent", status 429) until then.
+  it("is reported as unknown: a bare 429 does not prove nothing was sent", async () => {
     fakeChannels.reply = (_req, res) => {
       res.writeHead(429);
       res.end();
     };
     const out = await submitToChannels(channelsClient("k-1", fakeChannels.url, 2000), "AAAA");
-    expect(out).toMatchObject({ ok: false, status: 429 });
-    // Fails today: "The fee sponsor is busy. Try again shortly." has no "Nothing was sent", so every page treats it as a lost answer.
-    expect((out as { error: string }).error).toContain("Nothing was sent");
+    expect(out).toMatchObject({ ok: false, status: 502 });
+    expect((out as { error: string }).error).not.toContain("Nothing was sent");
+    expect((out as { error: string }).error).toContain("Check your activity");
   });
 });

@@ -12,6 +12,7 @@
 // escape (and the hint) vanish exactly when the person has done what the page
 // asked, until a reload the page never mentions. Goal 4 (no way forward shown).
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function texts(node: unknown, out: string[] = []): string[] {
@@ -89,7 +90,7 @@ async function render(b: ReturnType<typeof browser>, states: unknown[] = []) {
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(b.kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(b.kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {

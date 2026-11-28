@@ -14,6 +14,7 @@
 // A fix that re-stamps a future start time to "now" (as a missing one is) still
 // passes this test: the second click is made 3 minutes and 1 second later.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function texts(node: unknown, out: string[] = []): string[] {
@@ -91,7 +92,7 @@ async function render(b: ReturnType<typeof browser>, states: unknown[]) {
     onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(b.kit) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(b.kit)) }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   vi.stubGlobal("window", {
@@ -111,7 +112,7 @@ async function unknownCreation(b: ReturnType<typeof browser>, stamp: (now: numbe
   expect(b.createWallet).toHaveBeenCalledTimes(1);
   expect(b.local.get("caracal.creationUnconfirmed")).toBe("A");
   b.local.set("caracal.creationStartedAt", String(stamp(Date.now())));
-  b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+  b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
   vi.resetModules();
   return lastState(first.setters);
 }

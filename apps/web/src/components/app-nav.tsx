@@ -5,12 +5,11 @@ import CaracalMark from "@/components/caracal-mark";
 
 // The app's own pages share this header. The public client pages (/pay and /receipt)
 // get none: a client paying an invoice needs no app navigation.
+// Only routes this branch has: Invoices, Tax and Cash out live on their feature branches, and each adds its own
+// link when it is merged, so the header never links to a page that answers 404 (Codex Day 1 R8 #4).
 const LINKS = [
   { href: "/wallet", label: "Wallet" },
   { href: "/split", label: "Split" },
-  { href: "/invoices", label: "Invoices" },
-  { href: "/tax", label: "Tax" },
-  { href: "/cashout", label: "Cash out" },
 ];
 
 export default function AppNav() {
