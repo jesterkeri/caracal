@@ -87,15 +87,18 @@ function readConfirmed(): Record<string, unknown> {
   }
 }
 
-function setConfirmed(ref: string, what: Confirmed | null) {
+/** Records what was confirmed; true when storage now keeps it (read back), so a reload still knows. */
+function setConfirmed(ref: string, what: Confirmed | null): boolean {
   confirmedHere.set(ref, what);
   try {
     const saved = readConfirmed();
     if (what === null) delete saved[ref];
     else saved[ref] = what;
     window.localStorage.setItem(CONFIRMED_KEY, JSON.stringify(saved));
+    return (readConfirmed()[ref] ?? null) === what;
   } catch {
     // storage blocked: this tab still remembers it
+    return false;
   }
 }
 
@@ -322,6 +325,10 @@ export default function InvoicesPage() {
     let gone = false;
     let unfollow = () => {};
     let loadedKit: { rpc?: unknown } | undefined;
+    // Another tab recorded or settled a cancellation, or confirmed one: the rows are drawn again, so heldNow holds or
+    // releases them at once instead of at this page's next draw (adversary i23).
+    const otherTab = () => setRecorded((n) => n + 1);
+    if (typeof window.addEventListener === "function") window.addEventListener("storage", otherTab);
     (async () => {
       if (!supabaseEnvOrNull()) return window.location.replace("/signin");
       const auth = supabaseBrowser().auth;
@@ -356,6 +363,7 @@ export default function InvoicesPage() {
     });
     return () => {
       gone = true;
+      if (typeof window.removeEventListener === "function") window.removeEventListener("storage", otherTab);
       unfollow();
     };
   }, []);
@@ -482,11 +490,14 @@ export default function InvoicesPage() {
     // The record now holds the row ("Cancelling", no pay link, no Cancel): the last draw was from before it (adversary i21).
     setRecorded((n) => n + 1);
     const outcome = await cancelInvoice(kit, ready.split, ref, cancelBy);
+    // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()). Kept before the
+    // cancellation's own record goes, and that record stays when storage refuses it, so a reload that reads a node a
+    // ledger behind still holds the row (adversary i23); it then says the cancellation may still go through until
+    // a read settles it, while this tab, which remembers the confirmation, says it was cancelled.
+    const confirmedKept = outcome.kind === "done" && setConfirmed(ref, "cancelled");
     // Only this attempt's own record is removed, never one another tab recorded (R4 #1).
-    if (outcome.kind !== "unknown") await endAttempt(slot, begun.attempt.id);
+    if (outcome.kind === "not-sent" || outcome.kind === "failed" || confirmedKept) await endAttempt(slot, begun.attempt.id);
     setBusy(null);
-    // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()).
-    if (outcome.kind === "done") setConfirmed(ref, "cancelled");
     const said = outcome.kind === "done" ? "Invoice cancelled. Its pay link no longer works." : outcomeText(outcome, "Cancelling the invoice");
     setNotice(said, outcome.kind === "done" ? "good" : outcome.kind === "unknown" ? "unsure" : "bad");
     await refresh(ready.account, ready.wallet, ready.split).catch(listFailed(said));
@@ -522,6 +533,12 @@ export default function InvoicesPage() {
   }
 
   async function copy(link: string, ref: string) {
+    // Read again at the press: another tab may have recorded or confirmed a cancellation since this row was drawn (adversary i23).
+    const cancelBy = cancelPendingOf(ref);
+    if (cancelBy !== null || confirmedOf(ref) === "cancelled") {
+      setRecorded((n) => n + 1);
+      return setNotice(cancelBy !== null ? CANCELLING_TEXT(cancelBy) : "This invoice was cancelled. Its pay link no longer works.", cancelBy !== null ? "unsure" : "bad");
+    }
     try {
       await navigator.clipboard.writeText(link);
       setCopied(ref);
