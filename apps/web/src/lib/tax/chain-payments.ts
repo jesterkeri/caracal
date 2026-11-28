@@ -273,14 +273,17 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
     }
     const scanned = await scanEvents(chain, want, health);
     const decoded = decodeScan(scanned, want, health.oldestLedger);
-    const tail = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
-    checkRetention(tail);
+    // Each recheck pages on until its cursor reaches the newest ledger the RPC names: one page can stop short of
+    // it (an RPC scans a capped range of ledgers per request), and only a ledger actually scanned is covered
+    // (Codex tax R3).
+    const tailScan = await recheck(chain, want.contract, scanned.cursor);
+    const tail = tailScan.last;
     if (tail.latestLedger < scanned.last.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
     const seenIds = new Set(scanned.events.map((e) => e.id));
     const kept = () => {
       if (attempt >= MAX_ATTEMPTS) throw new ChainReadError("New events kept arriving in the split contract while Caracal was reading it, so it could not fix the ledger the estimate covers. Try again.");
     };
-    if (tail.events.some((e) => !seenIds.has(e.id))) {
+    if (tailScan.events.some((e) => !seenIds.has(e.id))) {
       kept();
       continue;
     }
@@ -297,10 +300,9 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
         "The split contract holds more USDC than its tax, goal and spend pots add up to, so some USDC arrived that was never recorded as a payment (it was sent straight to the contract and not reconciled). Caracal cannot tell what that USDC was, so it cannot show a tax estimate.",
       );
     }
-    const after = await chain.eventsAfter(want.contract, scanned.cursor, PAGE_LIMIT);
-    checkRetention(after);
-    if (after.latestLedger < tail.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
-    if (after.events.some((e) => !seenIds.has(e.id))) {
+    const afterScan = await recheck(chain, want.contract, scanned.cursor);
+    if (afterScan.last.latestLedger < tail.latestLedger) throw new ChainReadError("The RPC's newest ledger went backwards while Caracal was reading it. Try again.");
+    if (afterScan.events.some((e) => !seenIds.has(e.id))) {
       kept();
       continue;
     }
@@ -316,12 +318,26 @@ type Scanned = { events: RawEvent[]; last: EventsPage; cursor: string };
 /** Reads the contract's events from the oldest retained ledger to the newest, page by page. */
 async function scanEvents(chain: ChainReader, want: SplitExpectation, health: Retention): Promise<Scanned> {
   const startLedger = health.oldestLedger;
+  const first = await chain.events(want.contract, { startLedger }, PAGE_LIMIT);
+  return readOn(first, startLedger, (cursor) => chain.events(want.contract, { cursor }, PAGE_LIMIT));
+}
+
+/** The events after the cursor a scan ended on, read on until a cursor reaches the newest ledger the RPC names. */
+async function recheck(chain: ChainReader, contract: string, cursor: string): Promise<Scanned> {
+  const first = await chain.eventsAfter(contract, cursor, PAGE_LIMIT);
+  return readOn(first, cursorLedger(cursor), (c) => chain.eventsAfter(contract, c, PAGE_LIMIT));
+}
+
+/**
+ * Pages on from `page` until a page's cursor has reached that page's newest ledger (and the page is not full),
+ * so every ledger up to the last page's newest ledger has been read. `readTo` is the ledger read up to before
+ * `page`.
+ */
+async function readOn(page: EventsPage, readTo: number, next: (cursor: string) => Promise<EventsPage>): Promise<Scanned> {
   const events: RawEvent[] = [];
-  let page = await chain.events(want.contract, { startLedger }, PAGE_LIMIT);
   let last: EventsPage = page;
-  // The ledger the scan has read up to. The RPC's window moves forward a ledger at a time while the pages
-  // are read; that loses nothing unless it moves past this point (on the first page, past the start).
-  let readTo = startLedger;
+  // The RPC's window moves forward a ledger at a time while the pages are read; that loses nothing unless it
+  // moves past the point read up to (on the first page, past the start).
   for (let n = 1; ; n++) {
     checkRetention(page);
     if (page.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
@@ -335,18 +351,18 @@ async function scanEvents(chain: ChainReader, want: SplitExpectation, health: Re
     const full = page.events.length >= PAGE_LIMIT;
     if (reached >= page.latestLedger && !full) break;
     if (n >= MAX_PAGES) throw new ChainReadError("The RPC needed too many pages to read the payments.");
-    const next = await chain.events(want.contract, { cursor: page.cursor }, PAGE_LIMIT);
-    if (next.cursor === page.cursor) {
+    const following = await next(page.cursor);
+    if (following.cursor === page.cursor) {
       // Nothing after a full page that already reached the newest ledger: the scan is complete.
-      if (reached >= page.latestLedger && next.events.length === 0) {
-        checkRetention(next);
-        if (next.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
-        last = next;
+      if (reached >= page.latestLedger && following.events.length === 0) {
+        checkRetention(following);
+        if (following.oldestLedger > readTo) throw new ChainReadError("The RPC's history window moved while Caracal was reading it. Try again.");
+        last = following;
         break;
       }
       throw new ChainReadError("The RPC stopped moving through the payments.");
     }
-    page = next;
+    page = following;
   }
   return { events, last, cursor: last.cursor };
 }

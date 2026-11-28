@@ -156,7 +156,9 @@ describe("finding 3: the cutoff is one stable ledger", () => {
     const base = chain([]);
     const c: ChainReader = {
       ...base,
-      eventsAfter: async (...a) => ({ ...(await base.eventsAfter(...a)), latestLedger: 6000004, latestLedgerCloseTime: unix("2026-11-27T14:59:50Z") }),
+      // The recheck's cursor reaches the ledger it names as newest (Codex tax R3: a page whose cursor stops short of
+      // its newest ledger does not cover it). Fixture changed with R3; before, the cursor stayed at 6000000.
+      eventsAfter: async (...a) => ({ ...(await base.eventsAfter(...a)), latestLedger: 6000004, latestLedgerCloseTime: unix("2026-11-27T14:59:50Z"), cursor: "0025769820955869184-0000000000" }),
       // The holdings are read after that check, so at its ledger (Codex tax R2 #1: a holdings read must name its ledger).
       holdings: async (...a) => ({ ...(await base.holdings(...a)), ledger: 6000004 }),
     };
