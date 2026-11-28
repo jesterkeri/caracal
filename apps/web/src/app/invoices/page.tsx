@@ -164,6 +164,17 @@ function shown(r: Row): ShownRow {
   return cannotOpenAnyMore(r) ? r : { ...r, mayOpen: true };
 }
 
+/**
+ * The row as drawn now: a cancellation recorded in this browser since the list was read (this page, when the list
+ * read after a lost answer failed, or another tab) holds the row too. Reads only, so it is safe while rendering
+ * (adversary i16); shown() settles the record at the next list read.
+ */
+function heldNow(r: ShownRow): ShownRow {
+  if (r.ahead || r.cancelling !== undefined || typeof r.chain !== "object" || r.chain === null || r.chain.status !== "open") return r;
+  const cancelBy = cancelPendingOf(r.invoice_ref);
+  return cancelBy === null ? r : { ...r, cancelling: cancelBy };
+}
+
 const MAY_OPEN =
   "Not on chain yet, and Caracal cannot show yet that its opening can no longer land (the network has not been read past its last ledger), so it may still appear: reload the page in a few minutes before removing it.";
 
@@ -559,7 +570,8 @@ export default function InvoicesPage() {
           <section className="list">
             <h2 className="h2">Your invoices</h2>
             {load.rows.length === 0 && <p className="small muted">No invoices yet.</p>}
-            {load.rows.map((r) => {
+            {load.rows.map((row) => {
+              const r = heldNow(row);
               const link = `${window.location.origin}${payPath(r.split, r.invoice_ref)}`;
               return (
                 <article key={r.invoice_ref} className="item">

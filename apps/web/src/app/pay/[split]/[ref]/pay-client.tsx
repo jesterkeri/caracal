@@ -186,9 +186,17 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     } catch (e) {
       return setPay({ kind: "message", text: `The payment was not made: Caracal could not load the wallet kit. ${errorText(e)}` });
     }
+    // Read again just before it is replaced: another tab may have lost a payment's answer while this one prepared
+    // (adversary i16). Nothing is sent then, and that record is kept.
+    const meanwhile = readPending(split, invoiceRef);
+    if (meanwhile !== null) {
+      setPending(meanwhile);
+      return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(meanwhile) });
+    }
     writePending(split, invoiceRef, payBy);
     const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef, payBy);
-    if (outcome.kind !== "unknown") writePending(split, invoiceRef, null);
+    // Only this attempt's own record is cleared, never one another tab wrote meanwhile.
+    if (outcome.kind !== "unknown" && readPending(split, invoiceRef) === payBy) writePending(split, invoiceRef, null);
     if (outcome.kind === "done") {
       setPay({ kind: "paid", hash: outcome.hash });
       // It landed. A failed read now must not hide that: the invoice already shown stays, marked paid.

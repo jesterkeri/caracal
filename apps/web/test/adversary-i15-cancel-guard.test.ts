@@ -118,8 +118,11 @@ describe("adversary i15: a second Cancel while an earlier cancellation of the sa
 
   it("an earlier cancellation recorded by another tab holds Cancel back at the press, as the pay page does for Pay", async () => {
     // Another tab of this browser lost its cancellation's answer after this tab drew its list: it may land until ledger 1090.
-    const kept = new Map([[CANCEL_KEY, JSON.stringify({ [REF]: 1090 })]]);
+    // Test change (adversary i16): the record is written after the list is drawn, as described above; written
+    // before, the row is now drawn held, with no Cancel to press. The assertions are unchanged.
+    const kept = new Map<string, string>();
     const p = await invoicesPage(kept, { kind: "done", hash: "d".repeat(64) });
+    kept.set(CANCEL_KEY, JSON.stringify({ [REF]: 1090 }));
     expect(texts(p.tree)).toContain("Cancel invoice"); // the stale row still offers it
     await button(p.tree, "Cancel invoice")!.props!.onClick!();
     await settle();
@@ -128,8 +131,10 @@ describe("adversary i15: a second Cancel while an earlier cancellation of the sa
   });
 
   it("a second attempt refused before sending does not erase the record of the earlier one that may still land", async () => {
-    const kept = new Map([[CANCEL_KEY, JSON.stringify({ [REF]: 1090 })]]);
+    // Test change (adversary i16): written after the list is drawn, as in the test above. Assertion unchanged.
+    const kept = new Map<string, string>();
     const p = await invoicesPage(kept, { kind: "not-sent", message: "The passkey prompt was closed." });
+    kept.set(CANCEL_KEY, JSON.stringify({ [REF]: 1090 }));
     await button(p.tree, "Cancel invoice")!.props!.onClick!();
     await settle();
     // The earlier cancellation (ledger 1090) is still unresolved; its record must survive.
