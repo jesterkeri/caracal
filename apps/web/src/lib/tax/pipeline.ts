@@ -43,7 +43,8 @@ export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | 
   if (!isContractId(b.wallet)) return { ok: false, message: "The wallet must be a Stellar contract address (it starts with C)." };
   let annualRentNgn: string | undefined;
   if (b.annualRentNgn !== undefined) {
-    if (typeof b.annualRentNgn !== "string" || b.annualRentNgn.length > MAX_TEXT) return { ok: false, message: "Annual rent must be text." };
+    if (typeof b.annualRentNgn !== "string") return { ok: false, message: "Annual rent must be text." };
+    if (b.annualRentNgn.length > MAX_TEXT) return { ok: false, message: `The annual rent is longer than ${MAX_TEXT} characters. Write it in naira, in digits, for example 600000.` };
     if (b.annualRentNgn.trim() !== "") annualRentNgn = b.annualRentNgn;
   }
   let classifications: Record<string, Classification> | undefined;
@@ -70,7 +71,8 @@ export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | 
   }
   if (oi.kind === "elsewhere") {
     if (Object.keys(oi).some((k) => !["kind", "amountNgn", "note"].includes(k))) return { ok: false, message: "The income answer has fields Caracal does not know." };
-    if (typeof oi.amountNgn !== "string" || oi.amountNgn.length > MAX_TEXT) return { ok: false, message: "Say how much income arrives elsewhere, in naira." };
+    if (typeof oi.amountNgn !== "string") return { ok: false, message: "Say how much income arrives elsewhere, in naira." };
+    if (oi.amountNgn.length > MAX_TEXT) return { ok: false, message: `The income that arrives elsewhere is longer than ${MAX_TEXT} characters. Write it in naira, in digits, for example 2500000.` };
     if (oi.note !== undefined && (typeof oi.note !== "string" || oi.note.length > MAX_TEXT)) return { ok: false, message: "The note must be short text." };
     return { ok: true, req: withAnswers({ wallet: b.wallet, annualRentNgn, otherIncome: { kind: "elsewhere", amountNgn: oi.amountNgn, ...(oi.note ? { note: oi.note } : {}) } }) };
   }
@@ -148,12 +150,16 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     ...(req.annualRentNgn !== undefined ? [{ value: req.annualRentNgn, what: "The rent you pay for the year", example: "600000" }] : []),
     ...(req.otherIncome.kind === "elsewhere" ? [{ value: req.otherIncome.amountNgn, what: "The income that arrives elsewhere", example: "2500000" }] : []),
   ];
+  // At most 2 decimal places (kobo), as the engine allows (packages/tax MAX_NAIRA_INPUT_DP): more is refused here too,
+  // naming the amount, not after the network is read and every payment answered (adversary t23).
   const typedReasons = typed
-    .filter((t) => !/^\d+(\.\d+)?$/.test(t.value.trim()))
+    .filter((t) => !/^\d+(\.\d{1,2})?$/.test(t.value.trim()))
     .map((t) =>
       t.value.trim() === ""
         ? `${t.what} is missing. Write it in naira, in digits, for example ${t.example}. No estimate was made.`
-        : `${t.what} must be written in digits only, with no commas, spaces, letters or ₦ sign, for example ${t.example} (kobo go after a point, as in ${t.example}.50). No estimate was made.`,
+        : /^\d+\.\d{3,}$/.test(t.value.trim())
+          ? `${t.what} has more than 2 decimal places. Naira go down to the kobo at most, as in ${t.example}.50. No estimate was made.`
+          : `${t.what} must be written in digits only, with no commas, spaces, letters or ₦ sign, for example ${t.example} (kobo go after a point, as in ${t.example}.50). No estimate was made.`,
     );
   if (typedReasons.length > 0) return { status: "refused", reasons: typedReasons, disclaimer: DISCLAIMER, context: null };
   const splitContract = splitAddressFor(req.wallet, networkPassphrase);
