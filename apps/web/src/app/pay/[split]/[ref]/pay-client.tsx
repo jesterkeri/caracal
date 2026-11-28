@@ -233,17 +233,20 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     const earlier = pending ?? readPending(split, invoiceRef);
     // The invoice, with the ledger the network read it at: an open invoice read past the earlier payment's last
     // ledger proves that payment can no longer land; read at or before it, it still may (Codex invoices R3 #1).
-    let readAt: number | undefined;
+    // The status and the ledger must come from the same answer: two requests may reach RPC nodes a few ledgers
+    // apart, and an open status from a node behind must not be dated by another node's newer ledger (adversary i15).
+    let openPast = false;
     if (earlier !== null && linkOk) {
       try {
-        readAt = (await readInvoiceAt(new rpc.Server(NETWORK.rpcUrl), split, invoiceRef)).ledger;
+        const at = await readInvoiceAt(new rpc.Server(NETWORK.rpcUrl), split, invoiceRef);
+        openPast = at.invoice?.status === "open" && at.ledger !== undefined && at.ledger > earlier;
       } catch {
-        readAt = undefined;
+        openPast = false;
       }
     }
     const v = await reload();
     setView(v);
-    const settled = v.kind === "invoice" && (v.invoice.status !== "open" || (earlier !== null && readAt !== undefined && readAt > earlier));
+    const settled = v.kind === "invoice" && (v.invoice.status !== "open" || openPast);
     if (earlier !== null && settled) {
       writePending(split, invoiceRef, null);
       setPending(null);

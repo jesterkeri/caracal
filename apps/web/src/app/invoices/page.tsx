@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { followAccount, readSignInState } from "@/lib/auth/account";
+import { followAccount, readSignInState, type SignInState } from "@/lib/auth/account";
 import { browserStore, mayRestoreWallet } from "@/lib/auth/wallet-binding";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { supabaseEnvOrNull } from "@/lib/supabase/env";
@@ -357,7 +357,8 @@ export default function InvoicesPage() {
     }
     // The details go into the rows of whoever is signed in at the moment they are saved (supabase-js reads the
     // session shared by every tab), so the account is read again here: another tab may have switched it.
-    const now = await readSignInState(supabaseBrowser().auth);
+    // Bounded: a database that never answers ends in "could not verify", not an endless busy page (adversary i15).
+    const now: SignInState = await bounded(readSignInState(supabaseBrowser().auth), "Checking your sign-in").catch(() => ({ kind: "unverified" }) as const);
     if (now.kind !== "verified" || now.id !== ready.account) {
       setBusy(null);
       if (now.kind === "unverified") return setNotice("Caracal could not verify your sign-in, so nothing was opened. Check your connection and try again.");
@@ -376,10 +377,12 @@ export default function InvoicesPage() {
     try {
       // The details are saved first, so an invoice that reached the chain always has its client name here. The
       // account checked above is sent as the owner, so a session switched since then is refused by the database.
-      await saveDetails(db(), { owner_id: ready.account, invoice_ref: ref, split: ready.split, client_name: details.name, description: details.description, opens_by_ledger: opensBy });
+      // Bounded (adversary i15). A save that answers late may still add the entry: it then shows as never opened,
+      // and can be removed once the network passes its last ledger, like any opening that did not finish.
+      await bounded(saveDetails(db(), { owner_id: ready.account, invoice_ref: ref, split: ready.split, client_name: details.name, description: details.description, opens_by_ledger: opensBy }), "Saving the client's name");
     } catch (e) {
       setBusy(null);
-      return setNotice(`Caracal could not save the client's name, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
+      return setNotice(`Caracal could not save the client's name, so nothing was opened. If an entry for it appears in the list, it was never opened and can be removed. ${e instanceof Error ? e.message : String(e)}`);
     }
     // Recorded before anything is sent and renewed while the opening is on its way, so a reload or a closed tab
     // mid-send still holds back "Remove this entry" until the opening can no longer land.
@@ -397,7 +400,8 @@ export default function InvoicesPage() {
     if (outcome.kind === "not-sent" || outcome.kind === "failed") {
       // Nothing is on chain: the saved details are removed again.
       try {
-        await deleteDetails(db(), ref);
+        // Bounded, so the outcome is shown even when the database does not answer (adversary i15).
+        await bounded(deleteDetails(db(), ref), "Removing the unused details");
       } catch (e) {
         console.error("could not remove unused invoice details:", e instanceof Error ? e.message : String(e));
       }
@@ -438,9 +442,19 @@ export default function InvoicesPage() {
       setBusy(null);
       return setNotice(`Caracal could not read the Stellar network, so nothing was cancelled. ${e instanceof Error ? e.message : String(e)}`);
     }
+    // An earlier cancellation from this browser (this page before a reload, or another tab) may still land: nothing
+    // new is sent, read now, at the press, as the pay page does for a payment (adversary i15). The list is read
+    // again, which settles that record once the invoice reads cancelled or paid, or open past its last ledger.
+    const earlier = cancelPendingOf(ref);
+    if (earlier !== null) {
+      setBusy(null);
+      setNotice(CANCELLING_TEXT(earlier), "unsure");
+      return refresh(ready.account, ready.wallet, ready.split).catch(listFailed(CANCELLING_TEXT(earlier)));
+    }
     setCancelPending(ref, cancelBy);
     const outcome = await cancelInvoice(kit, ready.split, ref, cancelBy);
-    if (outcome.kind !== "unknown") setCancelPending(ref, null);
+    // Only this attempt's own record is cleared, never one written meanwhile by another tab.
+    if (outcome.kind !== "unknown" && cancelPendingOf(ref) === cancelBy) setCancelPending(ref, null);
     setBusy(null);
     // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()).
     if (outcome.kind === "done") setConfirmed(ref, "cancelled");
@@ -466,7 +480,7 @@ export default function InvoicesPage() {
       return refresh(ready.account, ready.wallet, ready.split).catch(listFailed("The entry was kept."));
     }
     try {
-      await deleteDetails(db(), ref);
+      await bounded(deleteDetails(db(), ref), "Removing the entry");
     } catch (e) {
       return setNotice(`Caracal could not remove that entry. ${e instanceof Error ? e.message : String(e)}`);
     }
