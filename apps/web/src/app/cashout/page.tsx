@@ -558,13 +558,15 @@ export default function CashoutPage() {
   // unknown send's "may still go through" once the page no longer holds that it may (adversary c32).
   const heldGone = problem !== null && problem === heldText && !hold.held;
   const unknownGone = problem !== null && problem === unknownText && !mayStillLand;
+  // Nor the refusal while the balance was being read again, once it has been read past closeBy (adversary c34).
+  const staleGone = problem === STALE && !stale;
   // Once the network is past the earlier payment's closeBy, the balance is read again, as of a later ledger.
   useEffect(() => {
     if (!stale || seenLedger === null || mustPass === null || seenLedger <= mustPass) return;
     const t = setTimeout(() => void refreshBalance().catch(() => {}), 0);
     return () => clearTimeout(t);
   }, [stale, seenLedger, mustPass]);
-  const shownProblem = heldGone
+  const shownProblem = heldGone || staleGone
     ? null
     : unknownGone
       ? txn !== null && (txn.status === "completed" || txn.status === "refunded")
