@@ -103,7 +103,9 @@ export default function TaxPage() {
       if (!current()) return;
       if ("error" in body) return setRun({ kind: "failed", message: body.error });
       if (!res.ok || typeof body.status !== "string") return setRun({ kind: "failed", message: FAILED });
-      if (body.status === "refused" && body.payments !== undefined) {
+      // A list given for information only asks for no answers (adversary t21): the result shows it instead.
+      if (body.status === "refused" && body.listOnly) setListed(null);
+      if (body.status === "refused" && body.payments !== undefined && !body.listOnly) {
         // The server's list replaces ours: an answer for a payment no longer on it is dropped.
         const ids = new Set(body.payments.map((p) => p.id));
         setListed(body.payments);

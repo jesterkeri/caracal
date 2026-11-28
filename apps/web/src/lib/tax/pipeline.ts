@@ -79,7 +79,7 @@ export function parseTaxRequest(body: unknown): { ok: true; req: TaxRequest } | 
 
 export type TaxOutcome =
   | { status: "ok"; estimate: Estimate; context: Context }
-  | { status: "refused"; reasons: string[]; disclaimer: string; context: Context | null; /** Set when the refusal is about the person's payment answers: every in-year payment to answer for. */ payments?: PaymentRow[] }
+  | { status: "refused"; reasons: string[]; disclaimer: string; context: Context | null; /** Set when the refusal is about the person's payment answers: every in-year payment to answer for. */ payments?: PaymentRow[]; /** The payments are listed for information only: no answer can lead to an estimate (adversary t21). */ listOnly?: true }
   /** Nothing could be computed because a source could not be read. No numbers. */
   | { status: "unavailable"; message: string; disclaimer: string }
   /** The wallet has no split contract on this network, so there are no payments to estimate from. */
@@ -161,6 +161,27 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
 
   const inYear = (p: Payment) => lagosDate(p.occurredAt).startsWith(`${TAX_YEAR}-`);
   const yearPayments = read.payments.filter(inYear);
+
+  // Without a creation event in the window, say only what is known. A split on Caracal's earlier wasm (which records
+  // no creation) was refused before this point (chain-payments.ts), so this one runs the current wasm, whose
+  // constructor always records it: it was created before the window. If the window also starts after the tax year
+  // does, no answer can lead to an estimate, so this is said first, before any payment is asked about (adversary t21).
+  const creationReason =
+    !read.created && Date.parse(read.coverage.from) > Date.parse(`${TAX_YEAR}-01-01T00:00:00+01:00`)
+      ? `No record of the split contract's creation was found in the RPC's history window of about a week, so the contract was created before that window. Payments before ${read.coverage.from} cannot be read. A payment indexer is needed to read the whole of ${TAX_YEAR}.`
+      : null;
+  if (creationReason) {
+    const asOfNow = deps.now().toISOString().replace(/\.\d{3}Z$/, "Z");
+    return {
+      status: "refused",
+      reasons: [creationReason],
+      disclaimer: DISCLAIMER,
+      // What was found is shown, but no answer is asked for: none could lead to an estimate.
+      payments: yearPayments.filter((p) => !isOwnPayment(p, req.wallet)).map(rowOf),
+      listOnly: true,
+      context: { taxYear: TAX_YEAR, splitContract, asOf: asOfNow, coverage: read.coverage, excludedByAnswer: [], paymentsInWindow: read.payments.length, paymentsInTaxYear: yearPayments.length },
+    };
+  }
 
   // Whether a payment is income is the person's answer, never a guess from its sender: an on-chain payment
   // proves an amount and a sender, not what it was for (it may be a refund, or a transfer from another
@@ -263,15 +284,6 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     return unavailable("The tax engine failed unexpectedly, so there is no estimate.");
   }
 
-  // Without a creation event in the window, say only what is known. A split on Caracal's earlier wasm (which records
-  // no creation) was refused before this point (chain-payments.ts), so this one runs the current wasm, whose
-  // constructor always records it: it was created before the window. If the window also starts after the tax year
-  // does, say that plainly.
-  if (result.status === "refused" && !read.created && Date.parse(read.coverage.from) > Date.parse(`${TAX_YEAR}-01-01T00:00:00+01:00`)) {
-    ownReasons.unshift(
-      `No record of the split contract's creation was found in the RPC's history window of about a week, so the contract was created before that window. Payments before ${read.coverage.from} cannot be read. A payment indexer is needed to read the whole of ${TAX_YEAR}.`,
-    );
-  }
   // The engine speaks of a linked account to sync. Here the "account" is the split contract read from the network, and
   // its sync time is the close time of the newest ledger the RPC returned: an old one is the network's or the RPC's
   // lag, which the person cannot sync (adversary t20).

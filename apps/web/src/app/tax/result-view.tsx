@@ -204,6 +204,17 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
               ))}
             </ul>
           </section>
+          {outcome.listOnly && outcome.payments && outcome.payments.length > 0 && (
+            <section className="list text-sm">
+              <h2 className="h3 mb-1">Payments found in {outcome.context?.taxYear ?? "the year"}</h2>
+              <p className="muted">No answer is asked for these: no estimate can be made from this window, whatever they were for.</p>
+              {outcome.payments.map((p) => (
+                <p key={p.id} className="item kv-row num py-1.5">
+                  {p.date}: {group(p.amount)} {p.asset}, from <span className="addr">{p.from}</span>
+                </p>
+              ))}
+            </section>
+          )}
           {outcome.context && <Coverage c={outcome.context} estimated={false} />}
         </>
       )}
