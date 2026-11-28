@@ -272,7 +272,23 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
       `No record of the split contract's creation was found in the RPC's history window of about a week, so the contract was created before that window. Payments before ${read.coverage.from} cannot be read. A payment indexer is needed to read the whole of ${TAX_YEAR}.`,
     );
   }
-  if (result.status === "refused") return { status: "refused", reasons: [...ownReasons, ...result.reasons.filter((r) => !ownReasons.includes(r))], disclaimer: result.disclaimer, context };
+  // The engine speaks of a linked account to sync. Here the "account" is the split contract read from the network, and
+  // its sync time is the close time of the newest ledger the RPC returned: an old one is the network's or the RPC's
+  // lag, which the person cannot sync (adversary t20).
+  const synced = `Account "${account.label}" was last synced at ${account.lastSyncedAt}, `;
+  const head = `The newest ledger Caracal could read from the Stellar network closed at ${account.lastSyncedAt}`;
+  const plain = (r: string) =>
+    !r.startsWith(synced)
+      ? r
+      : r.includes("which is too old")
+        ? `${head}, more than an hour ago, so the payment history Caracal read may be behind (the testnet may be halted, or its RPC lagging). No estimate was made. Try again later.`
+        : r.includes(`before ${TAX_YEAR} ended`)
+          ? `${head}, before ${TAX_YEAR} ended, so payments from the end of the year may be missing (the testnet may be halted, or its RPC lagging). No estimate was made. Try again later.`
+          : r;
+  if (result.status === "refused") {
+    const engine = result.reasons.map(plain);
+    return { status: "refused", reasons: [...ownReasons, ...engine.filter((r) => !ownReasons.includes(r))], disclaimer: result.disclaimer, context };
+  }
   // The engine accepted the input although a rate was missing: never show a number built on that.
   if (ownReasons.length > 0) return { status: "refused", reasons: ownReasons, disclaimer: DISCLAIMER, context };
   return { status: "ok", estimate: result, context };

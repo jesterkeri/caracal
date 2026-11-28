@@ -91,7 +91,13 @@ function Money({ e, excluded }: { e: Estimate; excluded: PaymentRow[] }) {
 
       <section className="list">
         <h2 className="h2 mb-1">Income, payment by payment</h2>
-        {e.incomeLines.length === 0 && <p>No income payments in {e.taxYear} were found in the history window.</p>}
+        {/* Payments the person answered "not income" were found: never say none were (adversary t20). */}
+        {e.incomeLines.length === 0 &&
+          (excluded.length > 0 ? (
+            <p>None of your {e.taxYear} payments is counted as income: you answered that each one is not income (listed below).</p>
+          ) : (
+            <p>No income payments in {e.taxYear} were found in the history window.</p>
+          ))}
         {e.incomeLines.map((l) => (
           <div key={l.entryId} className="item kv gap-0 py-1.5">
             <p className="kv-row num text-base">
