@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { acquireWrite, hasWriteRecord, holdOn, holdText, readLedger } from "@/lib/split/write-guard";
+import { acquireWrite, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -115,10 +115,15 @@ export default function SplitPage() {
     const t = setInterval(() => {
       setTick((n) => n + 1);
       const split = shownSplit;
-      if (!split || !hasWriteRecord(split)) return;
+      // Read while a record holds the buttons, or while this tab still holds a write's lock: a write the network
+      // has passed lets go of its lock here, so another tab is not refused until its kit call settles (adversary s13).
+      if (!split || (!hasWriteRecord(split) && !holdsWriteLock(split))) return;
       getKit()
         .then((kit) => readLedger(kit.rpc))
-        .then((n) => !gone && setSeenLedger(n))
+        .then((n) => {
+          void passLedger(split, n);
+          if (!gone) setSeenLedger(n);
+        })
         .catch(() => !gone && setSeenLedger(null));
     }, 5_000);
     return () => {

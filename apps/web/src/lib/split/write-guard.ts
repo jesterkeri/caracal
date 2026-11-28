@@ -140,6 +140,11 @@ const live = new Map<string, Set<Live>>();
  * Lets go of this tab's locks on this split held by writes that are done, or that the network has passed
  * (ledger > closeBy), and resolves once those locks are free.
  */
+/** Whether this tab still holds a write's lock on this split (its ledger poll must keep running until it lets go). */
+export function holdsWriteLock(split: string): boolean {
+  return (live.get(split)?.size ?? 0) > 0;
+}
+
 export async function passLedger(split: string, ledger: number): Promise<void> {
   const mine = live.get(split);
   if (!mine) return;
