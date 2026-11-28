@@ -388,6 +388,15 @@ export default function CashoutPage() {
     // The anchor refused this session: the record on screen can no longer be followed, so it is not paid (adversary c13).
     if (lostSession) return;
     if (!toml || !session) return;
+    // The record on screen is what the person is confirming. When the poll has put a changed one there since this
+    // step was reached, Send is refused once and that one becomes what the anchor must still answer, at the press
+    // and just before the passkey: otherwise an anchor flapping back to the first terms was paid on those, not on
+    // the ones on screen (adversary c42).
+    if (seenRef.current !== payTo(txn)) {
+      seenRef.current = payTo(txn);
+      setProblem("The anchor changed the account, memo or quote after you looked at it. Nothing was sent. Check the details above and confirm again.");
+      return;
+    }
     sendingFor.current = txn.id;
     // From the press on, the page is sending: "Start again" goes at once, not only once the payment is built,
     // or pressing it during the ledger read left the page with no record and no control (adversary c28).
