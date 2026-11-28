@@ -20,7 +20,10 @@ const READ_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 export type Pots = { tax: bigint; goal: bigint; spend: bigint };
 export type SplitConfig = { owner: string; token: string; taxBps: number; goalBps: number };
 
-async function simulateRead(server: SimulatingRpc, split: string, fn: string, passphrase: string): Promise<unknown> {
+/** A read's answer and the ledger the RPC simulated it at (null when the RPC did not say). */
+type Read = { value: unknown; ledger: number | null };
+
+async function simulateRead(server: SimulatingRpc, split: string, fn: string, passphrase: string): Promise<Read> {
   const tx = new TransactionBuilder(new Account(READ_SOURCE, "0"), { fee: BASE_FEE, networkPassphrase: passphrase })
     .addOperation(Operation.invokeHostFunction({ func: splitCall(split, fn, []), auth: [] }))
     .setTimeout(30)
@@ -40,7 +43,8 @@ async function simulateRead(server: SimulatingRpc, split: string, fn: string, pa
   if (rpc.Api.isSimulationError(sim)) throw new Error(splitErrorText(sim.error, split));
   const retval = "result" in sim ? sim.result?.retval : undefined;
   if (!retval) throw new Error(`${fn}() returned no answer`);
-  return scValToNative(retval);
+  const at = (sim as { latestLedger?: unknown }).latestLedger;
+  return { value: scValToNative(retval), ledger: typeof at === "number" && Number.isSafeInteger(at) && at > 0 ? at : null };
 }
 
 const big = (v: unknown): bigint => {
@@ -50,14 +54,19 @@ const big = (v: unknown): bigint => {
 
 /** balances(): the three pots, in stroops of USDC. */
 export async function readPots(server: SimulatingRpc, split: string, passphrase: string = NETWORK.passphrase): Promise<Pots> {
-  const v = await simulateRead(server, split, "balances", passphrase);
+  return (await readPotsAt(server, split, passphrase)).pots;
+}
+
+/** balances(), with the ledger it was read at (null when the RPC did not say): a write's hold lifts only after a read past its closeBy. */
+export async function readPotsAt(server: SimulatingRpc, split: string, passphrase: string = NETWORK.passphrase): Promise<{ pots: Pots; ledger: number | null }> {
+  const { value: v, ledger } = await simulateRead(server, split, "balances", passphrase);
   if (!Array.isArray(v) || v.length !== 3) throw new Error("the split contract's balances() answer was not three amounts");
-  return { tax: big(v[0]), goal: big(v[1]), spend: big(v[2]) };
+  return { pots: { tax: big(v[0]), goal: big(v[1]), spend: big(v[2]) }, ledger };
 }
 
 /** config(): owner, token and the current split. */
 export async function readConfig(server: SimulatingRpc, split: string, passphrase: string = NETWORK.passphrase): Promise<SplitConfig> {
-  const v = await simulateRead(server, split, "config", passphrase);
+  const { value: v } = await simulateRead(server, split, "config", passphrase);
   if (!Array.isArray(v) || v.length !== 4 || typeof v[0] !== "string" || typeof v[1] !== "string" || typeof v[2] !== "number" || typeof v[3] !== "number") {
     throw new Error("the split contract's config() answer was not (owner, token, tax, goal)");
   }

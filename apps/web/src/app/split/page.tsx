@@ -14,7 +14,7 @@ import { POTS, type Pot } from "@/lib/split/calls";
 import { POT_LABEL, changeSplit, deploySplit, loadSplit, moveBetweenPots, potBalance, withdrawToWallet, type Loaded } from "@/lib/split/actions";
 import { say, type Said } from "@/lib/split/messages";
 import { splitAddressFor } from "@/lib/stellar/split-address";
-import { acquireWrite, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger } from "@/lib/split/write-guard";
+import { acquireWrite, clearPassed, clearUnknown, hasWriteRecord, holdOn, holdText, holdsWriteLock, passLedger, readLedger, recordCloseBy } from "@/lib/split/write-guard";
 import { restoreWallet, type Account } from "@/lib/split/restore";
 import type { SendOutcome, WriteKit } from "@/lib/split/send";
 
@@ -51,8 +51,13 @@ type Note = { busy?: string; said?: Said; hold?: true };
 // slower read never puts earlier pots on screen or clears a write's note.
 let readSeq = 0;
 let writing = false;
-/** A hold on writes was shown since the last read of the pots (see the effect after `hold`). */
-let heldSeen = false;
+
+/** The larger of two ledgers, either of which may be unknown. */
+const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
+/** The ledger what is shown was read at, when the RPC said. */
+const readAt = (l: Loaded | null) => (l && l.kind !== "error" ? l.ledger : null);
+const STALE =
+  "The earlier withdrawal, move or change can no longer land. Caracal is reading the pots again, and nothing new can be sent until it has read them as of a later ledger, so you see whether it went through. If this stays, press Refresh.";
 
 export default function SplitPage() {
   const [view, setView] = useState<View>({ kind: "checking" });
@@ -64,6 +69,9 @@ export default function SplitPage() {
   // The latest ledger read while this browser holds a write record: the hold lifts once it passes the record's
   // closeBy (write-guard.ts). null until read, or when it cannot be read, and the hold then stays.
   const [seenLedger, setSeenLedger] = useState<number | null>(null);
+  // The largest closeBy of an earlier write this tab has seen a record of (Codex split R4 #2). Nothing new is offered
+  // until the pots shown were read at a ledger past it, even once the record is gone (another tab may remove it).
+  const [guardBy, setGuardBy] = useState<number | null>(null);
 
   useEffect(() => {
     let unfollow: (() => void) | undefined;
@@ -110,18 +118,25 @@ export default function SplitPage() {
   }, []);
 
   const shownSplit = view.kind === "ready" ? splitAddressFor(view.wallet) : null;
+  const shownAt = view.kind === "ready" ? readAt(view.loaded) : null;
   useEffect(() => {
     let gone = false;
     const t = setInterval(() => {
       setTick((n) => n + 1);
       const split = shownSplit;
-      // Read while a record holds the buttons, or while this tab still holds a write's lock: a write the network
-      // has passed lets go of its lock here, so another tab is not refused until its kit call settles (adversary s13).
-      if (!split || (!hasWriteRecord(split) && !holdsWriteLock(split))) return;
+      // Read while a record holds the buttons, while this tab still holds a write's lock (a write the network has
+      // passed lets go of its lock here, so another tab is not refused until its kit call settles, adversary s13),
+      // or while the pots shown are not yet read past an earlier write's closeBy.
+      const stale = guardBy !== null && !(shownAt !== null && shownAt > guardBy);
+      if (!split || (!hasWriteRecord(split) && !holdsWriteLock(split) && !stale)) return;
       getKit()
         .then((kit) => readLedger(kit.rpc))
-        .then((n) => {
-          void passLedger(split, n);
+        .then(async (n) => {
+          // Remembered before a passed record is removed, so its closeBy still asks for a later read of the pots.
+          const by = recordCloseBy(split);
+          if (!gone && by !== null) setGuardBy((g) => later(g, by));
+          await passLedger(split, n);
+          await clearPassed(split, n);
           if (!gone) setSeenLedger(n);
         })
         .catch(() => !gone && setSeenLedger(null));
@@ -130,7 +145,7 @@ export default function SplitPage() {
       gone = true;
       clearInterval(t);
     };
-  }, [shownSplit]);
+  }, [shownSplit, guardBy, shownAt]);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v });
   const refused = (text: string) => setNote({ said: { tone: "bad", text } });
@@ -174,6 +189,11 @@ export default function SplitPage() {
         return setNote({ said: { tone: "bad", text: `Caracal could not read the Stellar network, so nothing was signed or sent. Check your connection and try again. (${e instanceof Error ? e.message : String(e)})` } });
       }
       setSeenLedger(ledger);
+      // The pots shown must be read past every earlier write's closeBy this tab knows of (Codex split R4 #2).
+      // While the record says it can still land, the guard below refuses with that reason instead.
+      const need = later(guardBy, recordCloseBy(splitAddressFor(wallet)));
+      const at = readAt(view.loaded);
+      if (!holdOn(splitAddressFor(wallet), ledger).held && need !== null && !(at !== null && at > need)) return setNote({ said: { tone: "unsure", text: STALE }, hold: true });
       const begun = await acquireWrite(splitAddressFor(wallet), ledger);
       if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) }, hold: true });
       const guard = begun.guard;
@@ -232,27 +252,59 @@ export default function SplitPage() {
     return run("Your split change", (kit) => changeSplit(kit, wallet, tax.value, goal.value));
   }
 
+  /** The person has checked the pots after a hold on a record with no closeBy: it is cleared under the lock, then the pots read again. */
+  async function checkedPots() {
+    if (view.kind !== "ready" || note.busy || writing) return;
+    const split = splitAddressFor(view.wallet);
+    setNote({ busy: "Checking the network" });
+    let ledger: number;
+    try {
+      ledger = await readLedger((await getKit()).rpc);
+    } catch (e) {
+      return setNote({ said: { tone: "bad", text: `Caracal could not read the Stellar network, so the earlier record stays. Try again. (${e instanceof Error ? e.message : String(e)})` }, hold: true });
+    }
+    if (!(await clearUnknown(split))) {
+      return setNote({ said: { tone: "unsure", text: "Caracal could not clear the earlier record, because another tab of this browser is sending a write or this browser would not let it. Try again in a moment." }, hold: true });
+    }
+    // The pots must be read again, as of this ledger or later, before anything new is offered.
+    setGuardBy((g) => later(g, ledger - 1));
+    setSeenLedger(ledger);
+    setNote({});
+  }
+
   const busy = note.busy !== undefined;
   const loaded = view.kind === "ready" ? view.loaded : null;
   // Read from storage on every render (not remembered), so a write in another tab or before a reload counts.
-  const hold = view.kind === "ready" && loaded?.kind !== "error" ? holdOn(splitAddressFor(view.wallet), seenLedger) : ({ held: false } as const);
-  const blocked = busy || hold.held;
-  // When a hold lifts, the pots are read again and its note goes: a write that landed after the write's own
-  // re-read is then on screen before the person repeats it (adversary s11).
+  // Rendering only reads the record: it never writes or removes it (Codex split R4 #1).
+  const readySplit = view.kind === "ready" && loaded?.kind !== "error" ? splitAddressFor(view.wallet) : null;
+  const hold = readySplit ? holdOn(readySplit, seenLedger) : ({ held: false } as const);
+  const seenBy = readySplit ? recordCloseBy(readySplit) : null;
+  const mustPass = later(guardBy, seenBy);
+  const shownLedger = readAt(loaded);
+  const stale = !hold.held && mustPass !== null && !(shownLedger !== null && shownLedger > mustPass);
+  const blocked = busy || hold.held || stale;
+  // When a hold lifts, the pots are read again (as of a ledger past closeBy) and its note goes: a write that landed
+  // after the write's own re-read is then on screen before the person repeats it (adversary s11, Codex split R4 #2).
   const readyWallet = view.kind === "ready" ? view.wallet : null;
   useEffect(() => {
-    if (hold.held) {
-      heldSeen = true;
-      return;
-    }
-    if (!heldSeen || !readyWallet) return;
-    const t = setTimeout(() => {
-      heldSeen = false;
-      void reread(readyWallet, undefined, true);
-    }, 0);
+    if (!stale || !readyWallet || seenLedger === null || mustPass === null || seenLedger <= mustPass) return;
+    const t = setTimeout(() => void reread(readyWallet, undefined, true), 0);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hold.held, readyWallet]);
+  }, [stale, seenLedger, mustPass, readyWallet]);
+
+  // A record seen while rendering is remembered, so its closeBy still counts once the record is gone.
+  useEffect(() => {
+    if (seenBy === null || (guardBy !== null && seenBy <= guardBy)) return;
+    const t = setTimeout(() => setGuardBy((g) => later(g, seenBy)), 0);
+    return () => clearTimeout(t);
+  }, [seenBy, guardBy]);
+  // Once nothing holds and the pots are read past closeBy, a held-back write's note goes (never a failure, adversary s12).
+  const lifted = !hold.held && !stale;
+  useEffect(() => {
+    if (!lifted) return;
+    const t = setTimeout(() => setNote((n) => (n.hold ? {} : n)), 0);
+    return () => clearTimeout(t);
+  }, [lifted]);
 
   return (
     <main className="page">
@@ -412,6 +464,12 @@ export default function SplitPage() {
       )}
 
       {!busy && hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
+      {!busy && hold.held && hold.reason === "unknown-expiry" && (
+        <button className="btn btn-secondary btn-sm self-start" onClick={checkedPots}>
+          I have checked the pots
+        </button>
+      )}
+      {!busy && stale && note.said?.text !== STALE && <p className="msg msg-unsure">{STALE}</p>}
       {note.busy && <p className="small muted">{note.busy}...</p>}
       {note.said && (
         <div className={`msg flex flex-col gap-1 ${note.said.tone === "good" ? "msg-good" : note.said.tone === "bad" ? "msg-bad" : "msg-unsure"}`}>

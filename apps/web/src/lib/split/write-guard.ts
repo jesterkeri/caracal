@@ -19,10 +19,17 @@
 // ahead of it, so its ledger is a safe lower bound. Without a ledger read, the
 // hold stays.
 //
-// A record this browser cannot read, or one from an older version of Caracal
-// (which signed with the kit's default expiry, at most KIT_DEFAULT_LEDGERS after
-// the ledger it read), is given closeBy = the ledger read now + KIT_DEFAULT_LEDGERS,
-// which is past any such write's expiry.
+// A record this browser cannot read, or one from an older version of Caracal,
+// carries no closeBy, and no ledger seen later proves when its write stopped
+// being able to land (Codex split R4 #3). It holds every write until the person
+// checks the pots and says so (clearUnknown); nothing is inferred for it.
+//
+// Rendering never changes the record (Codex split R4 #1). It is written,
+// replaced and removed only under this split's Web Lock: by a write starting
+// (beginWrite), by a write whose outcome is certain (finish, before it lets go
+// of the lock), by clearPassed once an RPC shows a ledger past its closeBy, and
+// by clearUnknown. A passed record does not let the page act at once: the pots
+// must first be read at a ledger past its closeBy (the page, Codex split R4 #2).
 //
 // Storage that cannot be read holds back; storage that cannot be written
 // refuses to start a write, because nothing would stop a repeat.
@@ -48,7 +55,7 @@ const LEDGER_MS = 5_000;
 const KEY = (split: string) => `caracal.split.write.${split}`;
 const LOCK = (split: string) => `caracal.split.write.${split}`;
 
-export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unreadable" | "unsupported" };
+export type Hold = { held: false } | { held: true; until: number | null; reason: "earlier-write" | "unknown-expiry" | "unreadable" | "unsupported" };
 type Held = Extract<Hold, { held: true }>;
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -89,9 +96,27 @@ export function hasWriteRecord(split: string): boolean {
   }
 }
 
+/** Ids of this tab's writes still being sent: their own record does not ask this page to re-read the pots. */
+const inFlight = new Set<string>();
+
+/**
+ * The closeBy of this split's record, unless it is one of this tab's writes still being sent; null when there is
+ * none or it has no closeBy. The page must read the pots at a ledger past it before it offers a write.
+ */
+export function recordCloseBy(split: string): number | null {
+  const s = store();
+  if (!s) return null;
+  try {
+    const rec = read(s, split);
+    return rec && !inFlight.has(rec.id) ? rec.closeBy : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a write on this split must wait, given the latest ledger an RPC showed (null when none was read).
- * Storage that cannot be read holds back.
+ * Storage that cannot be read holds back. Reads only: it never writes or removes the record.
  */
 export function holdOn(split: string, ledger: number | null, now: number = Date.now()): Hold {
   const s = store();
@@ -104,26 +129,10 @@ export function holdOn(split: string, ledger: number | null, now: number = Date.
   }
   if (rec === undefined) return { held: false };
   const known = isLedger(ledger) ? ledger : null;
-  if (rec === null) {
-    // Unreadable or from an older version: bounded from the first ledger it is seen at (see the top).
-    if (known === null) return { held: true, until: null, reason: "earlier-write" };
-    try {
-      write(s, split, { v: 2, id: "earlier", closeBy: known + KIT_DEFAULT_LEDGERS });
-    } catch {
-      return { held: true, until: null, reason: "unreadable" };
-    }
-    return { held: true, until: now + (KIT_DEFAULT_LEDGERS + 1) * LEDGER_MS, reason: "earlier-write" };
-  }
+  // Unreadable or from an older version: no ledger proves it can no longer land (see the top).
+  if (rec === null) return { held: true, until: null, reason: "unknown-expiry" };
   if (known === null) return { held: true, until: null, reason: "earlier-write" };
-  if (known > rec.closeBy) {
-    // It can no longer land: the record goes, so the page stops reading the ledger for it.
-    try {
-      if (read(s, split)?.id === rec.id) s.removeItem(KEY(split));
-    } catch {
-      /* it is past closeBy either way */
-    }
-    return { held: false };
-  }
+  if (known > rec.closeBy) return { held: false };
   return { held: true, until: now + (rec.closeBy - known + 1) * LEDGER_MS, reason: "earlier-write" };
 }
 
@@ -143,6 +152,51 @@ const live = new Map<string, Set<Live>>();
 /** Whether this tab still holds a write's lock on this split (its ledger poll must keep running until it lets go). */
 export function holdsWriteLock(split: string): boolean {
   return (live.get(split)?.size ?? 0) > 0;
+}
+
+/**
+ * Under this split's Web Lock, removes a record the network has passed (ledger > its closeBy), so the page stops
+ * reading the ledger for it. Does nothing while a write holds the lock: that write replaces or removes it itself.
+ */
+export async function clearPassed(split: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<void> {
+  if (!isLedger(ledger)) return;
+  await underLock(split, locks, (s) => {
+    const rec = read(s, split);
+    if (rec && ledger > rec.closeBy) s.removeItem(KEY(split));
+  });
+}
+
+/**
+ * Under this split's Web Lock, removes a record with no closeBy (unreadable, or from an older version of Caracal)
+ * once the person has checked the pots and said so: the only way past it, since no ledger proves it cannot land.
+ * Resolves true when no such record is left.
+ */
+export async function clearUnknown(split: string, locks: Locks | undefined = browserLocks()): Promise<boolean> {
+  let done = false;
+  await underLock(split, locks, (s) => {
+    const raw = s.getItem(KEY(split));
+    if (raw !== null && raw !== undefined && read(s, split) === null) s.removeItem(KEY(split));
+    done = s.getItem(KEY(split)) === null || read(s, split) !== null;
+  });
+  return done;
+}
+
+/** Runs `f` holding this split's Web Lock if it is free at once; does nothing when it is taken or cannot be had. */
+async function underLock(split: string, locks: Locks | undefined, f: (s: Store) => void): Promise<void> {
+  const s = store();
+  if (!s || !locks || typeof locks.request !== "function") return;
+  try {
+    await locks.request(LOCK(split), { ifAvailable: true }, async (lock) => {
+      if (!lock) return;
+      try {
+        f(s);
+      } catch {
+        /* storage refused: the record stays, and so does the hold */
+      }
+    });
+  } catch {
+    /* the lock could not be had: nothing is changed */
+  }
 }
 
 export async function passLedger(split: string, ledger: number): Promise<void> {
@@ -193,6 +247,7 @@ export function beginWrite(split: string, ledger: number): Begun {
   } catch {
     return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   }
+  inFlight.add(id);
   const mine = () => {
     try {
       return read(s, split)?.id === id;
@@ -255,18 +310,20 @@ export function beginWrite(split: string, ledger: number): Begun {
     },
     finish(outcome) {
       restore();
+      inFlight.delete(id);
       if (outcome.kind === "unknown") {
         unknown = true;
         // Its kit call may never settle: the lock then goes once the network passes closeBy (passLedger).
         if (pending === 0) release();
         return;
       }
-      release();
+      // Removed while this write still holds the lock (release lets go of it), so it cannot remove a newer record.
       try {
         if (mine()) s.removeItem(KEY(split));
       } catch {
         /* the record stays until the network passes closeBy */
       }
+      release();
     },
   };
   return { ok: true, guard };
@@ -345,6 +402,9 @@ export async function readLedger(rpc: unknown): Promise<number> {
 export function holdText(hold: Held, now: number = Date.now()): string {
   if (hold.reason === "unsupported") {
     return "This browser cannot keep two of its tabs from sending the same withdrawal, so Caracal sends nothing from it. Use an up-to-date browser.";
+  }
+  if (hold.reason === "unknown-expiry") {
+    return "This browser holds a record of an earlier withdrawal, move or change that Caracal cannot read, or one from an older version of Caracal, so it cannot tell whether that write may still go through or when it stops being able to. Check the pots above. If they show it went through, or you are sure it did not, press \"I have checked the pots\" to allow new writes. A repeat of a write that did go through would be sent twice.";
   }
   if (hold.reason === "unreadable") {
     return "Caracal cannot tell whether an earlier withdrawal or move is still on its way, because this browser would not let it check. Nothing can be sent from here until it can. Refresh the pots, and allow this site to store data.";

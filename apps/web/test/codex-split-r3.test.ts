@@ -65,14 +65,19 @@ describe("Codex split R3: no clock decides when an uncertain write can no longer
     expect(!r.success && r.error.message).toMatch(/Nothing was sent/);
   });
 
-  it("a record from the older, clock-based version is held past the kit's default expiry from the ledger it is first seen at", () => {
+  // Changed with Codex split R4 #3 (disclosed in docs/decisions.md): it lifted at the first ledger seen +
+  // KIT_DEFAULT_LEDGERS; that expiry is inferred, not known, so it now holds until the person clears it.
+  it("a record from the older, clock-based version is held at every ledger until the person clears it", async () => {
     const kept = stubStorage();
-    kept.set(KEY, JSON.stringify({ id: "old", beat: Date.now() - HOUR }));
+    const old = JSON.stringify({ id: "old", beat: Date.now() - HOUR });
+    kept.set(KEY, old);
     expect(holdOn(SPLIT, null).held).toBe(true);
-    expect(holdOn(SPLIT, 2000).held).toBe(true);
-    // fixed at the first ledger it was seen at, not moved by later reads
-    expect(holdOn(SPLIT, 2000 + KIT_DEFAULT_LEDGERS).held).toBe(true);
-    expect(holdOn(SPLIT, 2001 + KIT_DEFAULT_LEDGERS).held).toBe(false);
+    expect(holdOn(SPLIT, 2000)).toMatchObject({ held: true, reason: "unknown-expiry" });
+    expect(holdOn(SPLIT, 2001 + KIT_DEFAULT_LEDGERS).held).toBe(true);
+    expect(kept.get(KEY)).toBe(old);
+    const { clearUnknown } = await import("../src/lib/split/write-guard");
+    expect(await clearUnknown(SPLIT)).toBe(true);
+    expect(kept.has(KEY)).toBe(false);
   });
 
   it("readLedger refuses an answer without a ledger number", async () => {
@@ -179,12 +184,17 @@ describe("adversary s11 follow-up: the lock of a write whose kit call never sett
     if (second.ok) second.guard.finish({ kind: "done", hash: "ab" });
   });
 
+  // Changed with Codex split R4 #1 (disclosed in docs/decisions.md): holdOn removed it while rendering, without the
+  // lock; it is now removed by clearPassed, under the split's Web Lock. The promise (removed, polling stops) is kept.
   it("a record past its closeBy is removed, so the page stops reading the ledger for it", async () => {
     const kept = stubStorage(new Map([[KEY, JSON.stringify({ v: 2, id: "x", closeBy: 1060 })]]));
-    const { hasWriteRecord } = await import("../src/lib/split/write-guard");
+    const { hasWriteRecord, clearPassed } = await import("../src/lib/split/write-guard");
     expect(holdOn(SPLIT, 1060).held).toBe(true);
     expect(hasWriteRecord(SPLIT)).toBe(true);
     expect(holdOn(SPLIT, 1061).held).toBe(false);
+    await clearPassed(SPLIT, 1060);
+    expect(kept.has(KEY)).toBe(true); // not yet passed
+    await clearPassed(SPLIT, 1061);
     expect(kept.has(KEY)).toBe(false);
     expect(hasWriteRecord(SPLIT)).toBe(false);
   });

@@ -80,7 +80,8 @@ describe("finding this wallet's split contract", () => {
   const mine = splitAddressFor(WALLET);
   it("none on chain: it can be deployed, at the address the wallet always gets", async () => {
     const l = await loadSplit(network({}, "none") as never, WALLET);
-    expect(l).toEqual({ kind: "absent", split: mine });
+    // `ledger` added with Codex split R4 #2 (disclosed in docs/decisions.md): the ledger the lookup was answered at.
+    expect(l).toEqual({ kind: "absent", split: mine, ledger: 100 });
   });
   it("a contract at the address that another owner holds is refused, not shown", async () => {
     const l = await loadSplit(network({ balances: ok(BALANCES_RETVAL), config: ok(CONFIG_RETVAL) }, "live") as never, WALLET);

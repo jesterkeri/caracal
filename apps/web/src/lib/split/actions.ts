@@ -6,7 +6,7 @@
 import { SPLIT, TOKENS } from "../stellar/config";
 import { splitAddressFor } from "../stellar/split-address";
 import { formatUsdc, splitProblem } from "./amounts";
-import { readConfig, readPots, splitStatus, type Pots, type SimulatingRpc, type SplitConfig } from "./chain";
+import { readConfig, readPotsAt, splitStatus, type Pots, type SimulatingRpc, type SplitConfig } from "./chain";
 import { deploySplitFunction, moveFunction, setSplitFunction, withdrawFunction, type Pot } from "./calls";
 import { sendSplitCall, type BuildTx, type SendOutcome, type WriteKit } from "./send";
 import { readInstanceCode, type EntryReader } from "./verify";
@@ -19,11 +19,11 @@ export type Loaded =
    * not return. Deploying is offered: in the second case the network refuses a
    * deployment at an address that is taken, so nothing is made or sent.
    */
-  | { kind: "absent"; split: string }
-  /** It exists and was read. */
-  | { kind: "present"; split: string; pots: Pots; config: SplitConfig }
+  | { kind: "absent"; split: string; ledger: number | null }
+  /** It exists and was read. `ledger`: the ledger its pots were read at (null when the RPC did not say). */
+  | { kind: "present"; split: string; pots: Pots; config: SplitConfig; ledger: number | null }
   /** It exists but its data expired and must be restored first. */
-  | { kind: "archived"; split: string }
+  | { kind: "archived"; split: string; ledger: number | null }
   /** What exists could not be read: the network did not answer, or the contract is not this wallet's. */
   | { kind: "error"; split: string; message: string };
 
@@ -36,9 +36,23 @@ const stopped = (message: string): SendOutcome => ({ kind: "stopped", message })
 /** The split contract of `wallet`: whether it exists, and if so its pots and settings, read from the network. */
 export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefined, wallet: string): Promise<Loaded> {
   const split = splitAddressFor(wallet);
-  const { status } = await splitStatus(server, wallet);
-  if (status === "not-found") return { kind: "absent", split };
-  if (status === "archived") return { kind: "archived", split };
+  // The ledger the lookup was answered at: what is shown is as of it (a write's hold needs a read past its closeBy).
+  let seen: number | null = null;
+  const watched =
+    server && typeof server.getLedgerEntries === "function"
+      ? ({
+          // Only the lookup uses it; the reads below go to the server itself.
+          getLedgerEntries: async (...keys: Parameters<LedgerReader["getLedgerEntries"]>) => {
+            const r = await server.getLedgerEntries(...keys);
+            const at = r?.latestLedger;
+            if (typeof at === "number" && Number.isSafeInteger(at) && at > 0) seen = at;
+            return r;
+          },
+        } as LedgerReader)
+      : server;
+  const { status } = await splitStatus(watched, wallet);
+  if (status === "not-found") return { kind: "absent", split, ledger: seen };
+  if (status === "archived") return { kind: "archived", split, ledger: seen };
   if (status === "unknown" || !server) return { kind: "error", split, message: "Caracal could not reach the Stellar network to look for your split contract. Check your connection and try again." };
   // Not Caracal's split code, or code that could not be checked: show no balance and offer no action.
   const code = await readInstanceCode(server as unknown as EntryReader, split);
@@ -47,12 +61,12 @@ export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefin
   if (code.kind === "unchecked" || code.kind === "absent") return { kind: "error", split, message: "Caracal could not check which code your split contract runs, so it will not show or use it yet. Check your connection and try again." };
   if (code.kind !== "wasm" || code.hash !== SPLIT.wasmHash) return { kind: "error", split, message: "The contract at your split address does not run Caracal's split code, so Caracal will not show its balances or use it." };
   try {
-    const [pots, config] = await Promise.all([readPots(server, split), readConfig(server, split)]);
+    const [{ pots, ledger }, config] = await Promise.all([readPotsAt(server, split), readConfig(server, split)]);
     // Only this wallet can have deployed this address, so a different owner means something is badly wrong.
     if (config.owner !== wallet) return { kind: "error", split, message: "The contract at your split address is not owned by your wallet, so Caracal will not use it." };
     // A split over another token would have its balances shown as USDC.
     if (config.token !== TOKENS.usdc) return { kind: "error", split, message: "Your split contract is set up for a token other than USDC, so Caracal will not show its balances as USDC or use it." };
-    return { kind: "present", split, pots, config };
+    return { kind: "present", split, pots, config, ledger };
   } catch (e) {
     return { kind: "error", split, message: `Your split contract exists, but its balances could not be read: ${e instanceof Error ? e.message : String(e)}` };
   }

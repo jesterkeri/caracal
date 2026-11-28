@@ -113,13 +113,20 @@ describe("finding 1: an unknown write cannot be repeated while it may still land
     expect(holdOn(SPLIT, L).held).toBe(true);
   });
 
-  it("a record that cannot be parsed holds past the kit's default expiry from the ledger it is first seen at, then lifts", () => {
+  // Changed with Codex split R4 #3 (disclosed in docs/decisions.md): this record was given closeBy = the first ledger
+  // seen + KIT_DEFAULT_LEDGERS and then lifted; no ledger proves when such a write stopped being able to land, so it
+  // now holds at every ledger until the person has checked the pots and clears it (clearUnknown, under the lock).
+  it("a record that cannot be parsed holds at every ledger until the person clears it", async () => {
     const kept = stubStorage();
     kept.set(`caracal.split.write.${SPLIT}`, "{not json");
     expect(holdOn(SPLIT, null).held).toBe(true);
     expect(holdOn(SPLIT, L).held).toBe(true);
-    expect(holdOn(SPLIT, L + KIT_DEFAULT_LEDGERS).held).toBe(true);
-    expect(holdOn(SPLIT, L + KIT_DEFAULT_LEDGERS + 1).held).toBe(false);
+    expect(holdOn(SPLIT, L + KIT_DEFAULT_LEDGERS + 1).held).toBe(true);
+    expect(beginWrite(SPLIT, L + KIT_DEFAULT_LEDGERS + 1).ok).toBe(false);
+    expect(kept.get(`caracal.split.write.${SPLIT}`)).toBe("{not json"); // reading it changed nothing
+    const { clearUnknown } = await import("../src/lib/split/write-guard");
+    expect(await clearUnknown(SPLIT)).toBe(true);
+    expect(holdOn(SPLIT, L).held).toBe(false);
   });
 
   it("the page: after an unknown withdrawal, a second click sends nothing and says the first may still go through", async () => {
