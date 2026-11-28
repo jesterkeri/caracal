@@ -15,9 +15,14 @@
 // ledger after closeBy, so once an RPC shows a ledger past it, the payment can no longer land, whatever any
 // clock says. An RPC can lag the network but never run ahead of it. Without a ledger read, the hold stays.
 //
-// A record this browser cannot read, or one from the older, clock-based version (whose payment was signed
-// with the kit's default expiry, at most KIT_DEFAULT_LEDGERS after the ledger it read), is given
-// closeBy = the ledger read now + KIT_DEFAULT_LEDGERS, which is past any such payment's expiry.
+// A record this browser cannot read, or one from the older, clock-based version, carries no closeBy, and no
+// ledger seen later proves when its payment stopped being able to land (ported from Codex split R4 #3). It
+// holds every cash-out until the person checks their USDC balance and says so (clearUnknown).
+//
+// Rendering never changes the record (ported from Codex split R4 #1): it is written, replaced and removed only
+// under this wallet's Web Lock, by beginSend, by finish on a certain outcome (before the payment lets go of the
+// lock), by anchorReceived and by clearUnknown. A passed record does not let the page offer a cash-out at once:
+// the balance must first be read at a ledger past its closeBy (the page, ported from Codex split R4 #2).
 //
 // Checking the record and writing it are two steps, so acquireSend takes this wallet's Web Lock first
 // (atomic across the tabs of one site) and holds it while the payment may still be sent from this tab; the
@@ -47,7 +52,8 @@ export type Earlier = { anchorId: string | null; hash: string | null };
 export type Hold =
   | { held: false }
   | { held: true; until: number | null; reason: "earlier-send"; earlier: Earlier }
-  | { held: true; until: null; reason: "unreadable" | "unsupported" };
+  | { held: true; until: null; reason: "unknown-expiry"; earlier: Earlier }
+  | { held: true; until: null; reason: "unreadable" | "unsupported" | "busy" };
 type Held = Extract<Hold, { held: true }>;
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -89,9 +95,27 @@ function earlierOf(s: Store, wallet: string): Earlier {
 
 const write = (s: Store, wallet: string, r: Rec) => s.setItem(KEY(wallet), JSON.stringify(r));
 
+/** Ids of this tab's payments still being sent: their own record does not ask the page to re-read the balance. */
+const inFlight = new Set<string>();
+
+/**
+ * The closeBy of this wallet's record, unless it is one of this tab's payments still being sent; null when there
+ * is none or it has no closeBy. The page must read the balance at a ledger past it before it offers a cash-out.
+ */
+export function recordCloseBy(wallet: string): number | null {
+  const s = store();
+  if (!s) return null;
+  try {
+    const rec = read(s, wallet);
+    return rec && !inFlight.has(rec.id) ? rec.closeBy : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a cash-out of this wallet must wait, given the latest ledger an RPC showed (null when none was read).
- * Storage that cannot be read holds back.
+ * Storage that cannot be read holds back. Reads only: it never writes or removes the record.
  */
 export function sendHold(wallet: string, ledger: number | null, now: number = Date.now()): Hold {
   const s = store();
@@ -104,17 +128,8 @@ export function sendHold(wallet: string, ledger: number | null, now: number = Da
   }
   if (rec === undefined) return { held: false };
   const known = isLedger(ledger) ? ledger : null;
-  if (rec === null) {
-    // Unreadable or from an older version: bounded from the first ledger it is seen at (see the top).
-    const earlier = earlierOf(s, wallet);
-    if (known === null) return { held: true, until: null, reason: "earlier-send", earlier };
-    try {
-      write(s, wallet, { v: 2, id: "earlier", closeBy: known + KIT_DEFAULT_LEDGERS, ...earlier });
-    } catch {
-      return { held: true, until: null, reason: "unreadable" };
-    }
-    return { held: true, until: now + (KIT_DEFAULT_LEDGERS + 1) * LEDGER_MS, reason: "earlier-send", earlier };
-  }
+  // Unreadable or from an older version: no ledger proves it can no longer land (see the top).
+  if (rec === null) return { held: true, until: null, reason: "unknown-expiry", earlier: earlierOf(s, wallet) };
   const earlier = { anchorId: rec.anchorId, hash: rec.hash };
   if (known === null) return { held: true, until: null, reason: "earlier-send", earlier };
   if (known > rec.closeBy) return { held: false };
@@ -123,15 +138,45 @@ export function sendHold(wallet: string, ledger: number | null, now: number = Da
 
 /**
  * The anchor reported this withdrawal completed or refunded, so it received the payment: the outcome is
- * certain, and a record for that withdrawal is removed.
+ * certain, and a record for that withdrawal is removed, under the wallet's Web Lock (never while a payment of
+ * any tab holds it, so it cannot remove a newer record).
  */
-export function anchorReceived(wallet: string, anchorId: string): void {
-  const s = store();
-  if (!s) return;
-  try {
+export function anchorReceived(wallet: string, anchorId: string, locks: Locks | undefined = browserLocks()): Promise<void> {
+  return underLock(wallet, locks, (s) => {
     if (read(s, wallet)?.anchorId === anchorId) s.removeItem(KEY(wallet));
+  });
+}
+
+/**
+ * Under this wallet's Web Lock, removes a record with no closeBy (unreadable, or from an older version of Caracal)
+ * once the person has checked their balance and said so: the only way past it, since no ledger proves it cannot
+ * land. Resolves true when no such record is left.
+ */
+export async function clearUnknown(wallet: string, locks: Locks | undefined = browserLocks()): Promise<boolean> {
+  let done = false;
+  await underLock(wallet, locks, (s) => {
+    const raw = s.getItem(KEY(wallet));
+    if (raw !== null && raw !== undefined && read(s, wallet) === null) s.removeItem(KEY(wallet));
+    done = s.getItem(KEY(wallet)) === null || read(s, wallet) !== null;
+  });
+  return done;
+}
+
+/** Runs `f` holding this wallet's Web Lock if it is free at once; does nothing when it is taken or cannot be had. */
+async function underLock(wallet: string, locks: Locks | undefined, f: (s: Store) => void): Promise<void> {
+  const s = store();
+  if (!s || !locks || typeof locks.request !== "function") return;
+  try {
+    await locks.request(LOCK(wallet), { ifAvailable: true }, async (lock) => {
+      if (!lock) return;
+      try {
+        f(s);
+      } catch {
+        /* storage refused: the record stays, and so does the hold */
+      }
+    });
   } catch {
-    /* the record stays until the network passes its closeBy */
+    /* the lock could not be had: nothing is changed */
   }
 }
 
@@ -207,6 +252,7 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
   } catch {
     return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   }
+  inFlight.add(id);
   const mine = () => {
     try {
       return read(s, wallet)?.id === id;
@@ -265,17 +311,19 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
         }
       },
       finish(kind) {
+        inFlight.delete(id);
         if (kind === "unknown") {
           unknown = true;
           if (pending === 0) release();
           return;
         }
-        release();
+        // Removed while this payment still holds the lock (release lets go of it), so it cannot remove a newer record.
         try {
           if (mine()) s.removeItem(KEY(wallet));
         } catch {
           /* the record stays until the network passes its closeBy */
         }
+        release();
       },
   };
   return { ok: true, guard };
@@ -328,8 +376,9 @@ function lockAndBegin(wallet: string, anchorId: string, ledger: number, locks: L
       request = locks.request(LOCK(wallet), { ifAvailable: true }, async (lock) => {
         entered = true;
         if (!lock) {
+          // Another tab holds the lock: it is sending, or still holds a payment the record no longer shows (adversary c33).
           const h = sendHold(wallet, ledger);
-          return answer({ ok: false, hold: h.held ? h : { held: true, until: null, reason: "earlier-send", earlier: { anchorId: null, hash: null } } });
+          return answer({ ok: false, hold: h.held ? h : { held: true, until: null, reason: "busy" } });
         }
         let begun: Begun;
         try {
@@ -372,6 +421,13 @@ export async function readLedger(rpc: unknown): Promise<number> {
 export function holdText(hold: Held, now: number = Date.now()): string {
   if (hold.reason === "unsupported") {
     return "This browser cannot keep two of its tabs from sending the same payment, so Caracal sends no USDC from it. Use an up-to-date browser.";
+  }
+  if (hold.reason === "busy") {
+    return "Another tab of this browser is sending a USDC payment from this wallet, or is still waiting on one, so nothing was sent. Finish or close that tab, then press the button again.";
+  }
+  if (hold.reason === "unknown-expiry") {
+    const ref = [hold.earlier.anchorId && `anchor transaction ${hold.earlier.anchorId}`, hold.earlier.hash && `Stellar payment ${hold.earlier.hash}`].filter(Boolean).join(", ");
+    return `This browser holds a record of an earlier USDC payment to the anchor${ref ? ` (${ref})` : ""} that Caracal cannot read, or one from an older version of Caracal, so it cannot tell whether that payment may still go through or when it stops being able to. Check your wallet's USDC balance and history. If they show it went through, or you are sure it did not, press "I have checked my balance" to allow a new cash-out. A repeat of a payment that did go through would pay the anchor twice.`;
   }
   if (hold.reason !== "earlier-send") {
     return "Caracal cannot tell whether an earlier USDC payment from this browser is still on its way, because this browser would not let it check. No USDC can be sent from here until it can. Allow this site to store data, then reload.";

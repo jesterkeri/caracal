@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { acquireSend, anchorReceived, cannotGuard, holdText, holdsSendLock, passLedger, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
+import { acquireSend, anchorReceived, cannotGuard, clearUnknown, holdText, holdsSendLock, passLedger, readLedger, recordCloseBy, sendHold, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -89,6 +89,10 @@ function unpayable(t: AnchorTxn, confirmed: bigint | null): string | null {
 const LAND_WINDOW_MS = 90_000;
 /** How long Send waits to read the balance at the press before sending without it (adversary c19). */
 const BALANCE_AT_SEND_MS = 10_000;
+/** The larger of two ledgers, either of which may be unknown. */
+const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
+const STALE =
+  "The earlier USDC payment can no longer land. Caracal is reading your USDC balance again, and no cash-out can start or send until it has read it as of a later ledger, so you see whether that payment went through.";
 
 /** Statuses whose text tells the person to open the anchor's form. */
 const FORM_STATUSES = new Set(["pending_user", "pending_trust"]);
@@ -135,6 +139,12 @@ export default function CashoutPage() {
   const [heldText, setHeldText] = useState<string | null>(null);
   // The text of an unknown send's outcome: shown only while that payment may still land (adversary c32).
   const [unknownText, setUnknownText] = useState<string | null>(null);
+  // The ledger the balance shown was read at, and one it must be read past after the person cleared a record with
+  // no closeBy (ported from Codex split R4 #2). While a record the network has passed is kept, no cash-out starts or
+  // sends until the balance was read past its closeBy. A record removed means a certain outcome (the anchor received
+  // the payment, or it was proven sent or not sent), so its closeBy is not remembered.
+  const [guardBy, setGuardBy] = useState<number | null>(null);
+  const [balanceAt, setBalanceAt] = useState<number | null>(null);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -155,8 +165,11 @@ export default function CashoutPage() {
     const wallet = walletRef.current;
     if (!kit || !wallet) return Promise.resolve();
     const mine = ++balanceRead.current;
-    return readUsdcBalance(wallet, kit.rpc).then((b) => {
-      if (mine === balanceRead.current) setBalance(b);
+    let at: number | null = null;
+    return readUsdcBalance(wallet, kit.rpc, (l) => (at = l)).then((b) => {
+      if (mine !== balanceRead.current) return;
+      setBalance(b);
+      setBalanceAt(b === null ? null : at);
     });
   }
 
@@ -216,7 +229,7 @@ export default function CashoutPage() {
         // record holding back a new cash-out goes: the anchor received the payment, so its outcome is certain.
         if (t.status === "completed" || t.status === "refunded") {
           setProblem(null);
-          if (wallet) anchorReceived(wallet, t.id);
+          if (wallet) void anchorReceived(wallet, t.id);
         }
         if (phase === "form" && t.status === "pending_user_transfer_start") {
           seenRef.current = payTo(t);
@@ -246,6 +259,34 @@ export default function CashoutPage() {
 
   const preview = info ? previewWithdraw(amountText, info, balance) : null;
 
+  /**
+   * Whether the balance shown was read before an earlier payment of this wallet could no longer land: nothing new
+   * starts or sends then (read fresh, so a click that outruns a render still sees another tab's record).
+   */
+  function balanceStale(w: string): boolean {
+    const need = later(guardBy, recordCloseBy(w));
+    return need !== null && !(balanceAt !== null && balanceAt > need);
+  }
+
+  /** The person has checked their balance after a hold on a record with no closeBy: it is cleared under the lock. */
+  async function checkedBalance() {
+    const kit = kitRef.current;
+    if (boot.kind !== "ready" || !kit) return;
+    let ledger: number;
+    try {
+      ledger = await readLedger(kit.rpc);
+    } catch {
+      return setProblem("Caracal could not read the Stellar network, so the earlier record stays. Check your connection and try again.");
+    }
+    if (!(await clearUnknown(boot.wallet))) {
+      return setProblem("Caracal could not clear the earlier record, because another tab of this browser is sending a payment or this browser would not let it. Try again in a moment.");
+    }
+    // The balance must be read again, as of this ledger or later, before a cash-out is offered.
+    setGuardBy((g) => later(g, ledger - 1));
+    setSeenLedger(ledger);
+    setProblem(null);
+  }
+
   /** Refuses with the hold's text; one about an earlier payment is remembered, so it goes once the hold lifts. */
   function refuseHeld(h: Parameters<typeof holdText>[0]) {
     const t = holdText(h);
@@ -259,6 +300,7 @@ export default function CashoutPage() {
     // An earlier payment from this browser (this page before a reload, or another tab) may still land.
     const held = sendHold(boot.wallet, seenLedger);
     if (held.held) return refuseHeld(held);
+    if (balanceStale(boot.wallet)) return setProblem(STALE);
     // A browser that could not guard the payment would only be refused at Send, after the sign-in and the anchor's
     // form: refuse before anything starts (adversary c30).
     const cannot = cannotGuard(boot.wallet);
@@ -330,6 +372,14 @@ export default function CashoutPage() {
       return;
     }
     setSeenLedger(ledger);
+    // The balance shown must be read past every earlier payment's closeBy this tab knows of (ported from Codex split
+    // R4 #2). While the record says it can still land, the guard below refuses with that reason instead.
+    if (!sendHold(boot.wallet, ledger).held && balanceStale(boot.wallet)) {
+      sendingFor.current = null;
+      setProblem(STALE);
+      setPhase("confirm");
+      return;
+    }
     // Recorded in this browser before the passkey is asked, so a reload, a crash or another tab cannot start a
     // second payment while this one may still land (Codex cash-out R1 #1, send-guard.ts).
     const begun = await acquireSend(boot.wallet, latest.id, ledger);
@@ -452,9 +502,14 @@ export default function CashoutPage() {
   // the hold has lifted (a kit call that has not settled), and each reading lets go of the lock of a payment the
   // network has passed, so another tab is not refused until that call settles (ported from split adversary s13).
   const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
+  // Rendering only reads the record: it never writes or removes it (ported from Codex split R4 #1).
+  const seenBy = wallet ? recordCloseBy(wallet) : null;
+  const mustPass = later(guardBy, seenBy);
+  const stale = !hold.held && mustPass !== null && !(balanceAt !== null && balanceAt > mustPass);
+  const gate = hold.held || stale;
   useEffect(() => {
-    if (!wallet || (!hold.held && !holdsSendLock(wallet))) return;
-    const held = hold.held;
+    if (!wallet || (!hold.held && !holdsSendLock(wallet) && !stale)) return;
+    const held = hold.held || stale;
     let gone = false;
     const look = () => {
       if (!held && !holdsSendLock(wallet)) return clearInterval(t);
@@ -473,7 +528,7 @@ export default function CashoutPage() {
       gone = true;
       clearInterval(t);
     };
-  }, [hold.held, wallet]);
+  }, [hold.held, wallet, stale]);
   // The payment can no longer land once the landing window is over AND the network has passed its closeBy
   // (the hold has lifted): only the ledger proves it, and the page never offers what the hold would refuse
   // (adversary c27). The balance is read again then, and the page says so only after that read: the advice to
@@ -498,11 +553,17 @@ export default function CashoutPage() {
     phase === "watching" && unknownSend && !landingOver && !(txn !== null && (txn.status === "completed" || txn.status === "refunded"));
   // Never while the USDC payment is being sent: starting again then would lose track of it; never while the
   // hold would refuse the new one (adversary c27).
-  const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending" && !hold.held;
+  const canStartAnother = (done || lostSession || pastLanding) && !mayStillLand && phase !== "sending" && !gate;
   // A refusal for an earlier payment is not kept on screen once the network has passed it (adversary c31), nor an
   // unknown send's "may still go through" once the page no longer holds that it may (adversary c32).
   const heldGone = problem !== null && problem === heldText && !hold.held;
   const unknownGone = problem !== null && problem === unknownText && !mayStillLand;
+  // Once the network is past the earlier payment's closeBy, the balance is read again, as of a later ledger.
+  useEffect(() => {
+    if (!stale || seenLedger === null || mustPass === null || seenLedger <= mustPass) return;
+    const t = setTimeout(() => void refreshBalance().catch(() => {}), 0);
+    return () => clearTimeout(t);
+  }, [stale, seenLedger, mustPass]);
   const shownProblem = heldGone
     ? null
     : unknownGone
@@ -564,7 +625,13 @@ export default function CashoutPage() {
                 </dl>
               )}
               {hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
-              <button className="btn btn-primary btn-block" disabled={!preview?.ok || hold.held} onClick={start}>
+              {hold.held && hold.reason === "unknown-expiry" && (
+                <button className="btn btn-secondary btn-sm self-start" onClick={checkedBalance}>
+                  I have checked my balance
+                </button>
+              )}
+              {stale && problem !== STALE && <p className="msg msg-unsure">{STALE}</p>}
+              <button className="btn btn-primary btn-block" disabled={!preview?.ok || gate} onClick={start}>
                 Continue to the anchor
               </button>
               <p className="muted small">
@@ -632,7 +699,13 @@ export default function CashoutPage() {
                   {/* An earlier payment (another tab's, or before a reload) may still land: Send would be refused, so it
                       is not offered while the hold holds, and the hold is shown here too (adversary c32). */}
                   {phase === "confirm" && hold.held && <p className="msg msg-unsure">{holdText(hold)}</p>}
-                  <button className="btn btn-primary btn-block" disabled={phase === "sending" || hold.held} onClick={send}>
+                  {phase === "confirm" && hold.held && hold.reason === "unknown-expiry" && (
+                    <button className="btn btn-secondary btn-sm self-start" onClick={checkedBalance}>
+                      I have checked my balance
+                    </button>
+                  )}
+                  {phase === "confirm" && stale && problem !== STALE && <p className="msg msg-unsure">{STALE}</p>}
+                  <button className="btn btn-primary btn-block" disabled={phase === "sending" || gate} onClick={send}>
                     {phase === "sending" ? "Waiting for your passkey..." : `Send ${txn.amountIn ?? ""} USDC to the anchor`}
                   </button>
                 </>

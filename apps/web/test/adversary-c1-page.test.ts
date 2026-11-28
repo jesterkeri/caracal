@@ -208,7 +208,7 @@ async function mount(over: { txn?: Record<string, unknown>; hang?: (url: string)
   vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: async () => kit }));
   vi.doMock("@/lib/anchor/transfer", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/anchor/transfer")>("../src/lib/anchor/transfer");
-    return { ...actual, readUsdcBalance: world.kit.readBalance, buildAnchorTransfer: async () => ({ assembled: true }) };
+    return { ...actual, readUsdcBalance: balanceAtLedger(world.kit.readBalance), buildAnchorTransfer: async () => ({ assembled: true }) };
   });
   const mod = await import("../src/app/cashout/page");
   rt = runtime(mod.default as () => unknown);
@@ -327,3 +327,19 @@ describe("adversary c1: the cash-out page, end to end with a working hook runtim
     rt.unmount();
   });
 });
+
+// Fixture changed with the port of Codex split R4 #2 (disclosed in docs/decisions.md): the real readUsdcBalance
+// reports the ledger its simulation ran at; the fake reports the fake network's ledger at the moment of the read.
+function balanceAtLedger(read: (...a: unknown[]) => Promise<unknown>) {
+  return async (wallet: unknown, rpc: { getLatestLedger?: () => Promise<{ sequence: number }> }, at?: (l: number) => void) => {
+    const b = await read(wallet, rpc);
+    if (b !== null && at && rpc && typeof rpc.getLatestLedger === "function") {
+      try {
+        at((await rpc.getLatestLedger()).sequence);
+      } catch {
+        /* no ledger to report */
+      }
+    }
+    return b;
+  };
+}

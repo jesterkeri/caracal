@@ -107,7 +107,8 @@ export async function buildAnchorTransfer(wallet: string, payment: AnchorPayment
 }
 
 /** The wallet's USDC balance in stroops, or null if the network could not say. Read-only. */
-export async function readUsdcBalance(wallet: string, server: rpc.Server): Promise<bigint | null> {
+/** `at` is told the ledger the balance was read at, when the RPC says (a payment's hold needs a read past its closeBy). */
+export async function readUsdcBalance(wallet: string, server: rpc.Server, at?: (ledger: number) => void): Promise<bigint | null> {
   try {
     const source = new Account("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "0");
     const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: NETWORK.passphrase })
@@ -128,7 +129,10 @@ export async function readUsdcBalance(wallet: string, server: rpc.Server): Promi
     const sim = await within(server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(sim) || !sim.result) return null;
     const v = scValToNative(sim.result.retval);
-    return typeof v === "bigint" ? v : null;
+    if (typeof v !== "bigint") return null;
+    const l = (sim as { latestLedger?: unknown }).latestLedger;
+    if (typeof l === "number" && Number.isSafeInteger(l) && l > 0) at?.(l);
+    return v;
   } catch {
     return null;
   }

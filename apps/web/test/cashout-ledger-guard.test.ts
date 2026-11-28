@@ -37,23 +37,31 @@ describe("the cash-out hold: no clock decides when a payment can no longer land"
     expect(sendHold(WALLET, 1001 + SEND_LEDGERS).held).toBe(false);
   });
 
-  it("a record from the older, clock-based version is held past the kit's default expiry, and still names the anchor transaction", () => {
+  // Changed with the port of Codex split R4 #3 (disclosed in docs/decisions.md): it lifted at the first ledger seen +
+  // KIT_DEFAULT_LEDGERS, an inferred expiry; it now holds at every ledger until the person clears it (clearUnknown).
+  it("a record from the older, clock-based version is held at every ledger until the person clears it, and still names the anchor transaction", async () => {
     const kept = storage();
-    kept.set(KEY, JSON.stringify({ id: "old", beat: Date.now() - HOUR, anchorId: "a1", hash: null }));
+    const old = JSON.stringify({ id: "old", beat: Date.now() - HOUR, anchorId: "a1", hash: null });
+    kept.set(KEY, old);
     const first = sendHold(WALLET, 2000);
-    expect(first).toMatchObject({ held: true, reason: "earlier-send", earlier: { anchorId: "a1" } });
-    expect(sendHold(WALLET, 2000 + KIT_DEFAULT_LEDGERS).held).toBe(true);
-    expect(sendHold(WALLET, 2001 + KIT_DEFAULT_LEDGERS).held).toBe(false);
+    expect(first).toMatchObject({ held: true, reason: "unknown-expiry", earlier: { anchorId: "a1" } });
+    expect(sendHold(WALLET, 2001 + KIT_DEFAULT_LEDGERS).held).toBe(true);
+    expect(kept.get(KEY)).toBe(old); // reading it changed nothing
+    const { clearUnknown } = await import("../src/lib/anchor/send-guard");
+    expect(await clearUnknown(WALLET)).toBe(true);
+    expect(sendHold(WALLET, 2000).held).toBe(false);
   });
 
-  it("the anchor reporting the withdrawal received removes only that withdrawal's record", () => {
+  // anchorReceived is now async (it removes under the wallet's Web Lock, port of Codex split R4 #1): awaited, no
+  // assertion changed (disclosed in docs/decisions.md).
+  it("the anchor reporting the withdrawal received removes only that withdrawal's record", async () => {
     const kept = storage();
     const begun = beginSend(WALLET, "a1", 1000);
     if (!begun.ok) throw new Error("should begin");
     begun.guard.finish("unknown");
-    anchorReceived(WALLET, "other");
+    await anchorReceived(WALLET, "other");
     expect(kept.has(KEY)).toBe(true);
-    anchorReceived(WALLET, "a1");
+    await anchorReceived(WALLET, "a1");
     expect(kept.has(KEY)).toBe(false);
     expect(sendHold(WALLET, 1001).held).toBe(false);
   });
