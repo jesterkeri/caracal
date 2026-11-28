@@ -170,7 +170,7 @@ describe("r4j follow-up: starting a new wallet after an unknown outcome", () => 
     await click(first.tree, "Create wallet")!();
     await settle();
     b.local.set("caracal.creationStartedAt", String(Date.now() - startedAgoMs));
-    b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+    b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
     const state = first.setters.filter((s) => s.i === 0).at(-1)!.v;
     vi.resetModules();
     const create = vi.spyOn(b.kit, "createWallet");
@@ -215,7 +215,7 @@ describe("r4k follow-up: the marker per account, and its start time", () => {
     b.local.set(KEY, "A,B");
     const pb2 = await render(b, B, [{ kind: "idle", knownWallet: true, checkFirst: true }, "Bola", B]);
     b.local.set("caracal.creationStartedAt", String(Date.now() - 4 * 60_000));
-    b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+    b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999, B: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
     await click(pb2.tree, "Start a new one anyway")!();
     await settle();
     expect(b.local.get(KEY)).toBe("A");

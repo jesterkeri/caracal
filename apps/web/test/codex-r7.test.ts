@@ -204,7 +204,8 @@ describe("Codex R7 #1: the page records closeBy before sending and sends it", ()
     await new Promise((r) => setTimeout(r, 20));
     expect(createWallet).toHaveBeenCalledTimes(1);
     const closeBy = 5000 + CREATION_CLOSE_LEDGERS;
-    expect(atSend.recorded).toBe(String(closeBy));
+    // Changed with Codex Day 1 R8 #1: the close ledger is recorded per account ({ accountId: ledger }).
+    expect(JSON.parse(atSend.recorded!)).toEqual({ A: closeBy });
     expect(atSend.url).toBe(`https://caracal.test/api/relay?closeBy=${closeBy}`);
     expect(relayer.url).toBe("https://caracal.test/api/relay");
   });
@@ -225,7 +226,7 @@ describe("Codex R7 #2: a pending wallet the network does not show stays uncertai
     new Map<string, string>([
       ["caracal.creationUnconfirmed", "A"],
       ["caracal.creationStartedAt", String(Date.now() - 4 * 60_000)],
-      ["caracal.creationCloseLedger", "1024"],
+      ["caracal.creationCloseLedger", JSON.stringify({ A: 1024 })],
       ["caracal.creationPendingWallet", JSON.stringify({ A: PENDING })],
       ...Object.entries(extra),
     ]);

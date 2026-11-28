@@ -121,6 +121,8 @@ const NETWORK_UNREAD_BEFORE_CREATE =
   "Caracal could not read the Stellar network, so nothing was created or sent. Check your connection and try again.";
 const earlierNotFound = (wallet: string) =>
   `The earlier attempt can no longer land, and its wallet ${wallet} was not found on Stellar testnet. That does not prove it was not made: the network may not show a wallet whose data has expired. Use "I already have a wallet" with that passkey to check. If you make a new wallet anyway and the first one exists, you will have two; Caracal keeps showing the first address here.`;
+const notSaved = (wallet: string) =>
+  `Caracal could not save the earlier attempt's wallet address in this browser, so it has not started a new wallet: if the earlier wallet exists, this address would be lost. Copy it and keep it somewhere safe: ${wallet}. Then you can make a new wallet.`;
 const possiblyMade = (wallets: string[]) =>
   `An earlier attempt may have made ${wallets.length === 1 ? "the wallet" : "the wallets"} ${wallets.join(", ")}. The network did not show ${wallets.length === 1 ? "it" : "them"}, which does not prove ${wallets.length === 1 ? "it does" : "they do"} not exist. If you made ${wallets.length === 1 ? "it" : "one"} with a passkey on this device, "I already have a wallet" opens it.`;
 const attemptLanded = (wallet: string) =>
@@ -188,6 +190,8 @@ type State =
       storageUnread?: boolean;
       /** The earlier attempt's wallet, not found: a new wallet only as a choice made knowing it may exist. */
       notFound?: string;
+      /** That address could not be saved in this browser: a new wallet only once the person has kept it themselves. */
+      unsaved?: boolean;
     };
 
 /** A state's remembered wallet, or that this browser's record of it could not be read. */
@@ -337,7 +341,7 @@ export default function WalletPage() {
    * anyway: the person chose to start a new wallet after an unknown outcome.
    * secondTo: the person chose a second wallet, having been shown this one.
    */
-  async function create(choice: { anyway?: boolean; secondTo?: string; despiteNotFound?: string } = {}) {
+  async function create(choice: { anyway?: boolean; secondTo?: string; despiteNotFound?: string; keptByPerson?: string } = {}) {
     if (!account) return; // a wallet is always bound to its signed-in owner
     const me = account;
     const out = await withCreationLock(browserLocks(), () => createHoldingLock(me, choice));
@@ -358,7 +362,7 @@ export default function WalletPage() {
   async function attemptSettled(me: Account): Promise<true | { notFound: string } | string> {
     // The close ledger was recorded before the attempt was sent, and the relay
     // let it land no later (creation-marker.ts). Without it nothing bounds it.
-    const close = closeLedger();
+    const close = closeLedger(me.id);
     if (close === null) return CLOSE_LEDGER_UNKNOWN;
     let rpc: unknown;
     try {
@@ -383,7 +387,7 @@ export default function WalletPage() {
 
   async function createHoldingLock(
     me: Account,
-    { anyway = false, secondTo, despiteNotFound }: { anyway?: boolean; secondTo?: string; despiteNotFound?: string },
+    { anyway = false, secondTo, despiteNotFound, keptByPerson }: { anyway?: boolean; secondTo?: string; despiteNotFound?: string; keptByPerson?: string },
   ) {
     if (anyway) {
       // Only once the last attempt cannot still finish (creation-marker.ts):
@@ -405,7 +409,12 @@ export default function WalletPage() {
           setState({ kind: "error", message: earlierNotFound(settled.notFound), checkFirst: true, remembered: secondTo, notFound: settled.notFound });
           return;
         }
-        rememberPossibleWallet(me.id, settled.notFound);
+        // The address must be kept before the attempt's record (which holds it) is cleared: saved here, or,
+        // where this browser will not save it, kept by the person, told so (Codex Day 1 R8 #2).
+        if (!rememberPossibleWallet(me.id, settled.notFound) && keptByPerson !== settled.notFound) {
+          setState({ kind: "error", message: notSaved(settled.notFound), checkFirst: true, remembered: secondTo, notFound: settled.notFound, unsaved: true });
+          return;
+        }
       }
       markCreation(me.id, false);
     }
@@ -476,7 +485,7 @@ export default function WalletPage() {
       markCreation(me.id, true, typeof wallet === "string" ? wallet : undefined);
     });
     markCreation(me.id, true);
-    recordCloseLedger(closeBy);
+    recordCloseLedger(me.id, closeBy);
     // While the attempt runs, its start time is renewed, so if this tab
     // closes mid-attempt the wait counts from its last sign of life.
     const beat = setInterval(() => markCreation(me.id, true), CREATION_HEARTBEAT_MS);
@@ -682,7 +691,16 @@ export default function WalletPage() {
               No wallet found? Start a new one anyway
             </button>
           )}
-          {state.kind === "error" && state.notFound && (
+          {state.kind === "error" && state.notFound && state.unsaved && (
+            // The address could not be saved here: a new wallet only once the person says they kept it.
+            <button
+              className="link small self-start text-left"
+              onClick={() => create({ anyway: true, secondTo: state.remembered, despiteNotFound: state.notFound, keptByPerson: state.notFound })}
+            >
+              I have kept the address. Make a new wallet
+            </button>
+          )}
+          {state.kind === "error" && state.notFound && !state.unsaved && (
             // The earlier attempt's wallet was not found, which does not prove
             // it was not made: a new wallet only as a choice made knowing that.
             <button

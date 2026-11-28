@@ -1,7 +1,7 @@
 // Codex R6 (2026-11-27) regression tests for the relay findings:
 // #4 the 60 s send deadline is measured on a monotonic clock and checked again just before sending;
 // #5 a shared-deployer wallet deployment authorised with ADDRESS_V2 credentials is re-signed, not refused;
-// adversary i6 #2: an HTTP 429 from Channels says "Nothing was sent".
+// adversary i6 #2: an HTTP 429 from Channels said "Nothing was sent" (reversed by Codex Day 1 R8 #3: now unknown).
 import { Address, Keypair, Networks, buildAuthorizationEntryPreimage, hash, rpc, xdr } from "@stellar/stellar-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SMART_ACCOUNT } from "../src/lib/stellar/config";
@@ -267,30 +267,30 @@ describe("Codex R6 #1: a deployment can land after the 3-minute wait if ledgers 
   });
 
   it("a stalled network (close ledger not yet reached) still creates nothing, however long it has been", async () => {
-    const r = await escapeAfterFourMinutes({ latest: 1010 }, { "caracal.creationCloseLedger": "1024" });
+    const r = await escapeAfterFourMinutes({ latest: 1010 }, { "caracal.creationCloseLedger": JSON.stringify({ A: 1024 }) });
     expect(r.created).toBe(0);
     expect(r.last.message).toMatch(/until ledger 1024 has closed/);
   });
 
   it("at the close ledger itself it still waits (the attempt may land in that ledger)", async () => {
-    const r = await escapeAfterFourMinutes({ latest: 1024 }, { "caracal.creationCloseLedger": "1024" });
+    const r = await escapeAfterFourMinutes({ latest: 1024 }, { "caracal.creationCloseLedger": JSON.stringify({ A: 1024 }) });
     expect(r.created).toBe(0);
   });
 
   it("control: once the network is past the close ledger, the person's choice starts a creation", async () => {
-    const r = await escapeAfterFourMinutes({ latest: 1025 }, { "caracal.creationCloseLedger": "1024" });
+    const r = await escapeAfterFourMinutes({ latest: 1025 }, { "caracal.creationCloseLedger": JSON.stringify({ A: 1024 }) });
     expect(r.created, JSON.stringify(r.last)).toBe(1);
   });
 
   it("past the close ledger, an attempt whose own wallet is on the chain is named instead of making a second", async () => {
-    const r = await escapeAfterFourMinutes({ latest: 1025 }, { "caracal.creationCloseLedger": "1024", "caracal.creationPendingWallet": JSON.stringify({ A: WALLET_A }) }, [{ liveUntilLedgerSeq: 9999 }]);
+    const r = await escapeAfterFourMinutes({ latest: 1025 }, { "caracal.creationCloseLedger": JSON.stringify({ A: 1024 }), "caracal.creationPendingWallet": JSON.stringify({ A: WALLET_A }) }, [{ liveUntilLedgerSeq: 9999 }]);
     expect(r.created).toBe(0);
     expect(r.last.message).toMatch(/created your wallet after all/);
     expect(r.last.message).toContain(WALLET_A);
   });
 
   it("a network that cannot be read creates nothing and says the outcome cannot be told yet", async () => {
-    const r = await escapeAfterFourMinutes({ latest: new Error("down") }, { "caracal.creationCloseLedger": "1024" });
+    const r = await escapeAfterFourMinutes({ latest: new Error("down") }, { "caracal.creationCloseLedger": JSON.stringify({ A: 1024 }) });
     expect(r.created).toBe(0);
     expect(r.last.message).toMatch(/cannot tell yet whether the earlier attempt can still finish/);
   });

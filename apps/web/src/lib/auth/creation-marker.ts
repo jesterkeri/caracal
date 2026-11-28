@@ -33,15 +33,17 @@ export const CREATION_STARTED_AT_KEY = "caracal.creationStartedAt";
  */
 export const CREATION_SETTLE_MS = 3 * 60_000;
 /**
- * The last ledger in which any unconfirmed attempt on this browser can land.
- * Before sending, the page reads the network's latest ledger, adds
- * CREATION_CLOSE_LEDGERS, records the result here and sends it to the relay
- * as `closeBy`. The relay re-signs the deployment's authorisation to expire no
+ * The last ledger in which each account's unconfirmed attempt can land
+ * ({ accountId: ledger }, JSON). Before sending, the page reads the network's
+ * latest ledger, adds CREATION_CLOSE_LEDGERS, records the result here for its
+ * account and sends it to the relay as `closeBy`. The relay re-signs the deployment's authorisation to expire no
  * later than that ledger, and refuses to send once the network has reached it
  * (deploy-auth.ts), so an attempt cannot land after it, whatever any RPC's lag
  * or any clock. The page's own RPC reporting a later ledger proves the network
- * passed it. Only ever raised while attempts are unconfirmed (several accounts
- * keep the latest), and removed once none is.
+ * passed it. Each account's bound is its own: an attempt with no bound recorded
+ * stays unknown, and another account's later attempt never bounds it (Codex
+ * Day 1 R8 #1). An account's entry goes when its attempt is cleared. A value
+ * in the older single-number form names no account, so it bounds none.
  */
 export const CREATION_CLOSE_LEDGER_KEY = "caracal.creationCloseLedger";
 /**
@@ -65,34 +67,51 @@ export const CREATION_HEARTBEAT_MS = 10_000;
 export function creationMarker(store: KeyValue, now: () => number = () => Date.now()) {
   /** When this page last started a creation (kept in memory too, for browsers that block storage). */
   let startedHere = 0;
-  /** The close ledger this page recorded (kept in memory too, for browsers that block storage). */
-  let closeHere: number | null = null;
+  /** The close ledgers this page recorded, per account (kept in memory too, for browsers that block storage). */
+  const closeHere = new Map<string, number>();
 
-  /** The ledger after which the latest attempt can no longer land, if recorded. */
-  function closeLedger(): number | null {
+  /** Every account's recorded close ledger. Anything unreadable, or in the older single-number form, names none. */
+  function closeLedgers(): Record<string, number> {
     try {
-      const v = Number(store.getItem(CREATION_CLOSE_LEDGER_KEY));
-      if (Number.isSafeInteger(v) && v > 0) return closeHere !== null && closeHere > v ? closeHere : v;
-      return closeHere;
+      const v: unknown = JSON.parse(store.getItem(CREATION_CLOSE_LEDGER_KEY) ?? "{}");
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return {};
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((e): e is [string, number] => Number.isSafeInteger(e[1]) && (e[1] as number) > 0));
     } catch {
-      return closeHere;
+      return {};
     }
   }
 
+  /** The ledger after which this account's attempt can no longer land; null when none was recorded for it. */
+  function closeLedger(id: string): number | null {
+    const stored = closeLedgers()[id];
+    const here = closeHere.get(id);
+    if (stored === undefined) return here ?? null;
+    return here !== undefined && here > stored ? here : stored;
+  }
+
   /**
-   * Records an attempt's close ledger before it is sent (see
-   * CREATION_CLOSE_LEDGER_KEY). Never lowers one already recorded. With
-   * storage blocked it is kept in memory, all this page could read back anyway.
+   * Records this account's attempt's close ledger before it is sent (see
+   * CREATION_CLOSE_LEDGER_KEY). Never lowers the one already recorded for it.
+   * With storage blocked it is kept in memory, all this page could read back anyway.
    */
-  function recordCloseLedger(ledger: number) {
-    const before = closeLedger();
+  function recordCloseLedger(id: string, ledger: number) {
+    const before = closeLedger(id);
     const next = before !== null && before > ledger ? before : ledger;
-    closeHere = next;
+    closeHere.set(id, next);
     try {
-      store.setItem(CREATION_CLOSE_LEDGER_KEY, String(next));
+      store.setItem(CREATION_CLOSE_LEDGER_KEY, JSON.stringify({ ...closeLedgers(), [id]: next }));
     } catch (e) {
       console.error("could not record the close ledger:", e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /** Drops this account's close ledger (its attempt was cleared); the key goes once none is left. */
+  function forgetCloseLedger(id: string) {
+    closeHere.delete(id);
+    const rest = closeLedgers();
+    delete rest[id];
+    if (Object.keys(rest).length === 0) store.removeItem(CREATION_CLOSE_LEDGER_KEY);
+    else store.setItem(CREATION_CLOSE_LEDGER_KEY, JSON.stringify(rest));
   }
 
   function possibleWallets(): Record<string, string[]> {
@@ -110,15 +129,21 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
     return Array.isArray(list) ? list.filter((w): w is string => typeof w === "string") : [];
   }
 
-  /** Keeps an address an earlier attempt may have made, before a new wallet is started anyway. */
-  function rememberPossibleWallet(id: string, wallet: string) {
+  /**
+   * Keeps an address an earlier attempt may have made, before a new wallet is started anyway. True only when
+   * the address reads back from storage: otherwise the caller must not drop the attempt's record, which is
+   * then the only place the address is kept (Codex Day 1 R8 #2).
+   */
+  function rememberPossibleWallet(id: string, wallet: string): boolean {
     try {
       const all = possibleWallets();
       const list = possibleWalletsFor(id);
       if (!list.includes(wallet)) all[id] = [...list, wallet];
       store.setItem(POSSIBLE_WALLETS_KEY, JSON.stringify(all));
+      return possibleWalletsFor(id).includes(wallet);
     } catch (e) {
       console.error("could not record the earlier attempt's wallet:", e instanceof Error ? e.message : String(e));
+      return false;
     }
   }
 
@@ -195,9 +220,10 @@ export function creationMarker(store: KeyValue, now: () => number = () => Date.n
     try {
       const others = unconfirmedIds().filter((x) => x !== id);
       const ids = unconfirmed ? [...others, id] : others;
+      if (!unconfirmed) forgetCloseLedger(id);
       if (ids.length === 0) {
-        // No attempt is unconfirmed: the close ledger bounds nothing any more.
-        closeHere = null;
+        // No attempt is unconfirmed: no close ledger bounds anything any more.
+        closeHere.clear();
         store.removeItem(CREATION_UNCONFIRMED_KEY);
         store.removeItem(CREATION_STARTED_AT_KEY);
         store.removeItem(CREATION_CLOSE_LEDGER_KEY);

@@ -112,7 +112,7 @@ async function unknownCreation(b: ReturnType<typeof browser>, stamp: (now: numbe
   expect(b.createWallet).toHaveBeenCalledTimes(1);
   expect(b.local.get("caracal.creationUnconfirmed")).toBe("A");
   b.local.set("caracal.creationStartedAt", String(stamp(Date.now())));
-  b.local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+  b.local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
   vi.resetModules();
   return lastState(first.setters);
 }
