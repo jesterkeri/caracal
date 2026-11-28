@@ -130,13 +130,14 @@ describe("reading the real captured answers", () => {
     expect(isoFromUnix(realTx.transaction.createdAt)).toBe("2026-11-25T21:17:43Z");
   });
 
-  it("the real instance entry runs Caracal's split wasm (read through the real RPC client with a stubbed network)", async () => {
+  // Captured from the 2026-11-25 split, which runs the earlier wasm (SPLIT.earlierWasmHashes; the pin moved 2026-11-28).
+  it("the real instance entry runs Caracal's earlier split wasm (read through the real RPC client with a stubbed network)", async () => {
     const chain = rpcChainReader("https://rpc.example", (async (_u: string, init: { body: string }) => {
       const { method } = JSON.parse(init.body);
       expect(method).toBe("getLedgerEntries");
       return Response.json({ jsonrpc: "2.0", id: 1, result: real.ledgerEntries });
     }) as never);
-    expect(await chain.instance(real.contract)).toEqual({ kind: "wasm", hash: SPLIT.wasmHash });
+    expect(await chain.instance(real.contract)).toEqual({ kind: "wasm", hash: SPLIT.earlierWasmHashes[0] });
   });
 
   it("a contract the RPC has no entry for is absent (real answer)", async () => {

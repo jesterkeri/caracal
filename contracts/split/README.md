@@ -92,6 +92,15 @@ stellar contract id asset --asset USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4
 
 ## Testnet deployment
 
+Current wasm (uploaded 2026-11-28; the constructor emits a `created` v1 event, which the tax page needs):
+
+- WASM hash (sha256): `ca6befd2b75c60ef2b3019667c11e26e675364aa4b0380783d8589b62d07f56c`
+- Upload tx: https://stellar.expert/explorer/testnet/tx/b6585d3a968922cd6a51e0c6b437895ba20975f3f3c364968625b844e2969578
+- Test instance (owner the CLI deployer `GDO5SPZ7UYT3M6S4WQ4SM5UQ7XGKIKTXWMPG2SONWFD2LULZXBEULKGX`, 1000 / 1500 bps): `CAI7VA2CZLCFNJ23BSYSU3PNCGF2VMWVH64TD4XTQPYTR6PKPZI5YJXB`, deploy tx https://stellar.expert/explorer/testnet/tx/5e002c238cb1fe577a8f3c941f82f10e2a2f6447fe817fc429b6837c818c83e9
+- A passkey wallet's own split on it, deployed through the relay: wallet `CANB3DLHZQJJ3P65XZ7H2E3R5B5AT4NEORZ7T7DOSPO4NV3S5OE2553M`, split `CDKI3ZD4DK5EGXK523CR73NV75TBT5RPUB3J52X4I4GK3YE36NSNAWHA`, tx https://stellar.expert/explorer/testnet/tx/33a83d1fdad53ffe176e0d8233eb5531b2af9fd6e52eebe4fb646a6ff846e7f8
+
+The instance below runs the earlier wasm. The relay still sponsors calls on splits from it, but no longer deploys it.
+
 Current instance (2026-11-25, `withdraw` refuses the contract's own address as recipient):
 
 - Contract id: `CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M`

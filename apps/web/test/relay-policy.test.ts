@@ -233,7 +233,7 @@ describe("WindowLimiter", () => {
 describe.runIf(process.env.CARACAL_NETWORK_TESTS === "1")("rpcWasmLookup on testnet", () => {
   const live = rpcWasmLookup(NETWORK.rpcUrl);
   it("reads the wasm hash of the deployed split contract and the passkey wallet", async () => {
-    expect(await live(SPLIT_ID)).toBe(SPLIT.wasmHash);
+    expect(await live(SPLIT_ID)).toBe(SPLIT.earlierWasmHashes[0]); // deployed 2026-11-25 from the earlier wasm
     expect(await live(WALLET)).toBe(SMART_ACCOUNT.accountWasmHash);
   }, 30_000);
   it("returns null for the USDC SAC (no wasm)", async () => {

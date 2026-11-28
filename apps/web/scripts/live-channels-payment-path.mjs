@@ -15,7 +15,7 @@ import { Address, Keypair, authorizeEntry, hash, rpc, xdr } from "@stellar/stell
 const RELAY = process.argv[2] ?? "http://localhost:3000/api/relay";
 const PASS = "Test SDF Network ; September 2015";
 const ACCOUNT_WASM = "c514d35ea67eaea9bfc1fb3327854c0c06111bc1ddebd4fe217c504c1004b9e1";
-const SPLIT_WASM = "b97d71c33aa88dbc12bacb07f4903590e2a0ad4fc4729219e8e9c94d6c2f8c58";
+const SPLIT_WASM = "ca6befd2b75c60ef2b3019667c11e26e675364aa4b0380783d8589b62d07f56c";
 const VERIFIER = "CC7EKIHQP3TN4CARQDND6CEOY2UXLWWC2X5GHTD5NLAT7BG5GPZIOM3F";
 const USDC = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const ORIGIN = "http://localhost:3000";
@@ -76,7 +76,7 @@ await relay("wallet deploy (proxy path)", { func: xdr.HostFunction.hostFunctionT
 
 // 2. The wallet deploys its own split contract: (owner, token, tax_bps, goal_bps).
 const splitPreimage = xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-  new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: randomBytes(32) }),
+  new xdr.ContractIdPreimageFromAddress({ address: Address.fromString(WALLET).toScAddress(), salt: createHash("sha256").update("caracal-split-v1").digest() }),
 );
 const splitArgs = new xdr.CreateContractArgsV2({
   contractIdPreimage: splitPreimage,

@@ -24,10 +24,18 @@ export const SMART_ACCOUNT = {
 } as const;
 
 export const SPLIT = {
-  // sha256 of contracts/split wasm (invoice binding + withdraw-to-self guard),
-  // deployed 2026-11-25 as CAQ6XR26TUJLHT7W2IRCYN3YRDI52FHV6D7FHJ47SH7FMWM5DKKEXV6M.
-  wasmHash: "b97d71c33aa88dbc12bacb07f4903590e2a0ad4fc4729219e8e9c94d6c2f8c58",
+  // sha256 of contracts/split wasm with the constructor's `created` event, uploaded to testnet 2026-11-28
+  // (tx b6585d3a968922cd6a51e0c6b437895ba20975f3f3c364968625b844e2969578). The only split wasm the relay
+  // deploys, and the only one the tax estimate reads.
+  wasmHash: "ca6befd2b75c60ef2b3019667c11e26e675364aa4b0380783d8589b62d07f56c",
+  // Earlier split wasm (invoice binding + withdraw-to-self guard, 2026-11-25, no `created` event). Splits already
+  // deployed from it keep working through the relay, so their USDC is never stranded, but the relay no longer
+  // deploys it: a split's address is fixed per wallet, so a wallet given this wasm could never get a tax estimate.
+  earlierWasmHashes: ["b97d71c33aa88dbc12bacb07f4903590e2a0ad4fc4729219e8e9c94d6c2f8c58"],
 } as const;
+
+/** Every split wasm the relay sponsors calls on: the current one and the earlier ones. */
+export const SPLIT_CALLABLE_WASM: readonly string[] = [SPLIT.wasmHash, ...SPLIT.earlierWasmHashes];
 
 export const TOKENS = {
   // Circle testnet USDC: USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5

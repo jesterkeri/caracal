@@ -38,7 +38,7 @@
 
 import { refusalText } from "@/lib/relay/refusal";
 import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
-import { NETWORK, SMART_ACCOUNT, SPLIT } from "@/lib/stellar/config";
+import { NETWORK, SMART_ACCOUNT, SPLIT_CALLABLE_WASM } from "@/lib/stellar/config";
 import { CARACAL_POLICY } from "@/lib/relay/caracal-policy";
 import { checkPayload, clientKey, readBounded, WindowLimiter } from "@/lib/relay/policy";
 import { REFUSED_BEFORE_SUBMIT, channelsClient, codeOf, isTxHash, safeTransactionId, submitToChannels, type Submitter } from "@/lib/relay/channels";
@@ -50,7 +50,7 @@ import { SEND_DEADLINE_MS } from "@/lib/relay/limits";
 const DEFAULT_UPSTREAM = "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
 
 /** The only wasm a sponsored transaction may run. USDC is a built-in asset contract with no wasm. */
-const ALLOWED_CODE = new Set([SMART_ACCOUNT.accountWasmHash, SPLIT.wasmHash, SMART_ACCOUNT.webauthnVerifierWasmHash]);
+const ALLOWED_CODE = new Set([SMART_ACCOUNT.accountWasmHash, ...SPLIT_CALLABLE_WASM, SMART_ACCOUNT.webauthnVerifierWasmHash]);
 /** 0.5 XLM. A passkey wallet deploy needs well under this. */
 const MAX_RESOURCE_FEE = BigInt(5_000_000);
 

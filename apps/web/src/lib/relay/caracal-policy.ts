@@ -13,7 +13,7 @@
 //
 // Read-only functions are not listed: they are simulated, never submitted.
 
-import { SMART_ACCOUNT, SPLIT, TOKENS } from "../stellar/config";
+import { SMART_ACCOUNT, SPLIT, SPLIT_CALLABLE_WASM, TOKENS } from "../stellar/config";
 import { scAddress, storageGet, type ArgsRule, type Policy, type StorageRule } from "./policy";
 
 const MAX_WALLET_SIGNERS = 4;
@@ -67,11 +67,13 @@ export const CARACAL_POLICY: Policy = {
   wasmFunctions: new Map([
     // A passkey wallet's own entry point for calls it makes; the inner call is checked too.
     [SMART_ACCOUNT.accountWasmHash, new Set(["execute"])],
-    [
-      SPLIT.wasmHash,
-      new Set(["deposit", "create_invoice", "cancel_invoice", "withdraw", "move_between", "set_split", "reconcile"]),
-    ],
+    // Every split wasm, current and earlier (a split already deployed keeps working); see SPLIT in config.ts.
+    ...SPLIT_CALLABLE_WASM.map(
+      (h) =>
+        [h, new Set(["deposit", "create_invoice", "cancel_invoice", "withdraw", "move_between", "set_split", "reconcile"])] as const,
+    ),
   ]),
+  // A new split is deployed from the current wasm only.
   deployable: new Map([
     [SMART_ACCOUNT.accountWasmHash, walletConstructor],
     [SPLIT.wasmHash, splitConstructor],
@@ -83,7 +85,7 @@ export const CARACAL_POLICY: Policy = {
     // transfer(from, to, amount): the payer is a passkey wallet, never a classic account.
     [`${TOKENS.usdc}:transfer`, walletArg(0, "The USDC sender")],
     // deposit(from, amount, invoice_ref): same for the client paying an invoice.
-    [`${SPLIT.wasmHash}:deposit`, walletArg(0, "The payer")],
+    ...SPLIT_CALLABLE_WASM.map((h) => [`${h}:deposit`, walletArg(0, "The payer")] as const),
   ]),
-  storageRules: new Map([[SPLIT.wasmHash, splitStorage]]),
+  storageRules: new Map(SPLIT_CALLABLE_WASM.map((h) => [h, splitStorage] as const)),
 };
