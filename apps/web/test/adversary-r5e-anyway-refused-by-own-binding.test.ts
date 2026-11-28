@@ -24,6 +24,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WALLET_OWNER_KEY, KNOWN_WALLETS_KEY } from "../src/lib/auth/wallet-binding";
 import { CREATION_STARTED_AT_KEY, CREATION_UNCONFIRMED_KEY } from "../src/lib/auth/creation-marker";
+import { withLedger } from "./fake-ledger";
 
 type El = { props?: { children?: unknown; onClick?: () => unknown } };
 function clickFor(node: unknown, text: string): (() => unknown) | null {
@@ -94,7 +95,7 @@ function browser(local: Map<string, string>) {
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
     };
     vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
-    vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(kit) }));
+    vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: () => Promise.resolve(withLedger(kit)) }));
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
     vi.stubGlobal("window", {
@@ -126,7 +127,7 @@ async function pressEscape(bound: boolean) {
   local.set(KNOWN_WALLETS_KEY, JSON.stringify({ [A.id]: W1 }));
   local.set(CREATION_UNCONFIRMED_KEY, A.id);
   local.set(CREATION_STARTED_AT_KEY, String(Date.now() - 4 * 60_000));
-  local.set("caracal.creationCloseLedger", "999"); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
+  local.set("caracal.creationCloseLedger", JSON.stringify({ A: 999 })); // Harness (Codex R6 #1, 2026-11-27): the escape now also waits for a close ledger; this one has passed.
   const b = browser(local);
 
   const first = await b.render({ kind: "idle", knownWallet: true, remembered: W1 });
