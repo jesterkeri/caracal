@@ -15,6 +15,10 @@ create table if not exists public.invoices (
   split text not null check (split ~ '^C[A-Z2-7]{55}$'),
   client_name text not null check (char_length(client_name) between 1 and 120),
   description text not null default '' check (char_length(description) <= 500),
+  -- The last ledger at which this invoice's opening can land: the passkey signature on it expires after
+  -- this ledger (its signatureExpirationLedger), so any device can tell when an entry that never reached the
+  -- chain is safe to remove (Codex invoices R1 #2).
+  opens_by_ledger bigint not null check (opens_by_ledger > 0),
   created_at timestamptz not null default now(),
   unique (owner_id, invoice_ref)
 );

@@ -10,17 +10,17 @@ import { splitAddressFor } from "@/lib/stellar/split-address";
 import { NETWORK } from "@/lib/stellar/config";
 import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc, parseUsdc } from "@/lib/invoices/amount";
-import { bounded, cancelInvoice, createInvoice, isCaracalSplit, readConfig, type WriteOutcome } from "@/lib/invoices/chain";
+import { OPENING_LEDGERS, bounded, cancelInvoice, createInvoice, isCaracalSplit, latestLedger, readConfig, readInvoiceAt, type WriteOutcome } from "@/lib/invoices/chain";
 import { checkDetails, deleteDetails, listDetails, saveDetails, type Db } from "@/lib/invoices/details";
 import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
-import { loadRows, statusText, type Row } from "@/lib/invoices/rows";
+import { cannotOpenAnyMore, loadRows, statusText, type Row } from "@/lib/invoices/rows";
 
 /** `account` is the signed-in account the page loaded for: the details it saves go into that account's rows only. */
 /**
  * A row as shown: `stillOpening` marks one not on chain whose opening answer was lost a moment ago;
  * `ahead` marks one whose opening or cancelling this browser saw confirmed, which the read has not caught up with.
  */
-type ShownRow = Row & { stillOpening?: boolean; startedRecently?: boolean; ahead?: Confirmed };
+type ShownRow = Row & { stillOpening?: boolean; startedRecently?: boolean; ahead?: Confirmed; mayOpen?: boolean };
 type Ready = { account: string; wallet: string; split: string; rows: ShownRow[] };
 type Load =
   | { kind: "loading" }
@@ -118,8 +118,13 @@ function shown(r: Row): ShownRow {
   }
   if (r.chain !== null) return r;
   if (mayStillOpen(r.invoice_ref)) return { ...r, stillOpening: true };
-  return startedRecently(r.created_at) ? { ...r, startedRecently: true } : r;
+  if (startedRecently(r.created_at)) return { ...r, startedRecently: true };
+  // Removable only once the network has read it as missing after the last ledger its opening could land at.
+  return cannotOpenAnyMore(r) ? r : { ...r, mayOpen: true };
 }
+
+const MAY_OPEN =
+  "Not on chain yet, and Caracal cannot show yet that its opening can no longer land (the network has not been read past its last ledger), so it may still appear: reload the page in a few minutes before removing it.";
 
 /**
  * How long after its details were saved an opening may still land, whichever device started it. The details are
@@ -318,9 +323,19 @@ export default function InvoicesPage() {
       setNotice(ACCOUNT_CHANGED);
       return accountChanged();
     }
+    // The opening cannot land after this ledger (its passkey signature expires), which is saved with the details,
+    // so any device can tell when an entry that never reached the chain is safe to remove (Codex invoices R1 #2).
+    let opensBy: number;
     try {
-      // The details are saved first, so an invoice that reached the chain always has its client name here.
-      await saveDetails(db(), { invoice_ref: ref, split: ready.split, client_name: details.name, description: details.description });
+      opensBy = (await latestLedger(kit.rpc)) + OPENING_LEDGERS;
+    } catch (e) {
+      setBusy(null);
+      return setNotice(`Caracal could not read the Stellar network, so nothing was opened. Try again. ${e instanceof Error ? e.message : String(e)}`);
+    }
+    try {
+      // The details are saved first, so an invoice that reached the chain always has its client name here. The
+      // account checked above is sent as the owner, so a session switched since then is refused by the database.
+      await saveDetails(db(), { owner_id: ready.account, invoice_ref: ref, split: ready.split, client_name: details.name, description: details.description, opens_by_ledger: opensBy });
     } catch (e) {
       setBusy(null);
       return setNotice(`Caracal could not save the client's name, so nothing was opened. ${e instanceof Error ? e.message : String(e)}`);
@@ -333,7 +348,7 @@ export default function InvoicesPage() {
     window.addEventListener?.("pagehide", leaving);
     let outcome: Awaited<ReturnType<typeof createInvoice>>;
     try {
-      outcome = await createInvoice(kit, ready.split, ref, stroops);
+      outcome = await createInvoice(kit, ready.split, ref, stroops, opensBy);
     } finally {
       clearInterval(beat);
       window.removeEventListener?.("pagehide", leaving);
@@ -384,6 +399,20 @@ export default function InvoicesPage() {
 
   /** An entry the chain has no invoice for (opening it did not finish) can be removed from the list. */
   async function removeUnopened(ready: Ready, ref: string) {
+    // Read again now: the list may be old, and only a read past the opening's last ledger proves it never landed.
+    const row = ready.rows.find((r) => r.invoice_ref === ref);
+    let gone = false;
+    try {
+      const kit = await getKit();
+      const { invoice, ledger } = await readInvoiceAt(kit.rpc, ready.split, ref);
+      gone = row !== undefined && cannotOpenAnyMore({ chain: invoice, readAt: ledger, opens_by_ledger: row.opens_by_ledger });
+    } catch (e) {
+      console.error("could not check an entry before removing it:", e instanceof Error ? e.message : String(e));
+    }
+    if (!gone) {
+      setNotice("Caracal could not confirm that this invoice can no longer be opened, so its entry was kept. Reload the page in a few minutes and try again.", "unsure");
+      return refresh(ready.account, ready.wallet, ready.split).catch(listFailed("The entry was kept."));
+    }
     try {
       await deleteDetails(db(), ref);
     } catch (e) {
@@ -473,10 +502,10 @@ export default function InvoicesPage() {
                     {typeof r.chain === "object" && r.chain !== null && <> , {formatUsdc(r.chain.amount)} USDC</>}
                   </p>
                   {r.description && <p className="small muted">{r.description}</p>}
-                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && (r.stillOpening || r.startedRecently)) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
-                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : r.chain === null && r.startedRecently ? STARTED_RECENTLY : statusText(r.chain)}</p>
+                  <div className={r.ahead || r.chain === "unreadable" || (r.chain === null && (r.stillOpening || r.startedRecently || r.mayOpen)) ? "chip chip-unsure self-start" : r.chain === null || r.chain.status === "cancelled" ? "chip chip-bad self-start" : r.chain.status === "paid" ? "chip chip-good self-start" : "chip self-start"}>
+                  <p>{r.ahead ? AHEAD_TEXT[r.ahead] : r.chain === null && r.stillOpening ? STILL_OPENING : r.chain === null && r.startedRecently ? STARTED_RECENTLY : r.chain === null && r.mayOpen ? MAY_OPEN : statusText(r.chain)}</p>
                   </div>
-                  {r.chain === null && !r.stillOpening && !r.startedRecently && !r.ahead && (
+                  {r.chain === null && !r.stillOpening && !r.startedRecently && !r.mayOpen && !r.ahead && (
                     <p>
                       <button className="link small" onClick={() => void removeUnopened(load, r.invoice_ref)}>
                         Remove this entry

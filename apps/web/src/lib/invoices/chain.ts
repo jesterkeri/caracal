@@ -40,13 +40,19 @@ export function bounded<T>(p: Promise<T>, what: string, ms: number = READ_TIMEOU
 }
 
 async function simulateRead(server: Reader, contractId: string, method: string, args: xdr.ScVal[]): Promise<xdr.ScVal | undefined> {
+  return (await simulateReadAt(server, contractId, method, args)).retval;
+}
+
+/** A read, with the ledger the network made it at (undefined when its answer does not say). */
+async function simulateReadAt(server: Reader, contractId: string, method: string, args: xdr.ScVal[]): Promise<{ retval: xdr.ScVal | undefined; ledger: number | undefined }> {
   const tx = new TransactionBuilder(READ_SOURCE, { fee: BASE_FEE, networkPassphrase: NETWORK.passphrase })
     .addOperation(new Contract(contractId).call(method, ...args))
     .setTimeout(30)
     .build();
   const sim = await bounded(server.simulateTransaction(tx), "The Stellar network");
   if (rpc.Api.isSimulationError(sim)) throw new ReadRefused(sim.error);
-  return sim.result?.retval;
+  const ledger = (sim as { latestLedger?: unknown }).latestLedger;
+  return { retval: sim.result?.retval, ledger: typeof ledger === "number" && Number.isSafeInteger(ledger) && ledger > 0 ? ledger : undefined };
 }
 
 const STATUS: Record<number, InvoiceStatus> = { 0: "open", 1: "paid", 2: "cancelled" };
@@ -57,9 +63,18 @@ const STATUS: Record<number, InvoiceStatus> = { 0: "open", 1: "paid", 2: "cancel
  * unknown answer is never turned into "no invoice").
  */
 export async function readInvoice(server: Reader, split: string, ref: string): Promise<InvoiceOnChain | null> {
+  return (await readInvoiceAt(server, split, ref)).invoice;
+}
+
+/** readInvoice, with the ledger the network read it at (undefined when its answer does not say). */
+export async function readInvoiceAt(server: Reader, split: string, ref: string): Promise<{ invoice: InvoiceOnChain | null; ledger: number | undefined }> {
   const bytes = refBytes(ref);
   if (!bytes) throw new Error("The invoice id is not valid");
-  const ret = await simulateRead(server, split, "invoice", [xdr.ScVal.scvBytes(bytes)]);
+  const { retval: ret, ledger } = await simulateReadAt(server, split, "invoice", [xdr.ScVal.scvBytes(bytes)]);
+  return { invoice: invoiceFrom(ret), ledger };
+}
+
+function invoiceFrom(ret: xdr.ScVal | undefined): InvoiceOnChain | null {
   if (!ret) throw new Error("The network did not return an answer for this invoice");
   if (ret.switch().name === "scvVoid") return null;
   const v = scValToNative(ret) as unknown;
@@ -164,8 +179,27 @@ const NOT_SENT_CODES = new Set([2001, 4001, 4002, 4003, 4004, 5001, 5002, 10000]
 
 type Submitter = Pick<SmartAccountKit, "signAndSubmit" | "rpc">;
 
-/** Sends one split call from the connected wallet. `args` are the contract's arguments. */
-export async function sendCall(kit: Submitter, split: string, method: string, args: xdr.ScVal[]): Promise<WriteOutcome> {
+/**
+ * How many ledgers after the one read before saving an invoice its opening may still land (about 5 minutes at
+ * testnet's 5 to 6 s ledgers): the passkey prompt (the kit's WebAuthn timeout, 1 minute), the re-simulation and
+ * the relay (which sends within 60 s) fit well inside. An opening sent later than that is refused by the network.
+ */
+export const OPENING_LEDGERS = 60;
+
+/** The network's newest ledger, read with READ_TIMEOUT_MS. Throws when it cannot be read. */
+export async function latestLedger(server: Pick<rpc.Server, "getLatestLedger">): Promise<number> {
+  const r = await bounded(server.getLatestLedger(), "The Stellar network");
+  const n = r?.sequence;
+  if (typeof n !== "number" || !Number.isSafeInteger(n) || n <= 0) throw new Error("The Stellar network did not say which ledger it is at");
+  return n;
+}
+
+/**
+ * Sends one split call from the connected wallet. `args` are the contract's arguments. `expiration`, when given,
+ * is the last ledger the passkey signature is valid at: the network refuses the call after it, however late the
+ * kit gets to send it, so the call cannot land after that ledger.
+ */
+export async function sendCall(kit: Submitter, split: string, method: string, args: xdr.ScVal[], expiration?: number): Promise<WriteOutcome> {
   let tx: contract.AssembledTransaction<unknown>;
   try {
     // Building simulates on the network; nothing is signed or sent until it returns, so giving up on it sends nothing.
@@ -192,7 +226,7 @@ export async function sendCall(kit: Submitter, split: string, method: string, ar
   try {
     // The kit re-simulates after the passkey and polls on an RPC client with no timeout of its own, so the whole
     // send has a limit too (as the split page's, decisions s4). Past it the write may still land: unknown, never "not sent".
-    result = await bounded(kit.signAndSubmit(tx), "Sending it", SEND_TIMEOUT_MS);
+    result = await bounded(expiration === undefined ? kit.signAndSubmit(tx) : kit.signAndSubmit(tx, { expiration }), "Sending it", SEND_TIMEOUT_MS);
   } catch (e) {
     return { kind: "unknown", message: msg(e) };
   }
@@ -219,9 +253,9 @@ const bytesArg = (ref: string): xdr.ScVal => {
 };
 const i128 = (n: bigint): xdr.ScVal => nativeToScVal(n, { type: "i128" });
 
-/** create_invoice(ref, amount): the owner opens an invoice for an exact amount. */
-export const createInvoice = (kit: Submitter, split: string, ref: string, amount: bigint) =>
-  sendCall(kit, split, "create_invoice", [bytesArg(ref), i128(amount)]);
+/** create_invoice(ref, amount): the owner opens an invoice for an exact amount; it cannot land after ledger `opensBy`. */
+export const createInvoice = (kit: Submitter, split: string, ref: string, amount: bigint, opensBy?: number) =>
+  sendCall(kit, split, "create_invoice", [bytesArg(ref), i128(amount)], opensBy);
 
 /** cancel_invoice(ref): the owner cancels an open invoice. */
 export const cancelInvoice = (kit: Submitter, split: string, ref: string) => sendCall(kit, split, "cancel_invoice", [bytesArg(ref)]);

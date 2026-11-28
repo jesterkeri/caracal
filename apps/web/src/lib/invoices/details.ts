@@ -3,8 +3,14 @@
 // row-level security: a user sees only their own). Never on chain, never in a
 // pay link.
 
-export type Details = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string };
-export type NewDetails = Pick<Details, "invoice_ref" | "split" | "client_name" | "description">;
+/** opens_by_ledger: the last ledger the invoice's opening can land at (its passkey signature expires after it). */
+export type Details = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; opens_by_ledger: number };
+/**
+ * owner_id is sent, not left to the database default (auth.uid() of whoever's session the request carries): if
+ * another tab switched the shared session in the meantime, row-level security then refuses the insert instead
+ * of filing these details under the other account (Codex invoices R1 #1).
+ */
+export type NewDetails = Pick<Details, "invoice_ref" | "split" | "client_name" | "description" | "opens_by_ledger"> & { owner_id: string };
 
 type Result<T> = PromiseLike<{ data: T | null; error: { message: string } | null }>;
 /** The part of the Supabase client used here. */
@@ -31,7 +37,7 @@ export function checkDetails(name: string, description: string): { ok: true; nam
 
 /** The signed-in user's invoice details, newest first. Throws with the database's reason. */
 export async function listDetails(db: Db): Promise<Details[]> {
-  const { data, error } = await db.from("invoices").select("invoice_ref,split,client_name,description,created_at").order("created_at", { ascending: false });
+  const { data, error } = await db.from("invoices").select("invoice_ref,split,client_name,description,created_at,opens_by_ledger").order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return data ?? [];
 }

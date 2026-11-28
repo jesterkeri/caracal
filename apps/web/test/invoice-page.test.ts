@@ -104,7 +104,7 @@ async function render(states: unknown[], o: { config?: unknown; outcome?: unknow
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
-    getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }),
+    getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }),
   }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
@@ -154,7 +154,10 @@ describe("opening an invoice", () => {
     expect(amount).toBe(usdc(150.5));
     // The same id is the one the details are filed under, and nothing but the id and amount goes on chain.
     expect(r.calls.save.mock.calls[0][1]).toMatchObject({ invoice_ref: ref, split: SPLIT, client_name: "Ada Ltd" });
-    expect(r.calls.create.mock.calls[0]).toHaveLength(4);
+    // Changed with Codex invoices R1 #2: a 5th argument, the last ledger the opening can land at (its passkey
+    // signature's expiry), which is not a contract argument and carries no client detail.
+    expect(r.calls.create.mock.calls[0]).toHaveLength(5);
+    expect(r.calls.create.mock.calls[0][4]).toBe(1000 + 60);
   });
   it("a bad amount or an empty client name sends nothing", async () => {
     for (const [amount, client, say] of [["abc", "Ada", /Enter the amount/], ["0", "Ada", /Enter the amount/], ["10", "  ", /client's name/]]) {

@@ -105,7 +105,7 @@ async function render(states: unknown[], reads: (() => Promise<Row[]>)[]) {
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
-    getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }),
+    getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }),
   }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");

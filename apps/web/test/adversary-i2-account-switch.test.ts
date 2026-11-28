@@ -82,7 +82,7 @@ async function render() {
   };
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => client }));
   vi.doMock("@/lib/auth/wallet-binding", () => ({ browserStore: {}, mayRestoreWallet: async () => true }));
-  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }) }));
+  vi.doMock("@/lib/stellar/kit", () => ({ HTTPS_RPC_REQUIRED: "https required", getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }) }));
   vi.doMock("@/lib/invoices/chain", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/chain")>("../src/lib/invoices/chain");
     return { ...actual, createInvoice: async () => ({ kind: "done", hash: "e".repeat(64) }) };

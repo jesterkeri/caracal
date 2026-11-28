@@ -71,7 +71,7 @@ afterEach(() => {
 function browser() {
   const store = new Map<string, string>();
   const localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
-  const saved: { invoice_ref: string; split: string; client_name: string; description: string; created_at: string }[] = [];
+  const saved: { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; opens_by_ledger: number }[] = [];
   return { localStorage, saved };
 }
 
@@ -120,7 +120,8 @@ async function view(b: ReturnType<typeof browser>, o: { runEffect: boolean; stat
   // The chain has no invoice for any saved row: the opening has not landed (yet).
   vi.doMock("@/lib/invoices/rows", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/rows")>("../src/lib/invoices/rows");
-    return { ...actual, loadRows: async (_s: unknown, details: typeof b.saved) => details.map((d) => ({ ...d, chain: null, txHash: null })) };
+    // Read at ledger 1000, the fake kit's newest (Codex invoices R1 #2 fixture).
+    return { ...actual, loadRows: async (_s: unknown, details: typeof b.saved) => details.map((d) => ({ ...d, chain: null, txHash: null, readAt: 1000 })) };
   });
   vi.doMock("@/lib/auth/wallet-binding", () => ({ browserStore: {}, mayRestoreWallet: async () => true }));
   const auth = {
@@ -131,7 +132,7 @@ async function view(b: ReturnType<typeof browser>, o: { runEffect: boolean; stat
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
-    getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }),
+    getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }),
   }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
@@ -177,7 +178,7 @@ describe("an invoice opening that is still in flight when the page goes away", (
 
   it("control: an entry that was never sent (no attempt on record) is rightly offered for removal", async () => {
     const b = browser();
-    b.saved.push({ invoice_ref: "ab".repeat(16), split: SPLIT, client_name: "Old client", description: "", created_at: "2026-11-20T10:00:00Z" });
+    b.saved.push({ invoice_ref: "ab".repeat(16), split: SPLIT, client_name: "Old client", description: "", created_at: "2026-11-20T10:00:00Z", opens_by_ledger: 900 });
     const tree = await reloaded(b);
     expect(() => click(tree, "Remove this entry")).not.toThrow();
   });

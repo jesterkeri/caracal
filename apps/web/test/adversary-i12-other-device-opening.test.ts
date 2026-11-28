@@ -63,7 +63,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-type Saved = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string };
+type Saved = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; opens_by_ledger: number };
 type Answer = "no-invoice-yet" | "open";
 
 /**
@@ -116,8 +116,8 @@ async function loadedPage(saved: Saved[], answer: Answer) {
   const none = xdr.ScVal.scvVoid();
   const open = xdr.ScVal.scvVec([xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: xdr.Int64.fromString("0"), lo: xdr.Uint64.fromString("100000000") })), xdr.ScVal.scvU32(0)]);
   const rpc = {
-    simulateTransaction: async () => ({ id: "1", latestLedger: 1, events: [], _parsed: true, result: { auth: [], retval: answer === "open" ? open : none }, transactionData: {}, minResourceFee: "0" }),
-    getLatestLedger: async () => ({ sequence: 1 }),
+    simulateTransaction: async () => ({ id: "1", latestLedger: 2000, events: [], _parsed: true, result: { auth: [], retval: answer === "open" ? open : none }, transactionData: {}, minResourceFee: "0" }),
+    getLatestLedger: async () => ({ sequence: 2000 }),
     getEvents: async () => ({ events: [], cursor: "" }),
   };
   vi.doMock("@/lib/stellar/kit", () => ({
@@ -143,7 +143,9 @@ async function loadedPage(saved: Saved[], answer: Answer) {
   return { tree: mod.default(), saved };
 }
 
-const row = (created_at: string): Saved => ({ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at });
+// opens_by_ledger (Codex invoices R1 #2 fixture): a row saved within the hour can still open after the ledger read now
+// (2000); one saved a week ago could open only up to a ledger long past.
+const row = (created_at: string): Saved => ({ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at, opens_by_ledger: Date.now() - Date.parse(created_at) < 3_600_000 ? 2060 : 1000 });
 
 describe("a row saved moments ago by another device, whose opening is still on its way", () => {
   it("control: when the read sees the invoice, it is listed open with its link and no Remove button", async () => {

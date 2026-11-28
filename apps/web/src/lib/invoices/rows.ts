@@ -1,7 +1,7 @@
 // The invoices list: the freelancer's saved details joined with what the chain
 // says about each invoice. The chain is the truth for amount and status.
 
-import { findPaymentTx, readInvoice, type EventReader, type InvoiceOnChain, type Reader } from "./chain";
+import { findPaymentTx, readInvoiceAt, type EventReader, type InvoiceOnChain, type Reader } from "./chain";
 import type { Details } from "./details";
 
 /**
@@ -10,8 +10,18 @@ import type { Details } from "./details";
  *   null: the contract has no such invoice (the details were saved but opening it did not finish);
  *   "unreadable": the network could not be asked just now.
  * txHash: for a paid invoice, the payment's transaction when it could be found (the node keeps about a week of events).
+ * readAt: the ledger the network read the invoice at, when its answer said.
  */
-export type Row = Details & { chain: InvoiceOnChain | null | "unreadable"; txHash: string | null };
+export type Row = Details & { chain: InvoiceOnChain | null | "unreadable"; txHash: string | null; readAt?: number };
+
+/**
+ * Whether an entry the chain has no invoice for can no longer be opened: the network read it as missing at a
+ * ledger after the last one its opening could land at (the passkey signature expires after opens_by_ledger), so
+ * it never will be. Any device can tell, whatever happened to the page that sent it (Codex invoices R1 #2).
+ */
+export function cannotOpenAnyMore(r: Pick<Row, "chain" | "readAt" | "opens_by_ledger">): boolean {
+  return r.chain === null && typeof r.readAt === "number" && Number.isSafeInteger(r.opens_by_ledger) && r.readAt > r.opens_by_ledger;
+}
 
 export async function loadRows(server: Reader & EventReader, details: Details[], split: string): Promise<Row[]> {
   // Only invoices opened on this split contract: an older contract's invoices cannot be read from this one.
@@ -19,13 +29,14 @@ export async function loadRows(server: Reader & EventReader, details: Details[],
   return Promise.all(
     mine.map(async (d): Promise<Row> => {
       let chain: Row["chain"];
+      let readAt: number | undefined;
       try {
-        chain = await readInvoice(server, split, d.invoice_ref);
+        ({ invoice: chain, ledger: readAt } = await readInvoiceAt(server, split, d.invoice_ref));
       } catch {
         return { ...d, chain: "unreadable", txHash: null };
       }
       const txHash = chain?.status === "paid" ? await findPaymentTx(server, split, d.invoice_ref) : null;
-      return { ...d, chain, txHash };
+      return { ...d, chain, txHash, ...(readAt === undefined ? {} : { readAt }) };
     }),
   );
 }

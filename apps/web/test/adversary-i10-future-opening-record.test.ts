@@ -67,7 +67,7 @@ afterEach(() => {
 function browser(stamp: number) {
   const store = new Map<string, string>([[KEY, JSON.stringify({ [REF]: stamp })]]);
   const localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
-  const saved = [{ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z" }];
+  const saved = [{ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z", opens_by_ledger: 1000 }];
   return { localStorage, saved };
 }
 
@@ -100,7 +100,8 @@ async function view(b: ReturnType<typeof browser>, o: { runEffect: boolean; stat
   // The chain has no invoice for the saved row: its opening never landed.
   vi.doMock("@/lib/invoices/rows", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/rows")>("../src/lib/invoices/rows");
-    return { ...actual, loadRows: async (_s: unknown, details: typeof b.saved) => details.map((d) => ({ ...d, chain: null, txHash: null })) };
+    // Read long after its opening's last ledger (Codex invoices R1 #2 fixture).
+    return { ...actual, loadRows: async (_s: unknown, details: typeof b.saved) => details.map((d) => ({ ...d, chain: null, txHash: null, readAt: 2000 })) };
   });
   vi.doMock("@/lib/auth/wallet-binding", () => ({ browserStore: {}, mayRestoreWallet: async () => true }));
   const auth = {
@@ -111,7 +112,7 @@ async function view(b: ReturnType<typeof browser>, o: { runEffect: boolean; stat
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
-    getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }),
+    getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }),
   }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");

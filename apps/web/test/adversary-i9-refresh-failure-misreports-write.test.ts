@@ -62,8 +62,9 @@ afterEach(() => {
   vi.resetModules();
 });
 
-type Row = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; chain: unknown; txHash: string | null };
-const row = (over: Partial<Row> = {}): Row => ({ invoice_ref: X, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z", chain: null, txHash: null, ...over });
+// opens_by_ledger and readAt (Codex invoices R1 #2 fixture): an old entry, read long after its last ledger.
+type Row = { invoice_ref: string; split: string; client_name: string; description: string; created_at: string; chain: unknown; txHash: string | null; opens_by_ledger: number; readAt?: number };
+const row = (over: Partial<Row> = {}): Row => ({ invoice_ref: X, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z", chain: null, txHash: null, opens_by_ledger: 900, readAt: 2000, ...over });
 const ready = (rows: Row[]) => ({ kind: "ready", account: "A", wallet: WALLET, split: SPLIT, rows });
 
 /** States, in order: load, amount, client, description, busy, notice, copied. */
@@ -89,6 +90,8 @@ async function render(states: unknown[], o: { deleteFails?: boolean; listFails?:
       ...actual,
       readConfig: async () => ({ owner: WALLET, token: TOKENS.usdc }),
       createInvoice: async () => ({ kind: "done", hash: "e".repeat(64) }),
+      // The check before removing reads the entry again: still no invoice, at a ledger past its last one.
+      readInvoiceAt: async () => ({ invoice: null, ledger: 2000 }),
     };
   });
   vi.doMock("@/lib/invoices/details", async () => {
@@ -119,7 +122,7 @@ async function render(states: unknown[], o: { deleteFails?: boolean; listFails?:
   vi.doMock("@/lib/supabase/client", () => ({ supabaseBrowser: () => ({ auth }) }));
   vi.doMock("@/lib/stellar/kit", () => ({
     HTTPS_RPC_REQUIRED: "https required",
-    getKit: async () => ({ rpc: {}, connectWallet: async () => ({ contractId: WALLET }) }),
+    getKit: async () => ({ rpc: { getLatestLedger: async () => ({ sequence: 1000 }) }, connectWallet: async () => ({ contractId: WALLET }) }),
   }));
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
