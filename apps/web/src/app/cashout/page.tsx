@@ -89,6 +89,8 @@ function unpayable(t: AnchorTxn, confirmed: bigint | null): string | null {
 const LAND_WINDOW_MS = 90_000;
 /** How long Send waits to read the balance at the press before sending without it (adversary c19). */
 const BALANCE_AT_SEND_MS = 10_000;
+/** How often the balance is read again while the landing advice, which says it was read just now, is shown. */
+const BALANCE_AGAIN_MS = 30_000;
 /** The larger of two ledgers, either of which may be unknown. */
 const later = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b));
 const STALE =
@@ -242,7 +244,7 @@ export default function CashoutPage() {
         if (phase === "form" && t.status === "pending_user_transfer_start") {
           seenRef.current = payTo(t);
           setPhase("confirm");
-          popupRef.current?.close();
+          closePopup();
         }
         if (FINAL_STATUSES.has(t.status)) return;
       } catch (e) {
@@ -302,6 +304,15 @@ export default function CashoutPage() {
     setProblem(t);
   }
 
+  /** Closes the anchor's popup. A stand-in window whose close() throws (a sandboxed frame, an in-app browser) must not stop the caller (adversary c37). */
+  function closePopup() {
+    try {
+      popupRef.current?.close();
+    } catch {
+      // the popup stays open; the page goes on
+    }
+  }
+
   async function start() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
@@ -346,7 +357,7 @@ export default function CashoutPage() {
       else setPopupNote(popupRef.current ? "closed" : "blocked");
       setPhase("form");
     } catch (e) {
-      popupRef.current?.close();
+      closePopup();
       setProblem(e instanceof AnchorError ? e.message : "Something went wrong starting the cash-out. Nothing was sent.");
       setPhase("preview");
     }
@@ -487,7 +498,7 @@ export default function CashoutPage() {
 
   function startAgain() {
     // A withdrawal that was not paid is never reused: the next one starts from a new sign-in.
-    popupRef.current?.close();
+    closePopup();
     setSession(null);
     setTxn(null);
     txnRef.current = null;
@@ -517,6 +528,14 @@ export default function CashoutPage() {
   // a payment the anchor still has not seen did not arrive, and a new cash-out cannot pay this one twice.
   const unknownWaiting = phase === "watching" && unknownSend && txn?.status === "pending_user_transfer_start";
   const pastLanding = unknownWaiting && landingOver;
+  // The advice then compares the balance at the press with the balance "now": it is read again every 30 s while the
+  // advice is shown, so "read just now" never stands over an old read (adversary c37).
+  useEffect(() => {
+    if (!pastLanding) return;
+    const t = setInterval(() => void refreshBalance().catch(() => {}), BALANCE_AGAIN_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pastLanding]);
   // A send still unsettled LAND_WINDOW_MS after its outcome was called unknown (the page's 5 minute limit) has
   // no bound the page can wait out: it may still be in the passkey prompt. The page then stops promising a new
   // cash-out and says to reload, which ends it (adversary c14).
