@@ -152,7 +152,30 @@ export type SendGuard = {
   finish(kind: "sent" | "not-sent" | "unknown"): void;
   /** Settles once nothing more can be sent from this tab. */
   released: Promise<void>;
+  /** Set by acquireSend: settles once this payment's Web Lock is free. */
+  lockFree?: Promise<unknown>;
 };
+
+/**
+ * This tab's payments still holding a wallet's Web Lock. A payment lets go of it once its outcome is certain or
+ * its kit call has settled, and also once the network passes its closeBy, since nothing it could still send can
+ * land then (the split guard's adversary s11: a kit call that never settled kept the lock, and every later
+ * payment was refused with a false reason).
+ */
+type Live = { closeBy: number; released: boolean; letGo: () => Promise<void> };
+const live = new Map<string, Set<Live>>();
+
+/**
+ * Lets go of this tab's locks on this wallet held by payments that are done, or that the network has passed
+ * (ledger > closeBy), and resolves once those locks are free.
+ */
+export async function passLedger(wallet: string, ledger: number): Promise<void> {
+  const mine = live.get(wallet);
+  if (!mine) return;
+  const gone = [...mine].filter((g) => g.released || (isLedger(ledger) && ledger > g.closeBy));
+  gone.forEach((g) => mine.delete(g));
+  await Promise.all(gone.map((g) => g.letGo()));
+}
 
 /** What submit throws for a transaction it cannot bound; nothing was signed or sent. */
 export class UnboundedPayment extends Error {}
@@ -188,15 +211,27 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
   };
   let pending = 0;
   let unknown = false;
-  let release = () => {};
-  const released = new Promise<void>((r) => (release = r));
+  let resolveReleased = () => {};
+  const released = new Promise<void>((r) => (resolveReleased = r));
+  const entry: Live = {
+    closeBy,
+    released: false,
+    letGo: async () => {
+      release();
+      await guard.lockFree;
+    },
+  };
+  const release = () => {
+    entry.released = true;
+    resolveReleased();
+  };
+  if (!live.has(wallet)) live.set(wallet, new Set());
+  live.get(wallet)!.add(entry);
   const settled = () => {
     pending--;
     if (unknown && pending === 0) release();
   };
-  return {
-    ok: true,
-    guard: {
+  const guard: SendGuard = {
       closeBy,
       released,
       submit(kit, tx) {
@@ -230,8 +265,8 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
           /* the record stays until the network passes its closeBy */
         }
       },
-    },
   };
+  return { ok: true, guard };
 }
 
 /**
@@ -240,6 +275,11 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
  */
 export function acquireSend(wallet: string, anchorId: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<Begun> {
   if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
+  // A payment of this tab that is done, or that the network has passed, holds the lock for nothing: let go first.
+  return passLedger(wallet, ledger).then(() => lockAndBegin(wallet, anchorId, ledger, locks));
+}
+
+function lockAndBegin(wallet: string, anchorId: string, ledger: number, locks: Locks): Promise<Begun> {
   return new Promise((resolve) => {
     let entered = false;
     let answered = false;
@@ -248,6 +288,9 @@ export function acquireSend(wallet: string, anchorId: string, ledger: number, lo
       answered = true;
       resolve(r);
     };
+    // Settles once the lock request has ended, that is once the lock is free (the guard's lockFree).
+    let lockGone = () => {};
+    const lockFree = new Promise<void>((r) => (lockGone = r));
     let request: Promise<unknown>;
     try {
       request = locks.request(LOCK(wallet), { ifAvailable: true }, async (lock) => {
@@ -262,9 +305,11 @@ export function acquireSend(wallet: string, anchorId: string, ledger: number, lo
         } catch {
           begun = { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
         }
+        if (begun.ok) begun.guard.lockFree = lockFree;
         answer(begun);
         if (begun.ok) await begun.guard.released;
       });
+      request.then(lockGone, lockGone);
     } catch {
       return answer({ ok: false, hold: { held: true, until: null, reason: "unreadable" } });
     }

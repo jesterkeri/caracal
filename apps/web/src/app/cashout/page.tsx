@@ -296,6 +296,9 @@ export default function CashoutPage() {
       return;
     }
     sendingFor.current = txn.id;
+    // From the press on, the page is sending: "Start again" goes at once, not only once the payment is built,
+    // or pressing it during the ledger read left the page with no record and no control (adversary c28).
+    setPhase("sending");
     // The balance at the press, read now: the last one on screen may predate USDC that arrived since, and the
     // landing advice compares against it (adversary c19). A failed or slow read leaves it unknown, and the advice
     // then says to check the wallet's history instead. Started before anything else is awaited.
@@ -307,6 +310,7 @@ export default function CashoutPage() {
     } catch {
       sendingFor.current = null;
       setProblem("Caracal could not read the Stellar network, so nothing was sent. Check your connection and try again.");
+      setPhase("confirm");
       return;
     }
     setSeenLedger(ledger);
@@ -316,6 +320,7 @@ export default function CashoutPage() {
     if (!begun.ok) {
       sendingFor.current = null;
       setProblem(holdText(begun.hold));
+      setPhase("confirm");
       return;
     }
     const guard = begun.guard;

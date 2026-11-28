@@ -106,3 +106,30 @@ describe("the cash-out page", () => {
     rt.unmount();
   });
 });
+
+// The split guard's adversary s11, ported: a payment whose kit call never settles kept the wallet's lock.
+describe("the lock of a payment whose kit call never settles", () => {
+  it("holds through closeBy and is let go once the network passes it", async () => {
+    storage();
+    const { acquireSend } = await import("../src/lib/anchor/send-guard");
+    const first = await acquireSend(WALLET, "a1", 1000);
+    if (!first.ok) throw new Error("should begin");
+    void first.guard.submit({ signAndSubmit: () => new Promise<never>(() => {}) }, { needsNonInvokerSigningBy: () => [WALLET] } as never);
+    first.guard.finish("unknown");
+    expect((await acquireSend(WALLET, "a2", 1000 + SEND_LEDGERS)).ok).toBe(false);
+    const second = await acquireSend(WALLET, "a2", 1001 + SEND_LEDGERS);
+    expect(second.ok).toBe(true);
+    if (second.ok) second.guard.finish("sent");
+  });
+
+  it("a payment released just now does not refuse the next one while its lock is being let go", async () => {
+    storage();
+    const { acquireSend } = await import("../src/lib/anchor/send-guard");
+    const first = await acquireSend(WALLET, "a1", 1000);
+    if (!first.ok) throw new Error("should begin");
+    first.guard.finish("not-sent");
+    const second = await acquireSend(WALLET, "a2", 1000);
+    expect(second.ok).toBe(true);
+    if (second.ok) second.guard.finish("sent");
+  });
+});
