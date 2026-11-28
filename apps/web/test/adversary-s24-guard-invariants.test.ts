@@ -140,5 +140,5 @@ describe("the write guard, over random sequences in two tabs", () => {
     expect(seen.stale).toBeGreaterThan(100);
     expect(seen.unreadable).toBeGreaterThan(10);
     expect(seen.earlier).toBeGreaterThan(100);
-  });
+  }, 30_000); // 250 seeded sequences take about 3 s alone; the default 5 s timed out under a loaded full suite
 });

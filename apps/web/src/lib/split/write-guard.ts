@@ -386,6 +386,12 @@ export function beginWrite(split: string, ledger: number, shownAt?: number | nul
         if (pending === 0) release();
         return;
       }
+      // passLedger let go of this write's lock (the network passed closeBy) before its result came in: nothing is
+      // written without the lock, since another tab may be keeping a later read-after ledger right now (Codex split
+      // R6). The record, if still this write's, gates every page with closeBy, never earlier than the ledger this
+      // result would keep, and clearPassed removes it under the lock, keeping closeBy; a record already replaced or
+      // cleared had its closeBy kept under the lock by whoever did so.
+      if (entry.released) return;
       // Removed while this write still holds the lock (release lets go of it), so it cannot remove a newer record.
       // A write that went through first keeps the ledger the pots must be read past: the one it landed in less one,
       // or its closeBy when the kit did not say (adversary s19). When that cannot be kept, the record stays, and its
