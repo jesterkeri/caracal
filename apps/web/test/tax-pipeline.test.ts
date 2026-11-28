@@ -266,7 +266,7 @@ describe("proving when the contract was created (the created event)", () => {
     expect(out.status).toBe("refused");
     if (out.status !== "refused") return;
     expect(out.reasons[0]).toBe(
-      "No record of the split contract's creation was found in the RPC's history window of about a week, either because the contract was created before that window or because it runs an older split contract that did not record its creation. Payments before 2026-11-20T14:15:35Z cannot be read. A payment indexer is needed to read the whole of 2026.",
+      "No record of the split contract's creation was found in the RPC's history window of about a week, so the contract was created before that window. Payments before 2026-11-20T14:15:35Z cannot be read. A payment indexer is needed to read the whole of 2026.",
     );
     expect(JSON.stringify(out)).not.toMatch(/totalTaxNgn|ngnValue|grossIncomeNgn/);
   });

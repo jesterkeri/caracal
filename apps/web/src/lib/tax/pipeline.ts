@@ -263,11 +263,13 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
     return unavailable("The tax engine failed unexpectedly, so there is no estimate.");
   }
 
-  // Without a creation event in the window, say only what is known (an older split contract never records one).
-  // If the window also starts after the tax year does, say that plainly.
+  // Without a creation event in the window, say only what is known. A split on Caracal's earlier wasm (which records
+  // no creation) was refused before this point (chain-payments.ts), so this one runs the current wasm, whose
+  // constructor always records it: it was created before the window. If the window also starts after the tax year
+  // does, say that plainly.
   if (result.status === "refused" && !read.created && Date.parse(read.coverage.from) > Date.parse(`${TAX_YEAR}-01-01T00:00:00+01:00`)) {
     ownReasons.unshift(
-      `No record of the split contract's creation was found in the RPC's history window of about a week, either because the contract was created before that window or because it runs an older split contract that did not record its creation. Payments before ${read.coverage.from} cannot be read. A payment indexer is needed to read the whole of ${TAX_YEAR}.`,
+      `No record of the split contract's creation was found in the RPC's history window of about a week, so the contract was created before that window. Payments before ${read.coverage.from} cannot be read. A payment indexer is needed to read the whole of ${TAX_YEAR}.`,
     );
   }
   if (result.status === "refused") return { status: "refused", reasons: [...ownReasons, ...result.reasons.filter((r) => !ownReasons.includes(r))], disclaimer: result.disclaimer, context };
