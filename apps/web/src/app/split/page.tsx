@@ -65,7 +65,7 @@ const later = (a: number | null, b: number | null) => (a === null ? b : b === nu
 /** The ledger what is shown was read at, when the RPC said. */
 const readAt = (l: Loaded | null) => (l && l.kind !== "error" ? l.ledger : null);
 const STALE =
-  "The earlier withdrawal, move or change can no longer land. Caracal is reading the pots again, and nothing new can be sent until it has read them as of a later ledger, so you see whether it went through. If this stays, press Refresh.";
+  "Caracal is reading the pots again, and nothing new can be sent until it has read them as of a later ledger, so the pots you see include any earlier withdrawal, move or change that went through. If this stays, press Refresh.";
 
 export default function SplitPage() {
   const [view, setView] = useState<View>({ kind: "checking" });

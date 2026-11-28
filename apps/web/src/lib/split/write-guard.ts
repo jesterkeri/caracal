@@ -285,6 +285,14 @@ export function beginWrite(split: string, ledger: number): Begun {
   if (hold.held) return { ok: false, hold };
   const s = store();
   if (!s) return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
+  // A passed record this write replaces still asks a page opened later to read the pots past its closeBy, as
+  // clearPassed keeps it (adversary s21).
+  try {
+    const passed = read(s, split);
+    if (passed) rememberReadAfter(split, passed.closeBy);
+  } catch {
+    return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
+  }
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const closeBy = ledger + WRITE_LEDGERS;
   try {
