@@ -189,3 +189,20 @@ describe("adversary s11 follow-up: the lock of a write whose kit call never sett
     expect(hasWriteRecord(SPLIT)).toBe(false);
   });
 });
+
+describe("adversary s12 follow-up: a call whose signers cannot be read", () => {
+  it("is not sent, and says nothing was sent", async () => {
+    stubStorage();
+    const first = beginWrite(SPLIT, 5000);
+    if (!first.ok) throw new Error("should begin");
+    const signAndSubmit = vi.fn();
+    const tx = {
+      needsNonInvokerSigningBy: () => {
+        throw new Error("not simulated");
+      },
+    };
+    const r = await first.guard.kit({ rpc: {}, rpcUrl: "", networkPassphrase: "", signAndSubmit } as never).signAndSubmit(tx as never);
+    expect(signAndSubmit).not.toHaveBeenCalled();
+    expect(!r.success && r.error.message).toMatch(/Nothing was sent/);
+  });
+});

@@ -227,8 +227,17 @@ export function beginWrite(split: string, ledger: number): Begun {
       if (typeof original !== "function") return k;
       k.signAndSubmit = (tx: contract.AssembledTransaction<unknown>, options?: { expiration?: number }) => {
         // closeBy bounds the write only through a signature the wallet gives: a call that needs none is not sent.
+        // One whose signers cannot be read is not sent either (adversary s12): a throw here would read as "unknown".
         const needs = (tx as { needsNonInvokerSigningBy?: (o: { includeAlreadySigned: boolean }) => string[] }).needsNonInvokerSigningBy;
-        if (typeof needs === "function" && needs.call(tx, { includeAlreadySigned: true }).length === 0) return Promise.resolve(UNBOUNDED);
+        if (typeof needs === "function") {
+          let signers: string[];
+          try {
+            signers = needs.call(tx, { includeAlreadySigned: true });
+          } catch {
+            return Promise.resolve(UNBOUNDED);
+          }
+          if (signers.length === 0) return Promise.resolve(UNBOUNDED);
+        }
         pending++;
         const p = original.call(k, tx, { ...options, expiration: closeBy });
         Promise.resolve(p).then(settled, settled);

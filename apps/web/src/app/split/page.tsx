@@ -42,7 +42,8 @@ type Form = {
 };
 const EMPTY_FORM: Form = { deployTax: "", deployGoal: "", wdPot: "Spend", wdAmount: "", moveFrom: "Spend", moveTo: "Goal", moveAmount: "", newTax: "", newGoal: "" };
 
-type Note = { busy?: string; said?: Said };
+/** `hold` marks the note a held-back write leaves, the only one a lifted hold may clear. */
+type Note = { busy?: string; said?: Said; hold?: true };
 
 // Reads and writes are ordered by these, not by render state (which a click can
 // outrun). Each read takes a number; a write takes one when it starts. A read
@@ -130,7 +131,8 @@ export default function SplitPage() {
   const refused = (text: string) => setNote({ said: { tone: "bad", text } });
 
   /** Re-reads the contract from the network, keeping what was last said. */
-  async function reread(wallet: string, said?: Said) {
+  /** `keepNote`: keep what is said on screen unless it is a held-back write's note (a hold lifting, adversary s12). */
+  async function reread(wallet: string, said?: Said, keepNote = false) {
     // A Refresh while a write runs would race it; the write reads afterwards itself.
     if (writing && said === undefined) return;
     const mine = ++readSeq;
@@ -139,7 +141,8 @@ export default function SplitPage() {
       const loaded = await loadSplit(kit.rpc as unknown as LedgerReader & SimulatingRpc, wallet);
       if (mine !== readSeq) return;
       setView({ kind: "ready", wallet, loaded });
-      setNote({ said });
+      if (keepNote) setNote((n) => (n.hold ? {} : n));
+      else setNote({ said });
     } catch (e) {
       if (mine !== readSeq) return;
       setNote({ said: { tone: "bad", text: `Caracal could not read the network: ${e instanceof Error ? e.message : String(e)}` } });
@@ -155,6 +158,8 @@ export default function SplitPage() {
       // An earlier write that may still land, or one another tab is making, holds back every new write on
       // this split (write-guard.ts).
       // The write's last ledger is fixed from the ledger read now, before anything is signed (write-guard.ts).
+      // Shown as busy meanwhile: the read can take up to 15 s, and a click then should not look ignored.
+      setNote({ busy: "Checking the network" });
       let kit: WriteKit;
       let ledger: number;
       try {
@@ -165,7 +170,7 @@ export default function SplitPage() {
       }
       setSeenLedger(ledger);
       const begun = await acquireWrite(splitAddressFor(wallet), ledger);
-      if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) } });
+      if (!begun.ok) return setNote({ said: { tone: "unsure", text: holdText(begun.hold) }, hold: true });
       const guard = begun.guard;
       // Any read already under way began before this write: it is dropped.
       readSeq++;
@@ -238,7 +243,7 @@ export default function SplitPage() {
     if (!heldSeen || !readyWallet) return;
     const t = setTimeout(() => {
       heldSeen = false;
-      void reread(readyWallet);
+      void reread(readyWallet, undefined, true);
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
