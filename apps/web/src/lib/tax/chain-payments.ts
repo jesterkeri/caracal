@@ -108,6 +108,8 @@ export type SplitExpectation = {
   token: string;
   /** The only wasm the contract may run (Caracal's split contract). */
   wasmHash: string;
+  /** Caracal's own earlier split wasm, which records no `created` event: refused with its own reason, not as foreign code. */
+  earlierWasmHashes?: readonly string[];
 };
 
 const PAGE_LIMIT = 200;
@@ -252,6 +254,11 @@ export async function readSplitPayments(chain: ChainReader, want: SplitExpectati
 
   const code = await chain.instance(want.contract);
   if (code.kind === "absent") return { kind: "no-contract" };
+  if (code.kind === "wasm" && code.hash !== want.wasmHash && want.earlierWasmHashes?.includes(code.hash)) {
+    throw new ChainReadError(
+      "This wallet's split contract runs an earlier version of Caracal's split code, which does not record when the split was opened, so Caracal cannot prove it has every payment a full-year estimate needs. A split cannot be upgraded in place; an estimate for it needs a payment history service Caracal does not have yet.",
+    );
+  }
   if (code.kind !== "wasm" || code.hash !== want.wasmHash) {
     throw new ChainReadError("The split contract at this wallet's address does not run Caracal's split code, so its payments cannot be trusted.");
   }

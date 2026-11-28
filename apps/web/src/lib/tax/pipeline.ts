@@ -145,7 +145,7 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
 
   let read;
   try {
-    read = await readSplitPayments(deps.chain, { contract: splitContract, owner: req.wallet, token: TOKENS.usdc, wasmHash: SPLIT.wasmHash });
+    read = await readSplitPayments(deps.chain, { contract: splitContract, owner: req.wallet, token: TOKENS.usdc, wasmHash: SPLIT.wasmHash, earlierWasmHashes: SPLIT.earlierWasmHashes });
   } catch (e) {
     if (e instanceof ChainReadError) return unavailable(e.message);
     throw e;
