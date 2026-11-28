@@ -169,6 +169,11 @@ const live = new Map<string, Set<Live>>();
  * Lets go of this tab's locks on this wallet held by payments that are done, or that the network has passed
  * (ledger > closeBy), and resolves once those locks are free.
  */
+/** Whether this tab still holds a payment's lock for this wallet (its ledger poll must keep running until it lets go). */
+export function holdsSendLock(wallet: string): boolean {
+  return (live.get(wallet)?.size ?? 0) > 0;
+}
+
 export async function passLedger(wallet: string, ledger: number): Promise<void> {
   const mine = live.get(wallet);
   if (!mine) return;

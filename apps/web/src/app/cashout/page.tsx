@@ -14,7 +14,7 @@ import { AnchorError, messageOf } from "@/lib/anchor/errors";
 import { beginCashout, sendToAnchor, type SendDeps } from "@/lib/anchor/flow";
 import { FINAL_STATUSES, loadInfo, loadTransaction, previewWithdraw, statusText, type AnchorTxn, type WithdrawInfo } from "@/lib/anchor/sep24";
 import { loadToml, type AnchorToml } from "@/lib/anchor/toml";
-import { acquireSend, anchorReceived, holdText, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
+import { acquireSend, anchorReceived, holdText, holdsSendLock, passLedger, readLedger, sendHold, type Hold } from "@/lib/anchor/send-guard";
 import { buildAnchorTransfer, paymentFor, readUsdcBalance } from "@/lib/anchor/transfer";
 
 type Kit = Awaited<ReturnType<typeof getKit>>;
@@ -431,25 +431,32 @@ export default function CashoutPage() {
   }, [sendSettledAt]);
   // An earlier payment from this browser that may still land (read on every render, so another tab's or one
   // from before a reload counts). Its ledger is read every few seconds while it holds, so the hold lifts once
-  // the network passes the payment's closeBy.
+  // the network passes the payment's closeBy. It is also read while this tab still holds a payment's lock after
+  // the hold has lifted (a kit call that has not settled), and each reading lets go of the lock of a payment the
+  // network has passed, so another tab is not refused until that call settles (ported from split adversary s13).
   const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
   useEffect(() => {
-    if (!hold.held) return;
+    if (!wallet || (!hold.held && !holdsSendLock(wallet))) return;
+    const held = hold.held;
     let gone = false;
     const look = () => {
+      if (!held && !holdsSendLock(wallet)) return clearInterval(t);
       const kit = kitRef.current;
       if (!kit) return;
       readLedger(kit.rpc)
-        .then((n) => !gone && setSeenLedger(n))
+        .then((n) => {
+          void passLedger(wallet, n);
+          if (!gone) setSeenLedger(n);
+        })
         .catch(() => !gone && setSeenLedger(null));
     };
-    look();
     const t = setInterval(look, 5_000);
+    look();
     return () => {
       gone = true;
       clearInterval(t);
     };
-  }, [hold.held]);
+  }, [hold.held, wallet]);
   // The payment can no longer land once the landing window is over AND the network has passed its closeBy
   // (the hold has lifted): only the ledger proves it, and the page never offers what the hold would refuse
   // (adversary c27). The balance is read again then, and the page says so only after that read: the advice to
