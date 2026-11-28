@@ -50,6 +50,12 @@ type Note = { busy?: string; said?: Said; hold?: true };
 // that finishes after a newer read or write began is dropped, so an older,
 // slower read never puts earlier pots on screen or clears a write's note.
 let readSeq = 0;
+/**
+ * Whether a re-read started because the pots shown are older than an earlier write is still running. One at a time:
+ * on an RPC slower than the 5 s ledger poll, starting another at each new ledger dropped the one still running, so
+ * none ever landed and the writes stayed disabled (adversary s23, as cash-out c36).
+ */
+let staleReading = false;
 let writing = false;
 /**
  * Told when this tab's write ends, so a copy of the page mounted while it was being sent (the person left the page and
@@ -321,7 +327,11 @@ export default function SplitPage() {
   const readyWallet = view.kind === "ready" ? view.wallet : null;
   useEffect(() => {
     if (!stale || !readyWallet || seenLedger === null || mustPass === null || seenLedger <= mustPass) return;
-    const t = setTimeout(() => void reread(readyWallet, undefined, true), 0);
+    const t = setTimeout(() => {
+      if (staleReading) return;
+      staleReading = true;
+      void reread(readyWallet, undefined, true).finally(() => (staleReading = false));
+    }, 0);
     return () => clearTimeout(t);
   }, [stale, seenLedger, mustPass, readyWallet]);
 
