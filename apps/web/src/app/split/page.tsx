@@ -207,6 +207,10 @@ export default function SplitPage() {
         outcome = { kind: "unknown", message: e instanceof Error ? e.message : String(e) };
       }
       guard.finish(outcome);
+      // An unknown write may still land through its closeBy: the pots must be read past it before anything new is
+      // offered, even if the poll has already removed its record because the network passed closeBy while it was
+      // still being sent (adversary s15).
+      if (outcome.kind === "unknown") setGuardBy((g) => later(g, guard.closeBy));
       const said = say(outcome, what);
       if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
       setNote({ busy: "Reading the result from the network", said });
