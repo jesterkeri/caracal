@@ -87,7 +87,7 @@ const openRow = (): Row =>
   ({ invoice_ref: REF, split: SPLIT, client_name: "Ada Ltd", description: "Logo", created_at: "2026-11-27T10:00:00Z", opens_by_ledger: 900, chain: { amount: usdc(150), status: "open" }, txHash: null, readAt: 1000 }) as Row;
 
 /** The page with one open invoice drawn; `outcome` is what cancelInvoice answers, `refresh` what the next list read does. */
-async function invoicesPage(opts: { storage: Map<string, string> | "blocked"; outcome: unknown; refresh: "fails" | "lags" }) {
+async function invoicesPage(opts: { storage: Map<string, string> | "blocked"; outcome: unknown; refresh: "fails" | "lags"; onCancel?: () => void }) {
   const store = opts.storage;
   vi.stubGlobal("window", {
     location: { replace: vi.fn(), origin: "https://caracal.test" },
@@ -105,7 +105,7 @@ async function invoicesPage(opts: { storage: Map<string, string> | "blocked"; ou
   statefulReact([{ kind: "ready", account: "A", wallet: WALLET, split: SPLIT, rows: [openRow()] }]);
   vi.doMock("@/lib/invoices/chain", async () => {
     const actual = await vi.importActual<typeof import("../src/lib/invoices/chain")>("../src/lib/invoices/chain");
-    return { ...actual, readConfig: async () => ({ owner: WALLET, token: TOKENS.usdc }), cancelInvoice: async () => opts.outcome };
+    return { ...actual, readConfig: async () => ({ owner: WALLET, token: TOKENS.usdc }), cancelInvoice: async () => (opts.onCancel?.(), opts.outcome) };
   });
   vi.doMock("@/lib/invoices/details", async () => ({ ...(await vi.importActual<object>("../src/lib/invoices/details")), listDetails: async () => [] }));
   vi.doMock("@/lib/invoices/rows", async () => ({
@@ -166,13 +166,18 @@ describe("adversary i17: the row after a cancellation", () => {
     expect(button(tree, "Cancel invoice")).toBeNull();
   });
 
-  it("a lost cancellation holds the row even when localStorage refuses writes, as the opening and payment records do", async () => {
-    const p = await invoicesPage({ storage: "blocked", outcome: LOST, refresh: "lags" });
+  // Test change (Codex invoices R4 #2, disclosed in docs/decisions.md): this test held a cancellation that was sent
+  // although localStorage refused its record. R4 #2 requires that nothing is sent then, so no cancellation exists
+  // that could still land, and the row rightly stays as the chain shows it. It now asserts that: Cancel sends
+  // nothing, and the page says why. Its first version asserted the row was held after the lost answer.
+  it("with localStorage refusing writes, Cancel sends nothing and says why, so no cancellation is left that may still land", async () => {
+    const sent = vi.fn();
+    const p = await invoicesPage({ storage: "blocked", outcome: LOST, refresh: "lags", onCancel: sent });
     await button(p.draw(), "Cancel invoice")!.props!.onClick!();
     await settle();
     const tree = p.draw();
-    // The cancellation may still land until ledger 1060, in this very tab, with no reload involved.
-    expect(texts(tree)).not.toContain("Copy pay link");
-    expect(button(tree, "Cancel invoice")).toBeNull();
+    expect(sent).not.toHaveBeenCalled();
+    expect(texts(tree)).toContain("would not let Caracal keep a record of the cancellation, so nothing was cancelled");
+    expect(texts(tree)).not.toContain("Cancelling: Caracal could not confirm the cancellation");
   });
 });

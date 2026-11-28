@@ -15,6 +15,7 @@
 // The page is rendered with the repo's usual React-state stub (test/pay-page.test.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { splitAddressFor } from "../src/lib/stellar/split-address";
+import { memoryStorage } from "./browser-storage";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
 const PAYER = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
@@ -88,6 +89,9 @@ async function render(before: Inv, after: Inv) {
     };
   });
   vi.doMock("@/lib/stellar/kit", () => ({ getKit: async () => ({ events: {}, connectWallet: async () => ({ contractId: PAYER }) }) }));
+  // Test change (Codex invoices R4 #2, disclosed in docs/decisions.md): the page is given a working localStorage, as
+  // every browser has; it now sends no payment or cancellation whose record storage will not keep.
+  vi.stubGlobal("window", { localStorage: memoryStorage().localStorage });
   const mod = await import("../src/app/pay/[split]/[ref]/pay-client");
   return { tree: mod.default({ split: SPLIT, invoiceRef: REF }), setters };
 }

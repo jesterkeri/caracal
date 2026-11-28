@@ -11,6 +11,7 @@ import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader
 import { formatUsdc } from "@/lib/invoices/amount";
 import { PAY_LEDGERS, bounded, findPaymentTx, isCaracalSplit, latestLedger, payInvoice, readConfig, readInvoice, readInvoiceAt, readUsdcBalance, type InvoiceOnChain } from "@/lib/invoices/chain";
 import { refBytes } from "@/lib/invoices/ref";
+import { attemptIn, beginAttempt, endAttempt, paySlot, refusedText } from "@/lib/invoices/attempt";
 
 type View =
   | { kind: "loading" }
@@ -51,31 +52,11 @@ const CONNECT_TIMEOUT_MS = 3 * 60_000;
 
 /**
  * A payment of this invoice from this browser whose answer was lost: the last ledger it can land at (its passkey
- * signature expires after it). Kept in localStorage, so a reload or another tab still holds back a second payment
- * until the invoice reads paid or cancelled, or open at a ledger past it (Codex invoices R3 #1).
+ * signature expires after it). Kept in localStorage (src/lib/invoices/attempt.ts paySlot, with the attempt's own id),
+ * so a reload or another tab still holds back a second payment until the invoice reads paid or cancelled, or open at
+ * a ledger past it (Codex invoices R3 #1). It is begun under the invoice's Web Lock, and nothing is sent when storage
+ * will not keep it; it is removed only by its own attempt, or by a check that settled that exact attempt (R4).
  */
-const PENDING_KEY = (split: string, ref: string) => `caracal.payPending.${split}.${ref}`;
-
-function readPending(split: string, ref: string): number | null {
-  try {
-    if (typeof window === "undefined") return null;
-    const v = JSON.parse(window.localStorage.getItem(PENDING_KEY(split, ref)) ?? "null") as unknown;
-    return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePending(split: string, ref: string, payBy: number | null): void {
-  try {
-    if (typeof window === "undefined") return;
-    if (payBy === null) window.localStorage.removeItem(PENDING_KEY(split, ref));
-    else window.localStorage.setItem(PENDING_KEY(split, ref), JSON.stringify(payBy));
-  } catch {
-    // storage blocked: this page still remembers it
-  }
-}
-
 const PENDING_TEXT = (payBy: number) =>
   `An earlier payment of this invoice from this browser may still go through, until the Stellar network passes ledger ${payBy} (about 5 minutes after it was sent). Do not pay again yet: use "Check again".`;
 
@@ -90,7 +71,7 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
   const [view, setView] = useState<View>({ kind: "loading" });
   const [wallet, setWallet] = useState<string | null>(null);
   const [pay, setPay] = useState<Pay>({ kind: "idle" });
-  // The last ledger an earlier payment from this browser whose answer was lost can land at (see PENDING_KEY).
+  // The last ledger an earlier payment from this browser whose answer was lost can land at (see paySlot above).
   const [pending, setPending] = useState<number | null>(null);
 
   const linkOk = StrKey.isValidContract(split) && refBytes(invoiceRef) !== null;
@@ -117,8 +98,8 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
       if (gone) return;
       setView(v);
       // An earlier payment from this browser whose answer was lost (before a reload, or in another tab).
-      const kept = readPending(split, invoiceRef);
-      if (kept !== null) setPending(kept);
+      const kept = attemptIn(paySlot(split, invoiceRef));
+      if (kept !== null) setPending(kept.by);
     });
     return () => {
       gone = true;
@@ -146,7 +127,8 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
   async function payNow() {
     if (!wallet || view.kind !== "invoice") return;
     // An earlier payment from this browser (this page before a reload, or another tab) may still land.
-    const earlier = pending ?? readPending(split, invoiceRef);
+    const slot = paySlot(split, invoiceRef);
+    const earlier = attemptIn(slot)?.by ?? pending;
     if (earlier !== null) {
       setPending(earlier);
       return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(earlier) });
@@ -186,17 +168,21 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     } catch (e) {
       return setPay({ kind: "message", text: `The payment was not made: Caracal could not load the wallet kit. ${errorText(e)}` });
     }
-    // Read again just before it is replaced: another tab may have lost a payment's answer while this one prepared
-    // (adversary i16). Nothing is sent then, and that record is kept.
-    const meanwhile = readPending(split, invoiceRef);
-    if (meanwhile !== null) {
-      setPending(meanwhile);
-      return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(meanwhile) });
+    // Recorded under the invoice's Web Lock just before the passkey is asked, only when no other attempt is recorded
+    // (another tab may have lost a payment's answer while this one prepared, adversary i16), and read back: nothing
+    // is sent when another tab holds the lock or storage will not keep the record (Codex invoices R4 #2, #3).
+    const begun = await beginAttempt(slot, payBy);
+    if (!begun.ok) {
+      if ("held" in begun) {
+        setPending(begun.held.by);
+        return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(begun.held.by) });
+      }
+      return setPay({ kind: "message", checkFirst: begun.refused === "busy", text: refusedText(begun.refused, "payment") });
     }
-    writePending(split, invoiceRef, payBy);
+    const mine = begun.attempt.id;
     const outcome = await payInvoice(kit, split, wallet, amount, invoiceRef, payBy);
-    // Only this attempt's own record is cleared, never one another tab wrote meanwhile.
-    if (outcome.kind !== "unknown" && readPending(split, invoiceRef) === payBy) writePending(split, invoiceRef, null);
+    // Only this attempt's own record is removed, never one another tab wrote (R4 #1).
+    if (outcome.kind !== "unknown") await endAttempt(slot, mine);
     if (outcome.kind === "done") {
       setPay({ kind: "paid", hash: outcome.hash });
       // It landed. A failed read now must not hide that: the invoice already shown stays, marked paid.
@@ -220,8 +206,8 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     // The receipt is the transaction the contract's events say paid the invoice: after a lost answer the
     // payer's own transaction may have failed while someone else's paid it.
     if (after.kind === "invoice" && (after.invoice.status === "paid" || after.invoice.status === "cancelled")) {
-      writePending(split, invoiceRef, null);
-      setPending(null);
+      await endAttempt(slot, mine);
+      setPending(attemptIn(slot)?.by ?? null);
     }
     if (after.kind === "invoice" && after.invoice.status === "paid") return setPay({ kind: "paid", hash: after.txHash });
     // A cancelled invoice was never paid (the contract refuses to cancel a paid one) and takes no deposit
@@ -238,7 +224,10 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
 
   async function checkAgain() {
     setPay({ kind: "busy", label: "Checking the invoice" });
-    const earlier = pending ?? readPending(split, invoiceRef);
+    // The attempt this check is about, read now: it settles that one only, never a newer one begun meanwhile (R4 #1).
+    const slot = paySlot(split, invoiceRef);
+    const checked = attemptIn(slot);
+    const earlier = checked?.by ?? pending;
     // The invoice, with the ledger the network read it at: an open invoice read past the earlier payment's last
     // ledger proves that payment can no longer land; read at or before it, it still may (Codex invoices R3 #1).
     // The status and the ledger must come from the same answer: two requests may reach RPC nodes a few ledgers
@@ -256,8 +245,11 @@ export default function PayClient({ split, invoiceRef }: { split: string; invoic
     setView(v);
     const settled = v.kind === "invoice" && (v.invoice.status !== "open" || openPast);
     if (earlier !== null && settled) {
-      writePending(split, invoiceRef, null);
-      setPending(null);
+      if (checked !== null) await endAttempt(slot, checked.id);
+      // Another attempt recorded since (another tab), or this one's record that storage would not let go, still holds.
+      const now = attemptIn(slot);
+      setPending(now?.by ?? null);
+      if (now !== null && !(v.kind === "invoice" && v.invoice.status === "paid")) return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(now.by) });
     }
     if (v.kind === "invoice" && v.invoice.status === "paid") return setPay({ kind: "paid", hash: v.txHash });
     if (earlier !== null && !settled) return setPay({ kind: "message", checkFirst: true, text: PENDING_TEXT(earlier) });

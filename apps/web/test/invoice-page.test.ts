@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { splitAddressFor } from "../src/lib/stellar/split-address";
 import { TOKENS } from "../src/lib/stellar/config";
+import { memoryStorage } from "./browser-storage";
 
 const WALLET = "CDK24QZKOWOF3JPDLFQI4YAGIUYJO4YBLFFMOS6BK3SQ2HAPICZL3FGX";
 const SPLIT = splitAddressFor(WALLET);
@@ -109,7 +110,9 @@ async function render(states: unknown[], o: { config?: unknown; outcome?: unknow
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-test-key");
   const replace = vi.fn();
-  vi.stubGlobal("window", { location: { replace, origin: "https://caracal.test" } });
+  // Test change (Codex invoices R4 #2, disclosed in docs/decisions.md): the page is given a working localStorage, as
+  // every browser has; it now sends no payment or cancellation whose record storage will not keep.
+  vi.stubGlobal("window", { location: { replace, origin: "https://caracal.test" }, localStorage: memoryStorage().localStorage });
   const mod = await import("../src/app/invoices/page");
   return { tree: mod.default(), effects, setters, calls, order, replace };
 }

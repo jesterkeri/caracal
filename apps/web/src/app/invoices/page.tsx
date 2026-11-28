@@ -10,6 +10,7 @@ import { splitAddressFor } from "@/lib/stellar/split-address";
 import { NETWORK } from "@/lib/stellar/config";
 import { credentialInKitError, walletAddressFor, walletStatus, type LedgerReader } from "@/lib/stellar/wallet-lookup";
 import { formatUsdc, parseUsdc } from "@/lib/invoices/amount";
+import { attemptIn, beginAttempt, cancelSlot, endAttempt, refusedText } from "@/lib/invoices/attempt";
 import { OPENING_LEDGERS, bounded, cancelInvoice, createInvoice, isCaracalSplit, latestLedger, readConfig, readInvoiceAt, type WriteOutcome } from "@/lib/invoices/chain";
 import { checkDetails, deleteDetails, listDetails, saveDetails, type Db } from "@/lib/invoices/details";
 import { newInvoiceRef, payPath } from "@/lib/invoices/ref";
@@ -106,40 +107,16 @@ function confirmedOf(ref: string): Confirmed | null {
 }
 
 /**
- * Cancellations whose answer was lost ({ ref: last ledger it can land at }, JSON in localStorage, so a reload keeps
- * it). Until the invoice reads cancelled or paid, or open at a ledger past that one, its row says the cancellation
- * may still go through and offers neither its pay link nor Cancel (Codex invoices R3 #2).
+ * Cancellations whose answer was lost: the last ledger each can land at, in localStorage (src/lib/invoices/attempt.ts
+ * cancelSlot: caracal.invoiceCancelPending, { ref: cancelBy }, with each attempt's own id beside it), so a reload
+ * keeps it. Until the invoice reads cancelled or paid, or open at a ledger past that one, its row says the
+ * cancellation may still go through and offers neither its pay link nor Cancel (Codex invoices R3 #2). A
+ * cancellation is begun under the Web Lock that guards those records, only when none is recorded for the invoice,
+ * and nothing is sent when storage will not keep it; a record is removed only by its own attempt, or once a read
+ * settles that exact attempt (Codex invoices R4).
  */
-const CANCEL_PENDING_KEY = "caracal.invoiceCancelPending";
-/** This tab's own copy, so a browser that refuses storage still holds the row until the page is left (adversary i17). */
-const cancelHere = new Map<string, number | null>();
-
-function readCancelPending(): Record<string, unknown> {
-  try {
-    const v = JSON.parse(window.localStorage.getItem(CANCEL_PENDING_KEY) ?? "{}") as unknown;
-    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function setCancelPending(ref: string, cancelBy: number | null) {
-  cancelHere.set(ref, cancelBy);
-  try {
-    const saved = readCancelPending();
-    if (cancelBy === null) delete saved[ref];
-    else saved[ref] = cancelBy;
-    window.localStorage.setItem(CANCEL_PENDING_KEY, JSON.stringify(saved));
-  } catch {
-    // storage blocked: this tab still remembers it, but nothing is kept for a reload
-  }
-}
-
-/** The stored record (which another tab may have written), or else this tab's own. */
 function cancelPendingOf(ref: string): number | null {
-  const v = readCancelPending()[ref];
-  if (typeof v === "number" && Number.isSafeInteger(v) && v > 0) return v;
-  return cancelHere.get(ref) ?? null;
+  return attemptIn(cancelSlot(ref))?.by ?? null;
 }
 
 const CANCELLING_TEXT = (by: number) =>
@@ -147,11 +124,12 @@ const CANCELLING_TEXT = (by: number) =>
 
 /** The row as shown: a confirmed outcome the read has not caught up with is shown as confirmed, and dropped once it has. */
 function shown(r: Row): ShownRow {
-  const cancelBy = cancelPendingOf(r.invoice_ref);
-  if (cancelBy !== null && typeof r.chain === "object" && r.chain !== null) {
-    // Settled once the invoice reads cancelled or paid (a paid invoice cannot be cancelled), or open past cancelBy.
-    if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > cancelBy)) setCancelPending(r.invoice_ref, null);
-    else return { ...r, cancelling: cancelBy };
+  const pendingCancel = attemptIn(cancelSlot(r.invoice_ref));
+  if (pendingCancel !== null && typeof r.chain === "object" && r.chain !== null) {
+    // Settled once the invoice reads cancelled or paid (a paid invoice cannot be cancelled), or open past cancelBy:
+    // that attempt's record goes, never one recorded since (heldNow still holds the row for a newer one).
+    if (r.chain.status !== "open" || (typeof r.readAt === "number" && r.readAt > pendingCancel.by)) void endAttempt(cancelSlot(r.invoice_ref), pendingCancel.id);
+    else return { ...r, cancelling: pendingCancel.by };
   }
   const done = confirmedOf(r.invoice_ref);
   const chain = typeof r.chain === "object" && r.chain !== null ? r.chain : null;
@@ -463,16 +441,23 @@ export default function InvoicesPage() {
     // An earlier cancellation from this browser (this page before a reload, or another tab) may still land: nothing
     // new is sent, read now, at the press, as the pay page does for a payment (adversary i15). The list is read
     // again, which settles that record once the invoice reads cancelled or paid, or open past its last ledger.
-    const earlier = cancelPendingOf(ref);
-    if (earlier !== null) {
+    // Recorded under the lock, only when none is, and read back: another tab's cancellation recorded meanwhile holds
+    // this one back, and nothing is sent when another tab holds the lock or storage will not keep the record (R4).
+    const slot = cancelSlot(ref);
+    const begun = await beginAttempt(slot, cancelBy);
+    if (!begun.ok && "held" in begun) {
+      const earlier = begun.held.by;
       setBusy(null);
       setNotice(CANCELLING_TEXT(earlier), "unsure");
       return refresh(ready.account, ready.wallet, ready.split).catch(listFailed(CANCELLING_TEXT(earlier)));
     }
-    setCancelPending(ref, cancelBy);
+    if (!begun.ok) {
+      setBusy(null);
+      return setNotice(refusedText(begun.refused, "cancellation"), begun.refused === "busy" ? "unsure" : "bad");
+    }
     const outcome = await cancelInvoice(kit, ready.split, ref, cancelBy);
-    // Only this attempt's own record is cleared, never one written meanwhile by another tab.
-    if (outcome.kind !== "unknown" && cancelPendingOf(ref) === cancelBy) setCancelPending(ref, null);
+    // Only this attempt's own record is removed, never one another tab recorded (R4 #1).
+    if (outcome.kind !== "unknown") await endAttempt(slot, begun.attempt.id);
     setBusy(null);
     // Confirmed on chain: a read that has not caught up must not offer the pay link again (shown()).
     if (outcome.kind === "done") setConfirmed(ref, "cancelled");
