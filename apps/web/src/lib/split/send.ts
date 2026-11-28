@@ -34,7 +34,7 @@ export type WriteKit = {
 };
 
 export type SendOutcome =
-  | { kind: "done"; hash: string }
+  | { kind: "done"; hash: string; /** The ledger it was included in, when the kit said. */ ledger?: number }
   | { kind: "refused"; message: string }
   | { kind: "stopped"; message: string }
   | { kind: "unknown"; message: string; hash?: string };
@@ -120,7 +120,10 @@ export async function sendSplitCall(
   } finally {
     clearTimeout(late);
   }
-  if (result.success) return { kind: "done", hash: result.hash };
+  if (result.success) {
+    const at = result.ledger;
+    return typeof at === "number" && Number.isSafeInteger(at) && at > 0 && at <= 0xffff_ffff ? { kind: "done", hash: result.hash, ledger: at } : { kind: "done", hash: result.hash };
+  }
   const err = result.error;
   const message = problem(err, contractId);
   const hash = typeof result.hash === "string" && result.hash !== "" ? result.hash : undefined;

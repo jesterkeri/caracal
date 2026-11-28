@@ -222,6 +222,13 @@ export default function SplitPage() {
       // offered, even if the poll has already removed its record because the network passed closeBy while it was
       // still being sent (adversary s15).
       if (outcome.kind === "unknown") setGuardBy((g) => later(g, guard.closeBy));
+      // A write that went through is shown only from pots read at or after the ledger it landed in, or, when the kit
+      // did not say which, past its closeBy: a lagging RPC node can still answer with the pots from before it
+      // (adversary s19).
+      if (outcome.kind === "done") {
+        const landed = outcome.ledger;
+        setGuardBy((g) => later(g, landed !== undefined ? landed - 1 : guard.closeBy));
+      }
       ended = { from: me, closeBy: guard.closeBy, unknown: outcome.kind === "unknown" };
       const said = say(outcome, what);
       if (outcome.kind === "refused" || outcome.kind === "stopped") return setNote({ said });
