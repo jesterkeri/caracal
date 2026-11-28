@@ -95,19 +95,18 @@ function earlierOf(s: Store, wallet: string): Earlier {
 
 const write = (s: Store, wallet: string, r: Rec) => s.setItem(KEY(wallet), JSON.stringify(r));
 
-/** Ids of this tab's payments still being sent: their own record does not ask the page to re-read the balance. */
-const inFlight = new Set<string>();
-
 /**
- * The closeBy of this wallet's record, unless it is one of this tab's payments still being sent; null when there
- * is none or it has no closeBy. The page must read the balance at a ledger past it before it offers a cash-out.
+ * The closeBy of this wallet's record, whoever's it is; null when there is none or it has no closeBy. The page must
+ * read the balance at a ledger past it before it offers a cash-out. This tab's own payment still being sent counts
+ * too (adversary c35): the page that sends it offers nothing meanwhile, and a copy of the page mounted again while it
+ * is sent must not offer a cash-out on a balance read before it landed. A certain outcome removes the record.
  */
 export function recordCloseBy(wallet: string): number | null {
   const s = store();
   if (!s) return null;
   try {
     const rec = read(s, wallet);
-    return rec && !inFlight.has(rec.id) ? rec.closeBy : null;
+    return rec ? rec.closeBy : null;
   } catch {
     return null;
   }
@@ -252,7 +251,6 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
   } catch {
     return { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
   }
-  inFlight.add(id);
   const mine = () => {
     try {
       return read(s, wallet)?.id === id;
@@ -311,7 +309,6 @@ export function beginSend(wallet: string, anchorId: string, ledger: number): Beg
         }
       },
       finish(kind) {
-        inFlight.delete(id);
         if (kind === "unknown") {
           unknown = true;
           if (pending === 0) release();
