@@ -68,7 +68,12 @@ function store(): Store | null {
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.length > 0 && v.length <= 200 ? v : null);
-const isLedger = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
+/**
+ * A ledger sequence: Stellar numbers ledgers with a u32, and the kit refuses to sign an expiry beyond it. A saved
+ * closeBy outside that range (damaged or odd storage) is no closeBy at all, so its record holds with the person's
+ * check as the way past it, not until a ledger the network never reaches (adversary s17).
+ */
+const isLedger = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0 && n <= 0xffff_ffff;
 
 /** The record for this wallet: undefined when none, null when it is there but cannot be read (or has no closeBy). */
 function read(s: Store, wallet: string): Rec | null | undefined {
