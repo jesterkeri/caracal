@@ -130,6 +130,9 @@ export default function CashoutPage() {
   const [seenLedger, setSeenLedger] = useState<number | null>(null);
   /** LAND_WINDOW_MS has passed since the send settled; landingOver also waits for the hold to lift (see below). */
   const [windowOver, setWindowOver] = useState(false);
+  // Kept last of the states: tests set the states above by position.
+  // The text of a refusal because an earlier payment may still land: shown only while that hold holds (adversary c31).
+  const [heldText, setHeldText] = useState<string | null>(null);
   const kitRef = useRef<Kit | null>(null);
   const popupRef = useRef<Window | null>(null);
   // One send per anchor transaction: set the moment the passkey prompt is asked for.
@@ -241,12 +244,19 @@ export default function CashoutPage() {
 
   const preview = info ? previewWithdraw(amountText, info, balance) : null;
 
+  /** Refuses with the hold's text; one about an earlier payment is remembered, so it goes once the hold lifts. */
+  function refuseHeld(h: Parameters<typeof holdText>[0]) {
+    const t = holdText(h);
+    setHeldText(h.reason === "earlier-send" ? t : null);
+    setProblem(t);
+  }
+
   async function start() {
     const kit = kitRef.current;
     if (boot.kind !== "ready" || !kit || !toml || !preview?.ok) return;
     // An earlier payment from this browser (this page before a reload, or another tab) may still land.
     const held = sendHold(boot.wallet, seenLedger);
-    if (held.held) return setProblem(holdText(held));
+    if (held.held) return refuseHeld(held);
     // A browser that could not guard the payment would only be refused at Send, after the sign-in and the anchor's
     // form: refuse before anything starts (adversary c30).
     const cannot = cannotGuard(boot.wallet);
@@ -323,7 +333,7 @@ export default function CashoutPage() {
     const begun = await acquireSend(boot.wallet, latest.id, ledger);
     if (!begun.ok) {
       sendingFor.current = null;
-      setProblem(holdText(begun.hold));
+      refuseHeld(begun.hold);
       setPhase("confirm");
       return;
     }
@@ -439,6 +449,8 @@ export default function CashoutPage() {
   // the hold has lifted (a kit call that has not settled), and each reading lets go of the lock of a payment the
   // network has passed, so another tab is not refused until that call settles (ported from split adversary s13).
   const hold: Hold = boot.kind === "ready" ? sendHold(boot.wallet, seenLedger) : { held: false };
+  // A refusal for an earlier payment is not kept on screen once the network has passed it (adversary c31).
+  const shownProblem = problem !== null && problem === heldText && !hold.held ? null : problem;
   useEffect(() => {
     if (!wallet || (!hold.held && !holdsSendLock(wallet))) return;
     const held = hold.held;
@@ -628,7 +640,7 @@ export default function CashoutPage() {
             </div>
           )}
 
-          {problem && <p className={phase === "watching" ? "msg msg-unsure" : "msg msg-bad"}>{problem}</p>}
+          {shownProblem && <p className={phase === "watching" ? "msg msg-unsure" : "msg msg-bad"}>{shownProblem}</p>}
 
           {txn && (phase === "watching" || done) && (
             <div className="card">
