@@ -141,6 +141,21 @@ const unavailable = (message: string): TaxOutcome => ({ status: "unavailable", m
 
 export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networkPassphrase?: string): Promise<TaxOutcome> {
   if (getRules("NG", TAX_YEAR) === null) return unavailable(`Caracal has no tax rules for ${TAX_YEAR}.`);
+  // Naira typed by the person must be digits, with any kobo after a point. Any other form is refused at once, saying
+  // what to change, before the network is read or a payment is asked about (adversary t22): the engine's own reason
+  // ("at most 2 decimal places") is false for "600,000" or "N600000".
+  const typed = [
+    ...(req.annualRentNgn !== undefined ? [{ value: req.annualRentNgn, what: "The rent you pay for the year", example: "600000" }] : []),
+    ...(req.otherIncome.kind === "elsewhere" ? [{ value: req.otherIncome.amountNgn, what: "The income that arrives elsewhere", example: "2500000" }] : []),
+  ];
+  const typedReasons = typed
+    .filter((t) => !/^\d+(\.\d+)?$/.test(t.value.trim()))
+    .map((t) =>
+      t.value.trim() === ""
+        ? `${t.what} is missing. Write it in naira, in digits, for example ${t.example}. No estimate was made.`
+        : `${t.what} must be written in digits only, with no commas, spaces, letters or ₦ sign, for example ${t.example} (kobo go after a point, as in ${t.example}.50). No estimate was made.`,
+    );
+  if (typedReasons.length > 0) return { status: "refused", reasons: typedReasons, disclaimer: DISCLAIMER, context: null };
   const splitContract = splitAddressFor(req.wallet, networkPassphrase);
 
   let read;
@@ -288,9 +303,14 @@ export async function runTaxEstimate(req: TaxRequest, deps: PipelineDeps, networ
   // its sync time is the close time of the newest ledger the RPC returned: an old one is the network's or the RPC's
   // lag, which the person cannot sync (adversary t20).
   const synced = `Account "${account.label}" was last synced at ${account.lastSyncedAt}, `;
+  // A server clock behind the newest ledger's close time (adversary t22): the engine says the account "says it was
+  // synced" after the estimate's time, which is this server's clock.
+  const ahead = `Account "${account.label}" says it was synced at ${account.lastSyncedAt}, which is after `;
   const head = `The newest ledger Caracal could read from the Stellar network closed at ${account.lastSyncedAt}`;
   const plain = (r: string) =>
-    !r.startsWith(synced)
+    r.startsWith(ahead)
+      ? `${head}, which is later than this server's clock (${asOf}). The server's clock is behind the network's, so no estimate was made. Try again in a minute; if this keeps happening, the server's clock needs setting right.`
+      : !r.startsWith(synced)
       ? r
       : r.includes("which is too old")
         ? `${head}, more than an hour ago, so the payment history Caracal read may be behind (the testnet may be halted, or its RPC lagging). No estimate was made. Try again later.`
