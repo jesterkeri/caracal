@@ -78,9 +78,9 @@ export type SendDeps = {
   /**
    * Asked just before the passkey: why the record confirmed at the press may no longer be the one to pay
    * (the anchor changed it, or stopped waiting for USDC, while the balance was read and the payment built),
-   * or null to go on (adversary c23).
+   * or null to go on (adversary c23). It may read the anchor again (adversary c41); a check that throws sends nothing.
    */
-  stillCurrent?(): string | null;
+  stillCurrent?(): string | null | Promise<string | null>;
 };
 
 const EXPIRED_STATE =
@@ -112,7 +112,12 @@ export async function sendToAnchor(txn: AnchorTxn, confirmed: bigint, deps: Send
   // Data the payment needs (the wallet, or its USDC balance entry) has expired: the simulation asks for a restore,
   // which the kit refuses before sending and the relay does not pay for yet, so retrying cannot help (adversary c17).
   if (needsRestore(tx)) return { kind: "not-sent", message: EXPIRED_STATE };
-  const stale = deps.stillCurrent?.() ?? null;
+  let stale: string | null;
+  try {
+    stale = (await deps.stillCurrent?.()) ?? null;
+  } catch {
+    stale = "Caracal could not check the anchor's latest record of this withdrawal, so nothing was sent. Try again in a moment.";
+  }
   if (stale !== null) return { kind: "not-sent", message: stale };
   let r: Awaited<ReturnType<SendDeps["signAndSubmit"]>>;
   try {

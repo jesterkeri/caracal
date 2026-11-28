@@ -473,11 +473,23 @@ export default function CashoutPage() {
         guard.submit(kit, tx as contract.AssembledTransaction<unknown>).finally(() => {
           setSendSettledAt(Date.now());
         }),
-      // The poll kept the record current while the balance was read and the payment built: the passkey is
-      // asked only for the record the person confirmed, while the anchor still waits for it (adversary c23).
-      stillCurrent: () => {
-        const now = txnRef.current;
-        if (!now || now.id !== latest.id || now.status !== "pending_user_transfer_start") {
+      // The passkey is asked only for the record the person confirmed, while the anchor still waits for it
+      // (adversary c23). The poll may have failed all the while the balance was read and the payment built (up to
+      // about 30 s), so the record is read again now, and if it cannot be read nothing is sent (adversary c41).
+      stillCurrent: async () => {
+        // "Start again" pressed meanwhile (adversary c28): nothing to check against.
+        if (!txnRef.current) return "The anchor stopped waiting for this payment while Caracal was preparing it, so nothing was sent. Its status is shown below.";
+        let now: AnchorTxn;
+        try {
+          now = await loadTransaction(toml.transferServer, session.token, session.id);
+        } catch (e) {
+          return `Caracal could not read the anchor's latest record of this withdrawal just before asking for your passkey, so it cannot check the account, memo and quote, and nothing was sent.${e instanceof AnchorError ? ` ${e.message}` : ""} Try again in a moment.`;
+        }
+        // "Start again" pressed while it was read: this withdrawal is no longer on screen.
+        if (!txnRef.current) return "The anchor stopped waiting for this payment while Caracal was preparing it, so nothing was sent. Its status is shown below.";
+        txnRef.current = now;
+        if (now.id !== latest.id || now.status !== "pending_user_transfer_start") {
+          setTxn(now);
           return "The anchor stopped waiting for this payment while Caracal was preparing it, so nothing was sent. Its status is shown below.";
         }
         if (payTo(now) !== seenRef.current) {
