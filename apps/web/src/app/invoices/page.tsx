@@ -99,11 +99,15 @@ function setConfirmed(ref: string, what: Confirmed | null) {
   }
 }
 
+/**
+ * The stored record first, which another tab may have written since this tab dropped its own (adversary i19: a tab
+ * that had seen the invoice caught up kept null in memory and ignored another tab's confirmed cancellation), then
+ * this tab's own copy, for a browser whose storage refused it.
+ */
 function confirmedOf(ref: string): Confirmed | null {
-  const here = confirmedHere.get(ref);
-  if (here !== undefined) return here;
   const v = readConfirmed()[ref];
-  return v === "opened" || v === "cancelled" ? v : null;
+  if (v === "opened" || v === "cancelled") return v;
+  return confirmedHere.get(ref) ?? null;
 }
 
 /**
