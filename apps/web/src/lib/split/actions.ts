@@ -42,7 +42,9 @@ export async function loadSplit(server: (LedgerReader & SimulatingRpc) | undefin
   if (status === "unknown" || !server) return { kind: "error", split, message: "Caracal could not reach the Stellar network to look for your split contract. Check your connection and try again." };
   // Not Caracal's split code, or code that could not be checked: show no balance and offer no action.
   const code = await readInstanceCode(server as unknown as EntryReader, split);
-  if (code.kind === "unchecked") return { kind: "error", split, message: "Caracal could not check which code your split contract runs, so it will not show or use it yet. Check your connection and try again." };
+  // The lookup above found the entry, so an answer with none now is a lagging or inconsistent node, not proof of
+  // other code (adversary s11): it could not be checked.
+  if (code.kind === "unchecked" || code.kind === "absent") return { kind: "error", split, message: "Caracal could not check which code your split contract runs, so it will not show or use it yet. Check your connection and try again." };
   if (code.kind !== "wasm" || code.hash !== SPLIT.wasmHash) return { kind: "error", split, message: "The contract at your split address does not run Caracal's split code, so Caracal will not show its balances or use it." };
   try {
     const [pots, config] = await Promise.all([readPots(server, split), readConfig(server, split)]);

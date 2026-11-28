@@ -115,8 +115,37 @@ export function holdOn(split: string, ledger: number | null, now: number = Date.
     return { held: true, until: now + (KIT_DEFAULT_LEDGERS + 1) * LEDGER_MS, reason: "earlier-write" };
   }
   if (known === null) return { held: true, until: null, reason: "earlier-write" };
-  if (known > rec.closeBy) return { held: false };
+  if (known > rec.closeBy) {
+    // It can no longer land: the record goes, so the page stops reading the ledger for it.
+    try {
+      if (read(s, split)?.id === rec.id) s.removeItem(KEY(split));
+    } catch {
+      /* it is past closeBy either way */
+    }
+    return { held: false };
+  }
   return { held: true, until: now + (rec.closeBy - known + 1) * LEDGER_MS, reason: "earlier-write" };
+}
+
+/**
+ * This tab's writes still holding a split's Web Lock. A write lets go of it once its outcome is certain or its
+ * kit call has settled, and also once the network passes its closeBy, since nothing it could still send can land
+ * then (adversary s11: a kit call that never settled kept the lock, and every later write was refused with a
+ * false reason).
+ */
+type Live = { closeBy: number; released: boolean; letGo: () => Promise<void> };
+const live = new Map<string, Set<Live>>();
+
+/**
+ * Lets go of this tab's locks on this split held by writes that are done, or that the network has passed
+ * (ledger > closeBy), and resolves once those locks are free.
+ */
+export async function passLedger(split: string, ledger: number): Promise<void> {
+  const mine = live.get(split);
+  if (!mine) return;
+  const gone = [...mine].filter((g) => g.released || (isLedger(ledger) && ledger > g.closeBy));
+  gone.forEach((g) => mine.delete(g));
+  await Promise.all(gone.map((g) => g.letGo()));
 }
 
 export type WriteGuard = {
@@ -128,6 +157,8 @@ export type WriteGuard = {
   released: Promise<void>;
   /** The last ledger this write can land in. */
   closeBy: number;
+  /** Set by acquireWrite: settles once this write's Web Lock is free. */
+  lockFree?: Promise<unknown>;
 };
 
 type Begun = { ok: true; guard: WriteGuard } | { ok: false; hold: Held };
@@ -167,8 +198,22 @@ export function beginWrite(split: string, ledger: number): Begun {
   let pending = 0;
   let unknown = false;
   let restore = () => {};
-  let release = () => {};
-  const released = new Promise<void>((r) => (release = r));
+  let resolveReleased = () => {};
+  const released = new Promise<void>((r) => (resolveReleased = r));
+  const entry: Live = {
+    closeBy,
+    released: false,
+    letGo: async () => {
+      release();
+      await guard.lockFree;
+    },
+  };
+  const release = () => {
+    entry.released = true;
+    resolveReleased();
+  };
+  if (!live.has(split)) live.set(split, new Set());
+  live.get(split)!.add(entry);
   const settled = () => {
     pending--;
     if (unknown && pending === 0) release();
@@ -198,6 +243,7 @@ export function beginWrite(split: string, ledger: number): Begun {
       restore();
       if (outcome.kind === "unknown") {
         unknown = true;
+        // Its kit call may never settle: the lock then goes once the network passes closeBy (passLedger).
         if (pending === 0) release();
         return;
       }
@@ -220,6 +266,11 @@ export function beginWrite(split: string, ledger: number): Begun {
  */
 export function acquireWrite(split: string, ledger: number, locks: Locks | undefined = browserLocks()): Promise<Begun> {
   if (!locks || typeof locks.request !== "function") return Promise.resolve({ ok: false, hold: { held: true, until: null, reason: "unsupported" } });
+  // A write of this tab the network has passed holds the lock for nothing: it is let go first.
+  return passLedger(split, ledger).then(() => lockAndBegin(split, ledger, locks));
+}
+
+function lockAndBegin(split: string, ledger: number, locks: Locks): Promise<Begun> {
   return new Promise((resolve) => {
     let entered = false;
     let answered = false;
@@ -228,6 +279,9 @@ export function acquireWrite(split: string, ledger: number, locks: Locks | undef
       answered = true;
       resolve(r);
     };
+    // Settles once the lock request has ended, that is once the lock is free (the guard's lockFree).
+    let lockGone = () => {};
+    const lockFree = new Promise<void>((r) => (lockGone = r));
     let request: Promise<unknown>;
     try {
       request = locks.request(LOCK(split), { ifAvailable: true }, async (lock) => {
@@ -242,9 +296,11 @@ export function acquireWrite(split: string, ledger: number, locks: Locks | undef
         } catch {
           begun = { ok: false, hold: { held: true, until: null, reason: "unreadable" } };
         }
+        if (begun.ok) begun.guard.lockFree = lockFree;
         answer(begun);
         if (begun.ok) await begun.guard.released;
       });
+      request.then(lockGone, lockGone);
     } catch {
       return answer({ ok: false, hold: { held: true, until: null, reason: "unreadable" } });
     }

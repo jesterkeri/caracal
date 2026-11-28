@@ -162,3 +162,30 @@ describe("Codex split R3 on the page", () => {
     expect(said.said?.text).toMatch(/could not read the Stellar network, so nothing was signed or sent/);
   });
 });
+
+// Adversary s11 (kept as adversary-s11-lock-outlives-closeby.test.ts) with a kit call that truly never settles.
+describe("adversary s11 follow-up: the lock of a write whose kit call never settles", () => {
+  it("holds through closeBy and is let go once the network passes it", async () => {
+    stubStorage();
+    const { acquireWrite } = await import("../src/lib/split/write-guard");
+    const first = await acquireWrite(SPLIT, 1000);
+    if (!first.ok) throw new Error("should begin");
+    const kit = { rpc: {}, rpcUrl: "", networkPassphrase: "", signAndSubmit: () => new Promise<never>(() => {}) };
+    void first.guard.kit(kit as never).signAndSubmit({} as never);
+    first.guard.finish({ kind: "unknown", message: "no answer within 5 minutes" });
+    expect((await acquireWrite(SPLIT, 1000 + WRITE_LEDGERS)).ok).toBe(false);
+    const second = await acquireWrite(SPLIT, 1001 + WRITE_LEDGERS);
+    expect(second.ok).toBe(true);
+    if (second.ok) second.guard.finish({ kind: "done", hash: "ab" });
+  });
+
+  it("a record past its closeBy is removed, so the page stops reading the ledger for it", async () => {
+    const kept = stubStorage(new Map([[KEY, JSON.stringify({ v: 2, id: "x", closeBy: 1060 })]]));
+    const { hasWriteRecord } = await import("../src/lib/split/write-guard");
+    expect(holdOn(SPLIT, 1060).held).toBe(true);
+    expect(hasWriteRecord(SPLIT)).toBe(true);
+    expect(holdOn(SPLIT, 1061).held).toBe(false);
+    expect(kept.has(KEY)).toBe(false);
+    expect(hasWriteRecord(SPLIT)).toBe(false);
+  });
+});

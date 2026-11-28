@@ -50,6 +50,8 @@ type Note = { busy?: string; said?: Said };
 // slower read never puts earlier pots on screen or clears a write's note.
 let readSeq = 0;
 let writing = false;
+/** A hold on writes was shown since the last read of the pots (see the effect after `hold`). */
+let heldSeen = false;
 
 export default function SplitPage() {
   const [view, setView] = useState<View>({ kind: "checking" });
@@ -225,6 +227,22 @@ export default function SplitPage() {
   // Read from storage on every render (not remembered), so a write in another tab or before a reload counts.
   const hold = view.kind === "ready" && loaded?.kind !== "error" ? holdOn(splitAddressFor(view.wallet), seenLedger) : ({ held: false } as const);
   const blocked = busy || hold.held;
+  // When a hold lifts, the pots are read again and its note goes: a write that landed after the write's own
+  // re-read is then on screen before the person repeats it (adversary s11).
+  const readyWallet = view.kind === "ready" ? view.wallet : null;
+  useEffect(() => {
+    if (hold.held) {
+      heldSeen = true;
+      return;
+    }
+    if (!heldSeen || !readyWallet) return;
+    const t = setTimeout(() => {
+      heldSeen = false;
+      void reread(readyWallet);
+    }, 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hold.held, readyWallet]);
 
   return (
     <main className="page">
