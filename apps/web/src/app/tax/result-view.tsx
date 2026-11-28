@@ -32,7 +32,26 @@ export function pct(rate: string): string {
 const naira = (s: string) => `N${group(s)}`;
 const time = (iso: string) => iso.replace("T", " ").replace("Z", " UTC");
 
-function Coverage({ c }: { c: Context }) {
+/** What was read. Under a refusal (`estimated` false) it claims no coverage: no estimate was made (adversary t18). */
+function Coverage({ c, estimated }: { c: Context; estimated: boolean }) {
+  if (!estimated) {
+    return (
+      <section className="card text-sm leading-relaxed">
+        <h2 className="h2">What this is based on</h2>
+        <p>
+          Payments into your split contract{" "}
+          <a className="link addr" href={explorerLink("contract", c.splitContract)}>
+            {c.splitContract}
+          </a>
+          , read from Stellar testnet, from {time(c.coverage.from)} (ledger {c.coverage.fromLedger}) through ledger {c.coverage.toLedger}, which closed at {time(c.coverage.to)}. The
+          public Stellar RPC keeps only a short window of history, so nothing earlier could be read. No estimate was made from these payments, for the reasons above.
+        </p>
+        <p>
+          Payments found in that window: {c.paymentsInWindow}, of which {c.paymentsInTaxYear} fall in {c.taxYear} (Nigeria time). Checked {time(c.asOf)}.
+        </p>
+      </section>
+    );
+  }
   return (
     <section className="card text-sm leading-relaxed">
       <h2 className="h2">What this is based on</h2>
@@ -165,7 +184,7 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
       {outcome.status === "ok" && (
         <>
           <Money e={outcome.estimate} excluded={outcome.context.excludedByAnswer} />
-          <Coverage c={outcome.context} />
+          <Coverage c={outcome.context} estimated />
         </>
       )}
       {outcome.status === "refused" && (
@@ -179,7 +198,7 @@ export function ResultView({ outcome }: { outcome: TaxOutcome }) {
               ))}
             </ul>
           </section>
-          {outcome.context && <Coverage c={outcome.context} />}
+          {outcome.context && <Coverage c={outcome.context} estimated={false} />}
         </>
       )}
       {outcome.status === "unavailable" && (
